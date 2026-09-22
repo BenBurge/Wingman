@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>wingman</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Wingman.Core\Wingman.Core.csproj" />
+    <ProjectReference Include="..\Wingman.Tui\Wingman.Tui.csproj" />
+  </ItemGroup>
+
+</Project>
