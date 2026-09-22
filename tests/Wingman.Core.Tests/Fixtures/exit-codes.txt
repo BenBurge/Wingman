@@ -1,0 +1,10 @@
+list=0
+upgrade=0
+upgrade-include-unknown=0
+search-vscode=0
+search-git=0
+search-nomatch=-1978335212
+show-vscode=0
+show-versions-git=0
+pin-list=0
+version=0

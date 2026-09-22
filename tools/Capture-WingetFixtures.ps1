@@ -22,6 +22,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# winget writes UTF-8 bytes to stdout, but PowerShell decodes a native command's
+# redirected output using the console's output encoding, which defaults to the
+# OEM code page. Without this, non-ASCII names (Intel(R), CJK package titles,
+# accented Portuguese/French names) come out double-mangled.
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
 # .NET's UTF8Encoding($false) omits the byte-order mark; Set-Content -Encoding utf8
@@ -55,10 +61,11 @@ $ExitCodes = [ordered]@{}
 
 foreach ($Capture in $Captures) {
     $Name = $Capture.Name
-    $Args = $Capture.Args
+    $WingetArgs = $Capture.Args
 
-    # --version does not accept the common flags.
-    $FullArgs = if ($Name -eq "version") { $Args } else { $Args + $CommonArgs }
+    # --version does not accept the common flags. The @() wrapper matters: a one-element
+    # result unrolls to a plain string, and splatting a string does not pass it as one argument.
+    $FullArgs = @(if ($Name -eq "version") { $WingetArgs } else { $WingetArgs + $CommonArgs })
 
     Write-Host "Capturing '$Name': winget $($FullArgs -join ' ')"
 
