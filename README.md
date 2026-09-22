@@ -19,3 +19,9 @@ dotnet test Wingman.sln
 Wingman is developed on macOS; `winget` itself only exists on Windows, so all
 `winget` interaction sits behind `IWingetClient`, tested against fixtures
 captured on a real Windows machine (`tools/Capture-WingetFixtures.ps1`).
+
+## Design
+
+- `docs/DESIGN.md`: decisions, architecture, phases.
+- `docs/mockups/wingman-screens.html`: every screen, the toasts, the tray icon, and the themes. Open it in a browser.
+- Work is tracked in GitHub Issues, one issue per reviewable change, grouped by phase milestones.
