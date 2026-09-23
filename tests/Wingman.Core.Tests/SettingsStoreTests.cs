@@ -27,7 +27,7 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal("winget", settings.DefaultSource);
         Assert.True(settings.AcceptAgreements);
         Assert.True(settings.IncludeUnknown);
-        Assert.True(settings.AutoElevate);
+        Assert.Equal(ElevationMode.Auto, settings.ElevationMode);
         Assert.True(settings.ContinueOnFailure);
         Assert.Equal("Midnight", settings.Theme);
         Assert.False(File.Exists(store.FilePath));
@@ -43,7 +43,7 @@ public class SettingsStoreTests : IDisposable
             DefaultSource = "msstore",
             AcceptAgreements = false,
             IncludeUnknown = false,
-            AutoElevate = false,
+            ElevationMode = ElevationMode.Always,
             ContinueOnFailure = false,
             Theme = "Auto",
         };
@@ -55,7 +55,7 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal("msstore", loaded.DefaultSource);
         Assert.False(loaded.AcceptAgreements);
         Assert.False(loaded.IncludeUnknown);
-        Assert.False(loaded.AutoElevate);
+        Assert.Equal(ElevationMode.Always, loaded.ElevationMode);
         Assert.False(loaded.ContinueOnFailure);
         Assert.Equal("Auto", loaded.Theme);
     }
@@ -80,6 +80,40 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal("winget", settings.DefaultSource);
         Assert.True(settings.AcceptAgreements);
         Assert.True(settings.IncludeUnknown);
+    }
+
+    [Theory]
+    [InlineData(ElevationMode.Auto, "auto")]
+    [InlineData(ElevationMode.Always, "always")]
+    [InlineData(ElevationMode.Never, "never")]
+    public void SaveThenLoad_RoundTripsElevationModeAsCamelCaseString(ElevationMode mode, string expectedJson)
+    {
+        var store = new SettingsStore(_directoryPath);
+
+        store.Save(new WingmanSettings { ElevationMode = mode });
+        var text = File.ReadAllText(store.FilePath);
+        var loaded = store.Load();
+
+        Assert.Contains($"\"elevationMode\": \"{expectedJson}\"", text);
+        Assert.Equal(mode, loaded.ElevationMode);
+    }
+
+    [Fact]
+    public void Load_WithUnknownElevationMode_ReturnsDefaults()
+    {
+        var store = new SettingsStore(_directoryPath);
+        Directory.CreateDirectory(_directoryPath);
+        File.WriteAllText(store.FilePath, """
+            {
+              "theme": "Daylight",
+              "elevationMode": "sometimes"
+            }
+            """);
+
+        var settings = store.Load();
+
+        Assert.Equal(ElevationMode.Auto, settings.ElevationMode);
+        Assert.Equal("Midnight", settings.Theme);
     }
 
     [Fact]
@@ -113,7 +147,7 @@ public class SettingsStoreTests : IDisposable
         Assert.Contains("\"defaultSource\"", text);
         Assert.Contains("\"acceptAgreements\"", text);
         Assert.Contains("\"includeUnknown\"", text);
-        Assert.Contains("\"autoElevate\"", text);
+        Assert.Contains("\"elevationMode\": \"auto\"", text);
         Assert.Contains("\"continueOnFailure\"", text);
         Assert.Contains("\"theme\"", text);
     }

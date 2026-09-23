@@ -70,12 +70,14 @@ public class BatchRunnerTests : IDisposable
         Assert.Equal(
             [
                 typeof(BatchStarted),
+                typeof(ElevationState),
                 typeof(OperationStarted), typeof(OperationFinished),
                 typeof(OperationStarted), typeof(OperationFinished),
                 typeof(OperationStarted), typeof(OperationFinished),
                 typeof(BatchFinished),
             ],
             EventTypesWithoutLines(progress));
+        Assert.Equal(new ElevationState("not needed"), progress.Events.OfType<ElevationState>().Single());
         var finished = Assert.IsType<BatchFinished>(progress.Events[^1]);
         Assert.Equal(summary, finished.Summary);
 

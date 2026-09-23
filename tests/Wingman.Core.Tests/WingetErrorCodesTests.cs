@@ -42,6 +42,8 @@ public class WingetErrorCodesTests
         new object[] { -1978334957, "INSTALL_SYSTEM_NOT_SUPPORTED" },
         new object[] { -1978334956, "INSTALL_UPGRADE_NOT_SUPPORTED" },
         new object[] { -1978334955, "INSTALL_CUSTOM_ERROR" },
+        new object[] { -2147024228, "ERROR_ASSERTION_FAILURE" },
+        new object[] { -2147024891, "E_ACCESSDENIED" },
         new object[] { 1602, "ERROR_INSTALL_USEREXIT" },
         new object[] { 1603, "ERROR_INSTALL_FAILURE" },
         new object[] { 1618, "ERROR_INSTALL_ALREADY_RUNNING" },
@@ -130,6 +132,38 @@ public class WingetErrorCodesTests
         var explanation = WingetErrorCodes.Explain(-1978335128);
 
         Assert.Contains("Release the hold", explanation.Suggestion);
+    }
+
+    [Theory]
+    [InlineData(-2147024228, "0x8007029C")]
+    [InlineData(-2147024891, "0x80070005")]
+    public void Explain_ElevationFailure_SuggestsRetryingElevatedWithNoPolicy(int exitCode, string expectedHex)
+    {
+        var explanation = WingetErrorCodes.Explain(exitCode);
+
+        Assert.Equal(expectedHex, explanation.Code);
+        Assert.StartsWith("Retry elevated", explanation.Suggestion);
+        Assert.Null(explanation.SuggestedPolicy);
+        Assert.True(WingetErrorCodes.SuggestsElevation(exitCode));
+    }
+
+    [Fact]
+    public void Explain_AssertionFailure_NamesTheInterceptedPrompt()
+    {
+        var explanation = WingetErrorCodes.Explain(-2147024228);
+
+        Assert.Equal("An assertion failure has occurred.", explanation.WingetSaid);
+        Assert.Contains("Admin By Request", explanation.UsuallyMeans);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1603)]
+    [InlineData(-1978334964)]
+    [InlineData(424242)]
+    public void SuggestsElevation_OtherCodes_ReturnsFalse(int exitCode)
+    {
+        Assert.False(WingetErrorCodes.SuggestsElevation(exitCode));
     }
 
     [Fact]

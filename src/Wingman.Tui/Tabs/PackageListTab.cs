@@ -75,7 +75,7 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
             HasCustomOptions = shell.Options.HasCustomInstallOptions,
         };
 
-        _queuePane = new QueuePane(shell.Theme, shell.Queue)
+        _queuePane = new QueuePane(shell.Theme, shell.Queue, shell.Settings, shell.ProcessIsElevated)
         {
             X = WideLeftPaneWidth + 1,
             Y = 0,

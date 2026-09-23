@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Terminal.Gui.App;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
@@ -11,12 +12,18 @@ using Wingman.Tui;
 
 if (args.Length < 2 || !int.TryParse(args[0], out var width) || !int.TryParse(args[1], out var height))
 {
-    Console.Error.WriteLine("usage: TuiHarness <width> <height> [Midnight|Daylight|Nord|Dracula]");
+    Console.Error.WriteLine("usage: TuiHarness <width> <height> [Midnight|Daylight|Nord|Dracula] [--elevated]");
     return 2;
 }
 
+// The normal run ends by launching the harness again with --elevated, which plays a short scenario
+// with the shell told it already runs as administrator and appends its frames to the same out.txt.
+const string ElevatedFlag = "--elevated";
+var isElevatedRun = args.Contains(ElevatedFlag);
+var themeName = args.Length > 2 && args[2] != ElevatedFlag ? args[2] : null;
+
 var themeDetector = new DefaultThemeDetector();
-var theme = Theme.ByName(args.Length > 2 ? args[2] : null, themeDetector);
+var theme = Theme.ByName(themeName, themeDetector);
 
 // A throwaway data directory, so the run never reads or writes the real settings and package
 // options. Azd gets machine scope, which needs elevation, and a post-update command.
@@ -35,16 +42,31 @@ new PackageOptionsStore(dataDirectory).SetInstallOptions(ElevatedId, new Install
 var settingsStore = WingmanApp.CreateSettingsStore();
 var settings = settingsStore.Load();
 
-using var app = Application.Create();
+// Disposed before the elevated run starts, so the two never share the console.
+var app = Application.Create();
 app.Init(DriverRegistry.Names.ANSI);
 
 var screen = new Screen(app, width, height);
-screen.Reset();
+if (!isElevatedRun)
+{
+    screen.Reset();
+}
+
 screen.HoldSize();
+
+// Stands in for restarting as administrator: records the arguments and reports the prompt declined.
+var restartRequests = new List<IReadOnlyList<string>>();
+bool RecordRestart(IReadOnlyList<string> restartArgs)
+{
+    restartRequests.Add(restartArgs);
+    return false;
+}
 
 // A short step delay so an operation streams its nine lines in under half a second.
 var client = new SlowClient(new FakeWingetClient(TimeSpan.FromMilliseconds(40)));
-var shell = WingmanApp.CreateShell(app, theme, client, settingsStore, settings, themeDetector, elevation: null, new FakeCommandRunner());
+var shell = WingmanApp.CreateShell(
+    app, theme, client, settingsStore, settings, themeDetector, elevation: null, new FakeCommandRunner(),
+    processIsElevated: isElevatedRun, restartAsAdministrator: RecordRestart);
 var historyDirectory = Path.Combine(dataDirectory, "history");
 string Focused() => shell.Window.MostFocused?.GetType().Name ?? "none";
 
@@ -108,6 +130,9 @@ bool LeftPaneHas(string text)
 int Divider() => screen.Rows()[2].IndexOf('┬');
 string LeftOf(string row) => row[..Divider()];
 string RightPaneText(IReadOnlyList<string> rows) => string.Join("\n", rows.Skip(3).Take(rows.Count - 6).Select(row => row[(Divider() + 1)..]));
+
+// The right pane's text as one line, so a check can find a sentence the pane wraps at 96 columns.
+string RightPaneFlowed() => string.Join(" ", screen.Rows().Skip(3).Take(height - 6).Select(row => row[(Divider() + 1)..].Trim(' ', '│')).Where(text => text.Length > 0));
 int KeyBarX(string item) => screen.Rows()[height - 2].IndexOf(item, StringComparison.Ordinal);
 int TabStripX(string title) => screen.Rows()[1].IndexOf(" " + title + " ", StringComparison.Ordinal) + 1;
 bool IsCursorRow(int y) => y >= 0 && screen.AttributeAt(10, y) == theme.Selected.ToString();
@@ -164,9 +189,55 @@ string HelpBoxArea(IReadOnlyList<string> rows)
     return string.Join("\n", rows.Skip(top).Take(boxRows).Select(row => row[left..(right + 1)]));
 }
 
+// The shell told it already runs as administrator: the title bar badge, the queue pane and batch
+// screen naming it, Retry elevated refused, and the restart action dim.
+Step[] elevatedSteps =
+[
+    new(1500, "elevated: Installed loaded", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("admin badge left of the winget version", screen.Rows()[0].Contains("─ admin ─ winget ", StringComparison.Ordinal));
+        var badgeX = screen.Rows()[0].IndexOf(" admin ", StringComparison.Ordinal) + 1;
+        Check("badge in the success color", screen.AttributeAt(badgeX, 0) == theme.On(theme.Ok, Terminal.Gui.Drawing.TextStyle.Bold).ToString());
+    }),
+    new(50, "elevated: 3", () => screen.Press(new Key('3'))),
+    new(1000, "elevated: filter Microsoft.Azd, Space", () => { screen.Press(new Key('/')); screen.Type(ElevatedId); screen.Press(Key.Enter); screen.Press(Key.Space); }, Verify: () =>
+    {
+        Check("queued", shell.Queue.Count == 1 && shell.Queue.Contains(ElevatedId));
+        Check("still marked as needing admin", ScreenHas("⚡") && ScreenHas(" 1 of 1 need elevation."));
+        Check("the helper line names the elevated process", RightPaneFlowed().Contains("elevated helper: running as administrator", StringComparison.Ordinal));
+        Check("no UAC sentence", !ScreenHas("One UAC prompt"));
+    }),
+    new(50, "elevated: g", () => screen.Press(Key.G), Verify: () =>
+        Check("batch title says so", ScreenHas("elevated helper: running as administrator "))),
+    new(1000, "elevated: the batch finished in-process", () => { }, Verify: () =>
+    {
+        Check("finished", ScreenHas(" Batch finished  1 of 1") && !ScreenHas("failed"));
+        Check("still running as administrator", ScreenHas("elevated helper: running as administrator "));
+    }),
+    new(50, "elevated: Enter, 2, search vendor", () => { screen.Press(Key.Enter); screen.Press(new Key('2')); screen.Type("vendor"); screen.Press(Key.Enter); }),
+    new(600, "elevated: i, y on Vendor.WillFail", () => { screen.Press(Key.I); screen.Press(Key.Y); }),
+    new(1500, "elevated: the install failed", () => { }, Verify: () =>
+    {
+        Check("finished title", ScreenHas(" Batch finished  1 of 1 · 1 failed"));
+        Check("failure key bar", ScreenHas(" R Retry   I Interactive   S Skip hash check   A Retry elevated   l Log   ⏎ Back   q Quit "));
+    }),
+    new(50, "elevated: A is refused", () => screen.Press(Key.A), Verify: () =>
+    {
+        Check("status", ScreenHas(Shell.AlreadyElevatedText));
+        Check("no new batch", ScreenHas(" Batch finished  1 of 1 · 1 failed"));
+    }),
+    new(50, "elevated: Enter, 5: Settings", () => { screen.Press(Key.Enter); screen.Press(new Key('5')); }, WithColors: true, Verify: () =>
+    {
+        Check("restart dim with the reason", ScreenHas("   ⏎ Restart as administrator   already administrator"));
+        var restartY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Restart as administrator", StringComparison.Ordinal));
+        Check("drawn dim", restartY >= 0 && screen.AttributeAt(4, restartY) == theme.On(theme.Dim).ToString());
+    }),
+    new(50, "elevated: q quits", () => screen.Press(Key.Q)),
+];
+
 // Each step waits DelayMs after the previous one, acts, dumps the screen, then runs its checks.
 // The waits cover SlowClient's delays, the fake's operation steps, and the details pane's 150 ms debounce.
-Step[] steps =
+Step[] mainSteps =
 [
     new(100, "Installed loading", () => { }),
     new(1500, "Installed loaded, details for the first row", () => { }, WithColors: true),
@@ -318,7 +389,7 @@ Step[] steps =
         Check("failed row", BatchGlyph(SlowClient.FailingId) == '✗' && BatchRow(SlowClient.FailingId).Contains("failed  exit 1603"));
         Check("failed row selected", IsCursorRow(BatchRowY(SlowClient.FailingId)));
         Check("failure rule", ScreenHas(" ─ " + SlowClient.FailingId + " failed ─"));
-        Check("failure key bar", ScreenHas(" R Retry   I Interactive   S Skip hash check   H Hold   E Exclude   l Log   ⏎ Back   q Quit "));
+        Check("failure key bar", ScreenHas(" R Retry   I Interactive   S Skip hash check   A Retry elevated   l Log   ⏎ Back   q Quit "));
     }),
     new(50, "Up: the done row and its log", () => screen.Press(Key.CursorUp), Verify: () =>
     {
@@ -366,6 +437,16 @@ Step[] steps =
         var retry = new HistoryStore(historyDirectory).List().First(entry => entry.PackageId == SlowClient.FailingId);
         Check("the retry passed --ignore-security-hash", retry.Arguments.Contains("--ignore-security-hash"));
     }),
+    new(50, "A: retry elevated, with no helper to start", () => screen.Press(Key.A), Verify: () =>
+    {
+        Check("a new batch of one", ScreenHas(" Running batch  1 of 1") && BatchRow(SlowClient.FailingId).Contains("install  → latest"));
+        Check("the helper is needed but not available", ScreenHas("elevated helper: not available "));
+    }),
+    new(1200, "the elevated retry ran in-process and failed", () => { }, Verify: () =>
+    {
+        Check("finished title", ScreenHas(" Batch finished  1 of 1 · 1 failed"));
+        Check("failure panel", ScreenHas(" Code            1603  ERROR_INSTALL_FAILURE"));
+    }),
     new(50, "Shift+E: exclude the failed package", () => screen.Press(new Key('E')), Verify: () =>
     {
         Check("excluded status", ScreenHas("Excluded " + SlowClient.FailingId + " from Wingman updates"));
@@ -383,9 +464,9 @@ Step[] steps =
         Check("details pane back", ScreenHas(" Policy     update"));
         Check("seeded options for Azd", ScreenHas(" Options    custom (o to edit)"));
         var entries = new HistoryStore(historyDirectory).List();
-        Check("four operation entries and three batch entries, the import's included", Directory.GetFiles(historyDirectory, "*.json").Length == 7
-            && entries.Count(entry => entry.Operation == "batch") == 3
-            && entries.Count(entry => entry.Operation != "batch") == 4);
+        Check("five operation entries and four batch entries, the import's included", Directory.GetFiles(historyDirectory, "*.json").Length == 9
+            && entries.Count(entry => entry.Operation == "batch") == 4
+            && entries.Count(entry => entry.Operation != "batch") == 5);
     }),
 
     new(50, "Space on Microsoft.Azd, Down, Space, g", () => { screen.Press(Key.Space); screen.Press(Key.CursorDown); screen.Press(Key.Space); screen.Press(Key.G); }, Verify: () =>
@@ -719,6 +800,18 @@ Step[] steps =
         Check("no marked rows", MarkedRowCount() == 0);
         Check("queue pane title", ScreenHas(" Queue  1 operation"));
     }),
+    new(50, "search VisualStudioCode", () => { screen.Press(new Key('/')); screen.Press(Key.Backspace, 3); screen.Type("VisualStudioCode"); screen.Press(Key.Enter); }),
+    new(600, "Ctrl+Home, Space: VS Code, whose show says inno, marked for install", () => { screen.Press(Key.Home.WithCtrl); screen.Press(Key.Space); }),
+    new(400, "after the details load: VS Code needs admin", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("VS Code queued second", ScreenHas(" 2  Microsoft.VisualStudioCode"));
+        Check("its plan needs elevation", shell.Queue.Items.Any(item => item.Row.Id == "Microsoft.VisualStudioCode" && item.Plan.RequiresElevation));
+        Check("⚡ admin on its entry", RowWith("install → latest").Contains('⚡') && RowWith("install → latest").Contains(" admin"));
+        Check("one of two", ScreenHas(" 1 of 2 need elevation.") && ScreenHas(" One UAC prompt will be shown."));
+    }),
+    new(50, "search git again", () => { screen.Press(new Key('/')); screen.Press(Key.Backspace, "VisualStudioCode".Length); screen.Type("git"); screen.Press(Key.Enter); }),
+    new(600, "the git results are back", () => { }, Verify: () =>
+        Check("Git.Git listed", LeftPaneHas("Git.Git"))),
 
     new(50, "c, 1, filter AutoHotkey, o: the install options editor", () =>
     {
@@ -933,7 +1026,8 @@ Step[] steps =
         Check("defaults", ScreenHas(" Defaults") && ScreenHas("   Install scope             (•) default  ( ) user  ( ) machine"));
         Check("source", ScreenHas("   Source                    (•) winget  ( ) msstore  ( ) all"));
         Check("default flags", ScreenHas("[x] Accept package agreements   [x] Include unknown versions"));
-        Check("batch flags", ScreenHas("[x] Auto-elevate when needed   [x] Continue on failure"));
+        Check("elevation radio and continue on failure", ScreenHas("   " + "Elevation".PadRight(26) + "(•) Auto  ( ) Always  ( ) Never   [x] Continue on failure"));
+        Check("restart action", ScreenHas("   ⏎ Restart as administrator") && !ScreenHas("Windows only") && !ScreenHas("already administrator"));
         Check("theme row", ScreenHas("   Theme                     (•) Midnight  ( ) Daylight  ( ) Nord  ( ) Dracula  ( ) Auto"));
         Check("phase 3 groups", ScreenHas(" Updates") && ScreenHas(" Tray") && ScreenHas("phase 3"));
         Check("tools", ScreenHas("   ⏎ Import bundle…   ⏎ Export bundle…   ⏎ Register scheduled tasks"));
@@ -947,6 +1041,43 @@ Step[] steps =
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"continueOnFailure\": false", StringComparison.Ordinal));
         Check("in effect", !shell.Settings.ContinueOnFailure);
     }),
+    new(50, "Shift+Tab, Right x2, Space: elevation Never", () => { screen.Press(Key.Tab.WithShift); screen.Press(Key.CursorRight, 2); screen.Press(Key.Space); }, Verify: () =>
+    {
+        Check("Never picked", ScreenHas("( ) Auto  ( ) Always  (•) Never"));
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationMode\": \"never\"", StringComparison.Ordinal));
+        Check("in effect", shell.Settings.ElevationMode == ElevationMode.Never);
+    }),
+    new(50, "3, filter Azure, Space on Azd: the queue pane says elevation is off", () =>
+    {
+        screen.Press(new Key('3'));
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(new Key('/'));
+        screen.Type("Azure");
+        screen.Press(Key.Enter);
+        screen.Press(Key.Home.WithCtrl);
+        screen.Press(Key.Space);
+    }, Verify: () =>
+    {
+        Check("Azd, which needs admin, has no ⚡ under Never", shell.Queue.Contains(ElevatedId) && !ScreenHas("⚡"));
+        Check("queued", shell.Queue.Count == 1);
+        Check("elevation off line", RightPaneFlowed().Contains("elevation off (winget will prompt per installer)", StringComparison.Ordinal));
+        Check("no UAC sentence", !ScreenHas("One UAC prompt"));
+    }),
+    new(50, "c, 5, Left x2, Space, Tab: Auto again, focus back on Continue on failure", () =>
+    {
+        screen.Press(Key.C);
+        screen.Press(new Key('5'));
+        screen.Press(Key.CursorLeft, 2);
+        screen.Press(Key.Space);
+        screen.Press(Key.Tab);
+    }, Verify: () =>
+    {
+        Check("queue empty", shell.Queue.Count == 0);
+        Check("Auto picked", ScreenHas("(•) Auto  ( ) Always  ( ) Never"));
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationMode\": \"auto\"", StringComparison.Ordinal));
+        Check("continue on failure has focus", Focused() == nameof(CheckField));
+    }),
     new(50, "Tab x2, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Tab, 2); screen.Press(Key.Enter); }, Verify: () =>
     {
         Check("import title", ScreenHas(" Import bundle  choose a .ubundle file"));
@@ -955,6 +1086,15 @@ Step[] steps =
     }),
     new(50, "Esc: the settings are back", () => screen.Press(Key.Esc), Verify: () =>
         Check("settings back", ScreenHas(" Defaults") && ScreenHas(" Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "))),
+    new(50, "click Restart as administrator: the question", () => ClickText("⏎ Restart as administrator"), Verify: () =>
+        Check("question", ScreenHas(Shell.RestartQuestionText))),
+    new(50, "y: the restart is declined and Wingman keeps running", () => screen.Press(Key.Y), Verify: () =>
+    {
+        Check("restart asked once with this run's arguments", restartRequests.Count == 1
+            && restartRequests[0].SequenceEqual(Environment.GetCommandLineArgs().Skip(1)));
+        Check("declined status", ScreenHas(Shell.RestartDeclinedText));
+        Check("still running", shell.Window.IsRunning);
+    }),
     new(50, "click Daylight: the theme switches live", () => ClickText("( ) Daylight"), WithColors: true, Verify: () =>
     {
         Check("Daylight picked", ScreenHas("(•) Daylight"));
@@ -1066,6 +1206,7 @@ Step[] steps =
     new(50, "q quits", () => screen.Press(Key.Q)),
 ];
 
+var steps = isElevatedRun ? elevatedSteps : mainSteps;
 var next = 0;
 void RunStep()
 {
@@ -1083,6 +1224,7 @@ void RunStep()
 app.AddTimeout(TimeSpan.FromMilliseconds(steps[0].DelayMs), () => { RunStep(); return false; });
 app.Run(shell.Window);
 shell.Window.Dispose();
+app.Dispose();
 
 try
 {
@@ -1092,8 +1234,32 @@ catch (IOException)
 {
 }
 
-screen.Log($"exited normally, {failedChecks} failed checks");
-Console.WriteLine($"wrote {screen.OutputPath}, {failedChecks} failed checks");
-return failedChecks == 0 ? 0 : 1;
+var runName = isElevatedRun ? "elevated run" : "main run";
+screen.Log($"{runName} exited normally, {failedChecks} failed checks");
+Console.WriteLine($"{runName}: wrote {screen.OutputPath}, {failedChecks} failed checks");
+
+if (isElevatedRun)
+{
+    return failedChecks == 0 ? 0 : 1;
+}
+
+var elevatedRun = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+
+// Under `dotnet TuiHarness.dll` the process is dotnet itself, which needs the assembly first.
+if (Path.GetFileNameWithoutExtension(Environment.ProcessPath) == "dotnet")
+{
+    elevatedRun.ArgumentList.Add(typeof(Screen).Assembly.Location);
+}
+
+foreach (var arg in args.Append(ElevatedFlag))
+{
+    elevatedRun.ArgumentList.Add(arg);
+}
+
+using var elevatedProcess = Process.Start(elevatedRun)!;
+elevatedProcess.WaitForExit();
+var elevatedPassed = elevatedProcess.ExitCode == 0;
+screen.Log($"check {(elevatedPassed ? "ok" : "FAILED")}: the elevated run exited with {elevatedProcess.ExitCode}");
+return failedChecks == 0 && elevatedPassed ? 0 : 1;
 
 internal sealed record Step(int DelayMs, string Label, Action Act, bool WithColors = false, Action? Verify = null);

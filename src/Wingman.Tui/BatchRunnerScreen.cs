@@ -18,7 +18,7 @@ namespace Wingman.Tui;
 /// the arrows scroll the log and Esc asks to cancel; afterwards the arrows select an operation,
 /// <c>l</c> gives the log the whole screen, and Enter or Esc go back. A selected operation that
 /// failed shows its decoded exit code in place of the log, with keys to retry it as it was,
-/// interactive, or skipping the hash check, and to hold or exclude the package. The mouse wheel
+/// interactive, skipping the hash check, or elevated, and to hold or exclude the package. The mouse wheel
 /// scrolls the log and a click selects a finished batch's operation.
 /// </summary>
 /// <remarks>
@@ -51,6 +51,9 @@ internal sealed class BatchRunnerScreen : View, IThemedView
     private readonly KeyHint[] _runningHints;
     private readonly KeyHint[] _finishedHints;
     private readonly KeyHint[] _failureHints;
+
+    // The same keys with Retry elevated first, for an exit code that elevation usually fixes.
+    private readonly KeyHint[] _elevationFailureHints;
 
     private string _elevation;
     private bool _isFinished;
@@ -98,16 +101,24 @@ internal sealed class BatchRunnerScreen : View, IThemedView
             new(Key.CursorUp, "Select", () => SetFocus(), "↑↓"),
             new(Key.L, "Full log", ToggleFullLog),
         ];
-        _failureHints =
+        KeyHint[] retryHints =
         [
             .. LetterHints('R', "Retry", () => Retry(request => request)),
             .. LetterHints('I', "Interactive", () => Retry(request => request with { Interactive = true })),
             .. LetterHints('S', "Skip hash check", () => Retry(request => request with { SkipHashCheck = true })),
-            .. LetterHints('H', "Hold", () => RequestPolicy(UpdatePolicyKind.Hold)),
-            .. LetterHints('E', "Exclude", () => RequestPolicy(UpdatePolicyKind.Exclude)),
+        ];
+        var retryElevatedHints = LetterHints('A', "Retry elevated", RetryElevated);
+
+        // Hold and Exclude stay off the bar so Retry elevated fits in 96 columns; the help lists them.
+        KeyHint[] otherHints =
+        [
+            .. LetterHints('H', "Hold", () => RequestPolicy(UpdatePolicyKind.Hold), isOnBar: false),
+            .. LetterHints('E', "Exclude", () => RequestPolicy(UpdatePolicyKind.Exclude), isOnBar: false),
             new(Key.L, "Log", ToggleFullLog),
             new(Key.Enter, "Back", () => BackRequested?.Invoke(), "⏎"),
         ];
+        _failureHints = [.. retryHints, .. retryElevatedHints, .. otherHints];
+        _elevationFailureHints = [.. retryElevatedHints, .. retryHints, .. otherHints];
 
         _spinnerTimer = app.AddTimeout(TimeSpan.FromMilliseconds(100), AdvanceSpinner);
     }
@@ -123,6 +134,7 @@ internal sealed class BatchRunnerScreen : View, IThemedView
         new("R", "retry a failed one"),
         new("I", "retry interactive"),
         new("S", "retry skip hash check"),
+        new("A", "retry elevated"),
         new("H", "hold at installed"),
         new("E", "exclude from updates"),
     ]);
@@ -135,6 +147,9 @@ internal sealed class BatchRunnerScreen : View, IThemedView
 
     /// <summary>Raised on <c>R</c>, <c>I</c>, or <c>S</c> with a failed operation selected, with that operation changed as the key asks.</summary>
     public event Action<QueuedOperation>? RetryRequested;
+
+    /// <summary>Raised on <c>A</c> with a failed operation selected, with that operation as it ran; the shell forces it through the elevated helper.</summary>
+    public event Action<QueuedOperation>? RetryElevatedRequested;
 
     /// <summary>Raised on <c>H</c> or <c>E</c> with a failed operation selected, with its package and the policy to give it.</summary>
     public event Action<PackageRow, UpdatePolicyKind>? PolicyRequested;
@@ -154,7 +169,13 @@ internal sealed class BatchRunnerScreen : View, IThemedView
                 return _runningHints;
             }
 
-            return SelectedFailure is null ? _finishedHints : _failureHints;
+            if (SelectedFailure is not { } failure)
+            {
+                return _finishedHints;
+            }
+
+            var exitCode = failure.Result?.ExitCode ?? 0;
+            return WingetErrorCodes.SuggestsElevation(exitCode) ? _elevationFailureHints : _failureHints;
         }
     }
 
@@ -443,11 +464,19 @@ internal sealed class BatchRunnerScreen : View, IThemedView
     /// A hint for the lowercase letter, shown with <paramref name="letter"/> in uppercase as the
     /// mockup draws it, and another off the bar so the letter works with Shift too.
     /// </summary>
-    private static KeyHint[] LetterHints(char letter, string label, Action action) =>
+    private static KeyHint[] LetterHints(char letter, string label, Action action, bool isOnBar = true) =>
     [
-        new(new Key(char.ToLowerInvariant(letter)), label, action, letter.ToString()),
+        new(new Key(char.ToLowerInvariant(letter)), label, action, letter.ToString(), isOnBar),
         new(new Key(letter), label, action, IsOnBar: false),
     ];
+
+    private void RetryElevated()
+    {
+        if (SelectedFailure is { } failure)
+        {
+            RetryElevatedRequested?.Invoke(failure.Operation);
+        }
+    }
 
     private void Retry(Func<OperationRequest, OperationRequest> change)
     {
@@ -850,11 +879,11 @@ internal sealed class BatchRunnerScreen : View, IThemedView
             return;
         }
 
-        var wasFailure = SelectedFailure is not null;
+        var previousHints = Hints;
         _selected = clamped;
         ResetLogScroll();
         SetNeedsDraw();
-        if (wasFailure != SelectedFailure is not null)
+        if (Hints != previousHints)
         {
             HintsChanged?.Invoke();
         }

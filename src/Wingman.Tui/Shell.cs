@@ -3,10 +3,12 @@ using System.Drawing;
 using System.Text;
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Wingman.Core.Bundles;
+using Wingman.Core.Elevation;
 using Wingman.Core.History;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
@@ -35,6 +37,9 @@ internal sealed class Shell
     public const string QueueEmptyText = "The queue is empty; press Space to mark rows";
     public const string NothingToRunText = "Nothing to run";
     public const string DiscardAndQuitText = "Discard changes and quit? (y/n)";
+    public const string RestartQuestionText = "Restart Wingman as administrator? (y/n)";
+    public const string RestartDeclinedText = "Restart declined";
+    public const string AlreadyElevatedText = "Already running as administrator";
 
     private const string AppTitle = "Wingman";
     private static readonly TimeSpan StatusLifetime = TimeSpan.FromSeconds(5);
@@ -55,6 +60,7 @@ internal sealed class Shell
     private readonly BatchRunner _batchRunner;
     private readonly HistoryStore _history;
     private readonly bool _canElevate;
+    private readonly Func<IReadOnlyList<string>, bool>? _restartAsAdministrator;
     private readonly Line _tabSeparator;
     private readonly Line _footerSeparator;
     private readonly View _content;
@@ -88,6 +94,12 @@ internal sealed class Shell
     // Only the version list this numbers may fill the picker; an older one arriving late is ignored.
     private int _versionRequest;
 
+    // Ids whose winget show the queue is waiting on for the installer heuristic, and a gate that
+    // runs those one at a time, since marking every row of Updates would otherwise start a winget
+    // process per row at once.
+    private readonly HashSet<string> _elevationDetailsRequests = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _elevationDetailsGate = new(1, 1);
+
     // A message posted while a prompt is up, shown once it is answered.
     private (string Text, MessageTone Tone, bool IsTransient)? _heldMessage;
 
@@ -96,6 +108,9 @@ internal sealed class Shell
 
     /// <param name="settingsStore">Where <paramref name="settings"/> came from and where changes to them are saved.</param>
     /// <param name="canElevate">Whether <paramref name="batchRunner"/> has an elevated helper to start.</param>
+    /// <param name="processIsElevated">Whether this process already runs as administrator.</param>
+    /// <param name="restartAsAdministrator">Starts Wingman again elevated with the given arguments,
+    /// false when the prompt was declined; null where that is not possible.</param>
     public Shell(
         IApplication app,
         Theme theme,
@@ -105,7 +120,9 @@ internal sealed class Shell
         IThemeDetector themeDetector,
         BatchRunner batchRunner,
         HistoryStore history,
-        bool canElevate)
+        bool canElevate,
+        bool processIsElevated = false,
+        Func<IReadOnlyList<string>, bool>? restartAsAdministrator = null)
     {
         App = app;
         Theme = theme;
@@ -116,6 +133,8 @@ internal sealed class Shell
         _batchRunner = batchRunner;
         _history = history;
         _canElevate = canElevate;
+        ProcessIsElevated = processIsElevated;
+        _restartAsAdministrator = restartAsAdministrator;
         Options = WingmanApp.CreatePackageOptionsStore();
 
         Window = new Window { Title = AppTitle, BorderStyle = LineStyle.Single };
@@ -200,6 +219,12 @@ internal sealed class Shell
     public WingmanSettings Settings { get; }
 
     public SettingsStore SettingsStore { get; }
+
+    /// <summary>Whether this process already runs as administrator, so no batch starts the elevated helper.</summary>
+    public bool ProcessIsElevated { get; }
+
+    /// <summary>Whether <see cref="AskRestartAsAdministrator"/> can start Wingman again elevated; false off Windows.</summary>
+    public bool CanRestartAsAdministrator => _restartAsAdministrator is not null;
 
     /// <summary>What the <c>Auto</c> theme asks for the system's light or dark mode.</summary>
     public IThemeDetector ThemeDetector { get; }
@@ -326,12 +351,28 @@ internal sealed class Shell
 
     /// <summary>
     /// A queue entry for <paramref name="kind"/> on <paramref name="row"/>, shaped by the package's
-    /// saved install options and the settings, as the batch runner will run it.
+    /// saved install options and the settings, as the batch runner will run it. Its
+    /// <see cref="OperationPlan.RequiresElevation"/> also covers an installer type that usually
+    /// needs administrator rights, from <see cref="DetailsCache"/>; when the package's details are
+    /// not there yet, they are fetched on a background task and a queue entry for it is updated
+    /// in place when they arrive.
     /// </summary>
+    /// <remarks>
+    /// The heuristic is resolved as <see cref="ElevationMode.Auto"/> in an unelevated process, so
+    /// the flag says whether the operation needs administrator rights at all; the mode and this
+    /// process's elevation are applied where the flag is read, by <see cref="ElevationPolicy"/>.
+    /// </remarks>
     public QueuedOperation BuildOperation(OperationKind kind, PackageRow row)
     {
         var plan = OperationRequestFactory.Create(kind, row, Settings, Options.GetInstallOptions(row.Id));
-        return new QueuedOperation(kind, row, plan);
+        var hasDetails = DetailsCache.TryGetValue(row.Id, out var details);
+        if (!hasDetails && !plan.RequiresElevation)
+        {
+            FetchDetailsForElevation(row.Id);
+        }
+
+        var requiresElevation = ElevationHeuristic.Resolve(plan, details, ElevationMode.Auto, processIsElevated: false);
+        return new QueuedOperation(kind, row, plan with { RequiresElevation = requiresElevation });
     }
 
     /// <summary><see cref="BuildOperation(OperationKind, PackageRow)"/> pinned to <paramref name="version"/>, which winget gets as <c>--version</c>.</summary>
@@ -638,6 +679,49 @@ internal sealed class Shell
         OpenPrompt(question, choices, enterChoice: null, cancelHint);
     }
 
+    /// <summary>
+    /// Asks whether to restart Wingman as administrator, then starts it again elevated with this
+    /// run's arguments and quits once the new process has started; refused while a batch runs,
+    /// since quitting would cancel it.
+    /// </summary>
+    public void AskRestartAsAdministrator()
+    {
+        if (_restartAsAdministrator is not { } restart)
+        {
+            return;
+        }
+
+        if (IsBatchRunning)
+        {
+            SetStatus(BatchRunningText);
+            return;
+        }
+
+        AskConfirm(RestartQuestionText, () =>
+        {
+            string[] args = [.. Environment.GetCommandLineArgs().Skip(1)];
+            bool hasStarted;
+            try
+            {
+                hasStarted = restart(args);
+            }
+            catch (Exception ex)
+            {
+                SetError($"Could not restart as administrator: {ex.Message}");
+                return;
+            }
+
+            if (hasStarted)
+            {
+                App.RequestStop();
+            }
+            else
+            {
+                SetStatus(RestartDeclinedText);
+            }
+        });
+    }
+
     /// <summary>Opens the version picker for <paramref name="row"/> at <paramref name="screenPosition"/> and loads winget's versions for it on a background task.</summary>
     public void ShowVersionPicker(PackageRow row, Point screenPosition, Action<string> onPicked)
     {
@@ -884,6 +968,74 @@ internal sealed class Shell
     }
 
     /// <summary>
+    /// Reads <paramref name="id"/>'s <c>winget show</c> on a background task into
+    /// <see cref="DetailsCache"/>, then folds its installer type into the package's queue entry. A
+    /// failed show leaves the entry as its options made it; the details pane reports the error
+    /// when the row is shown.
+    /// </summary>
+    private void FetchDetailsForElevation(string id)
+    {
+        if (!_elevationDetailsRequests.Add(id))
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            PackageDetails? details = null;
+            var hasDetails = false;
+            await _elevationDetailsGate.WaitAsync();
+            try
+            {
+                details = await _client.ShowAsync(id, CancellationToken.None);
+                hasDetails = true;
+            }
+            catch (Exception)
+            {
+            }
+            finally
+            {
+                _elevationDetailsGate.Release();
+            }
+
+            App.Invoke(() =>
+            {
+                _elevationDetailsRequests.Remove(id);
+                if (hasDetails)
+                {
+                    DetailsCache[id] = details;
+                    RefreshQueuedElevation(id);
+                }
+            });
+        });
+    }
+
+    /// <summary>Recomputes the elevation of <paramref name="id"/>'s queue entry from the cached details, replacing it in place when that changes it.</summary>
+    private void RefreshQueuedElevation(string id)
+    {
+        QueuedOperation? queued = null;
+        foreach (var item in Queue.Items)
+        {
+            if (string.Equals(item.Row.Id, id, StringComparison.OrdinalIgnoreCase))
+            {
+                queued = item;
+                break;
+            }
+        }
+
+        if (queued is null || !DetailsCache.TryGetValue(id, out var details))
+        {
+            return;
+        }
+
+        var requiresElevation = ElevationHeuristic.Resolve(queued.Plan, details, ElevationMode.Auto, processIsElevated: false);
+        if (requiresElevation != queued.Plan.RequiresElevation)
+        {
+            Queue.Add(queued with { Plan = queued.Plan with { RequiresElevation = requiresElevation } });
+        }
+    }
+
+    /// <summary>
     /// Opens only http and https addresses, since a manifest's homepage is whatever its author typed
     /// and the shell would run a file path or another scheme's handler just as readily.
     /// </summary>
@@ -1052,13 +1204,14 @@ internal sealed class Shell
     {
         CloseBatch();
 
-        var options = new BatchOptions(Settings.ContinueOnFailure, Settings.AutoElevate);
-        var screen = new BatchRunnerScreen(App, Theme, operations, InitialElevationState(operations, options));
+        var options = new BatchOptions(Settings.ContinueOnFailure, Settings.ElevationMode, ProcessIsElevated);
+        var screen = new BatchRunnerScreen(App, Theme, operations, InitialElevationState(operations));
         var batch = new ActiveBatch(screen, origin, operations, isFromQueue);
         _batch = batch;
         screen.CancelRequested += () => AskCancelBatch(batch);
         screen.BackRequested += CloseBatch;
         screen.RetryRequested += operation => RunOperation(operation, origin);
+        screen.RetryElevatedRequested += operation => RetryElevated(operation, origin);
         screen.PolicyRequested += (row, kind) => _ = ApplyPolicyAsync(row, kind, note: null);
         screen.HintsChanged += () => RefreshHints(origin);
         origin.ShowBatchScreen(screen);
@@ -1084,23 +1237,38 @@ internal sealed class Shell
         });
     }
 
-    /// <summary>What the batch screen shows for the elevated helper before the runner reports on it.</summary>
-    private string InitialElevationState(IReadOnlyList<QueuedOperation> operations, BatchOptions options)
+    /// <summary>
+    /// What the batch screen shows for the elevated helper before the runner reports on it. A
+    /// retry elevated needs the helper even under <see cref="ElevationMode.Never"/>, so the need
+    /// is checked before the mode.
+    /// </summary>
+    private string InitialElevationState(IReadOnlyList<QueuedOperation> operations)
     {
-        var needsElevation = operations.Any(operation => operation.Plan.RequiresElevation);
-        if (!needsElevation)
+        if (ProcessIsElevated)
         {
-            return "not needed";
+            return "running as administrator";
         }
 
-        // Auto-elevate off runs elevated operations in-process too, each installer prompting for itself.
-        if (!options.AutoElevate)
+        var needsHelper = ElevationPolicy.NeedsHelper(operations, Settings.ElevationMode, processIsElevated: false);
+        if (needsHelper)
         {
-            return "off";
+            // Without a helper to start, the runner runs these operations in-process and says nothing.
+            return _canElevate ? "requesting" : "not available";
         }
 
-        // Without a helper to start, the runner runs elevated operations in-process and says nothing.
-        return _canElevate ? "requesting" : "not available";
+        return Settings.ElevationMode == ElevationMode.Never ? "off" : "not needed";
+    }
+
+    /// <summary>Runs <paramref name="operation"/> again through the elevated helper as a batch of one, unless this process is already elevated.</summary>
+    private void RetryElevated(QueuedOperation operation, ScreenHostTab origin)
+    {
+        if (ProcessIsElevated)
+        {
+            SetStatus(AlreadyElevatedText);
+            return;
+        }
+
+        RunOperation(operation with { Plan = operation.Plan with { ForceElevation = true } }, origin);
     }
 
     /// <summary>
@@ -1344,13 +1512,15 @@ internal sealed class Shell
         driver.AddStr(" ");
         var titleEnd = frame.X + 1 + DisplayWidth.Of($"─ {AppTitle} ");
 
+        // The corner, or the start of the version text once it is drawn; the badge goes left of it.
+        var rightEnd = frame.X + frame.Width - 1;
         if (_wingetVersion.Length > 0)
         {
             var versionText = $"winget {_wingetVersion.TrimStart('v')}";
             var versionWidth = DisplayWidth.Of(versionText);
 
             // Right-aligned as " winget 1.29.380 ─" just inside the ┐ corner.
-            var versionStart = frame.X + frame.Width - 1 - versionWidth - 3;
+            var versionStart = rightEnd - versionWidth - 3;
             if (versionStart > titleEnd)
             {
                 driver.Move(versionStart, frame.Y);
@@ -1360,10 +1530,36 @@ internal sealed class Shell
                 driver.AddStr(versionText);
                 driver.SetAttribute(borderAttribute);
                 driver.AddStr(" ─");
+                rightEnd = versionStart;
             }
         }
 
+        if (ProcessIsElevated)
+        {
+            DrawAdminBadge(driver, frame.Y, titleEnd, rightEnd);
+        }
+
         Window.SetClip(savedClip);
+    }
+
+    /// <summary>Draws <c> admin </c> in the success color on the top border, one <c>─</c> left of <paramref name="rightEnd"/>.</summary>
+    private void DrawAdminBadge(IDriver driver, int y, int titleEnd, int rightEnd)
+    {
+        const string BadgeText = "admin";
+        var badgeStart = rightEnd - 1 - DisplayWidth.Of($" {BadgeText} ");
+        if (badgeStart <= titleEnd)
+        {
+            return;
+        }
+
+        var borderAttribute = Theme.On(Theme.Border);
+        driver.Move(badgeStart, y);
+        driver.SetAttribute(borderAttribute);
+        driver.AddStr(" ");
+        driver.SetAttribute(Theme.On(Theme.Ok, TextStyle.Bold));
+        driver.AddStr(BadgeText);
+        driver.SetAttribute(borderAttribute);
+        driver.AddStr(" ");
     }
 
     /// <summary>One answer to a prompt on the message line: the letter that picks it, its key bar label, and what it runs; null runs nothing.</summary>
