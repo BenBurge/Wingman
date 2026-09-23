@@ -19,7 +19,11 @@ public static class WingetArguments
 
     public static string[] ListInstalled() => WithCommonFlags(["list"]);
 
-    public static string[] ListUpgrades() => WithCommonFlags(["upgrade", "--include-unknown"]);
+    /// <summary>
+    /// winget leaves pinned packages out of <c>upgrade</c> unless asked, and the Updates tab lists
+    /// them as held rows.
+    /// </summary>
+    public static string[] ListUpgrades() => WithCommonFlags(["upgrade", "--include-unknown", "--include-pinned"]);
 
     public static string[] Show(string id) => WithCommonFlags(["show", "--id", id, "--exact"]);
 

@@ -54,14 +54,14 @@ public class WingetCliClientReadTests
     }
 
     [Fact]
-    public async Task ListUpgradesAsync_RunsUpgradeIncludeUnknownAndParsesTable()
+    public async Task ListUpgradesAsync_RunsUpgradeIncludeUnknownAndPinnedAndParsesTable()
     {
         var (client, runner) = ClientReturning("upgrade-include-unknown.txt");
 
         var rows = await client.ListUpgradesAsync(CancellationToken.None);
 
         Assert.Equal(17, rows.Count);
-        AssertSingleCall(runner, ["upgrade", "--include-unknown", .. CommonFlags]);
+        AssertSingleCall(runner, ["upgrade", "--include-unknown", "--include-pinned", .. CommonFlags]);
     }
 
     [Fact]

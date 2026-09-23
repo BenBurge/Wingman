@@ -197,6 +197,18 @@ public class WingetArgumentsTests
     }
 
     [Fact]
+    public void ListUpgrades_IncludesUnknownAndPinnedPackages()
+    {
+        string[] expected =
+        [
+            "upgrade", "--include-unknown", "--include-pinned",
+            "--disable-interactivity", "--accept-source-agreements",
+        ];
+
+        Assert.Equal(expected, WingetArguments.ListUpgrades());
+    }
+
+    [Fact]
     public void PinAdd_IdOnly_EmitsRequiredFlags()
     {
         string[] expected =
