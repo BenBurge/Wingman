@@ -96,3 +96,7 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - `SetFocus()` on a container gives focus back to the subview that had it last; the Settings tab relies on this.
 - `HistoryEntry` has no canceled flag; `HistoryRow.FromEntries` infers it from the log (an operation whose log ends with `Canceled`, a batch that canceled something and failed nothing).
 - `ScreenHostTab` is the base for any tab that can show the batch screen or a form in its content area; `Shell.RunOperation` takes the host so History can retry from its own tab.
+- A `Label` word-wraps long text with no spaces onto rows you cannot see; fit paths yourself with `CellText.FitKeepingEnd` before putting them in the message line.
+- The install options editor fills all 23 content rows at 96x30 and its Updates row ends at the last column; a new row needs the form to scroll and the label column cannot grow.
+- The shell handles `m` (context menu) only after the key bar hints, so a screen can bind `m` to its own action.
+- To retype a prefilled `FormTextField` in the harness, press End, then Backspace once per character.
