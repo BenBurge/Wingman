@@ -1,5 +1,6 @@
 using Terminal.Gui.Input;
 using Wingman.Core.Models;
+using Wingman.Core.Operations;
 using Wingman.Core.Winget;
 
 namespace Wingman.Tui.Tabs;
@@ -7,11 +8,13 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// Searches winget with <see cref="IWingetClient.SearchAsync"/> when Enter is pressed in the
 /// search box, never per keystroke, since each search is a winget process. Installed packages
-/// are marked <c>✓</c>; <c>r</c> runs the last search again, and <c>i</c> installs the cursor row.
+/// are marked <c>✓</c>; <c>r</c> runs the last search again, <c>i</c> installs the cursor row, and
+/// Space marks it for the batch.
 /// </summary>
 internal sealed class DiscoverTab : PackageListTab
 {
     private const string InstalledMarker = "✓";
+    private const string Legend = "✓ installed   ● marked for batch";
 
     private static readonly PackageColumn[] Columns =
     [
@@ -24,6 +27,9 @@ internal sealed class DiscoverTab : PackageListTab
     [
         new("⏎", "search"),
         new("i", "install"),
+        new("␣", "mark for batch"),
+        new("c", "clear queue"),
+        new("g", "run queue"),
         new("⏎", "on a row: details"),
     ]);
 
@@ -37,18 +43,21 @@ internal sealed class DiscoverTab : PackageListTab
         Table.FiltersRows = false;
         Table.CountText = "";
         Table.EmptyText = "Type a query and press Enter";
-        Table.Footer = $"{InstalledMarker} installed";
-        Table.Marker = row => shell.InstalledIds.Contains(row.Id) ? InstalledMarker : "";
+        Table.Footer = Legend;
+        Table.Marker = row => shell.IsInstalled(row.Id) ? InstalledMarker : "";
         Table.MarkerScheme = shell.Theme.CellScheme(shell.Theme.Ok);
         Table.QuerySubmitted += Search;
         shell.InstalledChanged += Table.RefreshMarkers;
 
+        // Tab Pane is left off so the batch keys fit at 96 columns; Tab still switches panes.
         _hints =
         [
             new(Key.I, "Install", () => RunOperation(OperationKind.Install)),
+            MarkHint,
+            ClearHint,
+            RunHint,
             new(Key.Enter, "Search", () => Search(Table.Filter), "⏎"),
             new(new Key('/'), "Search box", Table.FocusFilter),
-            new(Key.Tab, "Pane", SwitchPane),
             new(Key.M, "Menu", ShowContextMenu),
         ];
     }
@@ -79,10 +88,32 @@ internal sealed class DiscoverTab : PackageListTab
         }
     }
 
+    /// <summary>
+    /// Queues an upgrade, from the installed row so the queue shows its version, when the package
+    /// is installed and has one; an install otherwise.
+    /// </summary>
+    protected override void ToggleMark(PackageRow row)
+    {
+        var installed = Shell.FindInstalled(row.Id);
+        var hasUpgrade = !string.IsNullOrEmpty(installed?.AvailableVersion);
+        if (hasUpgrade)
+        {
+            ToggleQueued(OperationKind.Upgrade, installed!);
+        }
+        else
+        {
+            ToggleQueued(OperationKind.Install, row);
+        }
+    }
+
     protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row)
     {
-        var entries = new List<MenuEntry> { new("Install", () => RunOperation(OperationKind.Install, row)) };
-        if (Shell.InstalledIds.Contains(row.Id))
+        var entries = new List<MenuEntry>
+        {
+            new("Install", () => RunOperation(OperationKind.Install, row)),
+            MarkMenuEntry(row),
+        };
+        if (Shell.IsInstalled(row.Id))
         {
             entries.Add(new("Uninstall", () => RunOperation(OperationKind.Uninstall, row)));
         }

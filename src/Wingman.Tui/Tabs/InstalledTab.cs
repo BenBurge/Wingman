@@ -1,5 +1,6 @@
 using Terminal.Gui.Input;
 using Wingman.Core.Models;
+using Wingman.Core.Operations;
 using Wingman.Core.Winget;
 
 namespace Wingman.Tui.Tabs;
@@ -7,7 +8,8 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// Every installed package, loaded from <see cref="IWingetClient.ListInstalledAsync"/> the first
 /// time the tab is shown or another tab needs the installed set, again on <c>r</c>, and after
-/// every operation. Pinned packages are marked <c>⊘</c>.
+/// every operation. Pinned packages are marked <c>⊘</c>. Space marks a row with an upgrade
+/// available for the batch.
 /// </summary>
 internal sealed class InstalledTab : PackageListTab
 {
@@ -25,6 +27,9 @@ internal sealed class InstalledTab : PackageListTab
         new("u", "upgrade"),
         new("x", "uninstall"),
         new("p", "pin / unpin"),
+        new("␣", "mark for batch"),
+        new("c", "clear queue"),
+        new("g", "run queue"),
         new("⏎", "details"),
     ]);
 
@@ -37,6 +42,7 @@ internal sealed class InstalledTab : PackageListTab
     {
         Table.Marker = row => shell.IsPinned(row.Id) ? PinnedMarker : "";
         Table.MarkerScheme = shell.Theme.CellScheme(shell.Theme.Dim);
+        Table.CountFormat = (visible, all) => $"{visible.Count} of {all.Count}" + MarkedSuffix(all);
 
         _hints = BuildHints("Pin");
         _pinnedRowHints = BuildHints("Unpin");
@@ -70,12 +76,31 @@ internal sealed class InstalledTab : PackageListTab
         Shell.SetInstalled(rows);
     }
 
+    /// <summary>Queues an upgrade; a row with nothing newer has nothing to queue, since uninstall stays a one-package action.</summary>
+    protected override void ToggleMark(PackageRow row)
+    {
+        var hasUpgrade = !string.IsNullOrEmpty(row.AvailableVersion);
+        if (!hasUpgrade && !Shell.Queue.Contains(row.Id))
+        {
+            Shell.SetStatus($"Nothing to upgrade for {row.Id}; use x to uninstall");
+            return;
+        }
+
+        ToggleQueued(OperationKind.Upgrade, row);
+    }
+
     protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row)
     {
         var entries = new List<MenuEntry>();
-        if (!string.IsNullOrEmpty(row.AvailableVersion))
+        var hasUpgrade = !string.IsNullOrEmpty(row.AvailableVersion);
+        if (hasUpgrade)
         {
             entries.Add(new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)));
+        }
+
+        if (hasUpgrade || Shell.Queue.Contains(row.Id))
+        {
+            entries.Add(MarkMenuEntry(row));
         }
 
         entries.Add(new("Uninstall", () => RunOperation(OperationKind.Uninstall, row)));
@@ -85,16 +110,22 @@ internal sealed class InstalledTab : PackageListTab
         return entries;
     }
 
-    /// <remarks><c>Tab Pane</c> is left off so <c>m Menu</c> fits at 96 columns; Tab still switches panes.</remarks>
+    /// <remarks>
+    /// <c>s Sort</c> and <c>r Reload</c> stay off the bar so the batch keys fit at 96 columns, but
+    /// still work; <c>m Menu</c> and <c>Tab Pane</c> are left out too, since the shell handles
+    /// <c>m</c> and the tab handles Tab by themselves.
+    /// </remarks>
     private KeyHint[] BuildHints(string pinLabel) =>
     [
         new(Key.U, "Upgrade", () => RunOperation(OperationKind.Upgrade)),
         new(Key.X, "Uninstall", () => RunOperation(OperationKind.Uninstall)),
         new(Key.P, pinLabel, TogglePin),
+        MarkHint,
+        ClearHint,
+        RunHint,
         new(new Key('/'), "Filter", Table.FocusFilter),
-        new(Key.S, "Sort", Table.CycleSort),
-        new(Key.R, "Reload", Reload),
-        new(Key.M, "Menu", ShowContextMenu),
+        new(Key.S, "Sort", Table.CycleSort, IsOnBar: false),
+        new(Key.R, "Reload", Reload, IsOnBar: false),
     ];
 
     private void Reload()

@@ -4,18 +4,25 @@ using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Wingman.Core.Models;
+using Wingman.Core.Winget;
 
 namespace Wingman.Tui;
 
 /// <summary>
 /// A filterable, sortable list of packages: a text box and count on the first row, a blank row,
 /// then a table with a header row and a background-on-accent cursor row, and an optional footer
-/// line. Every list tab uses it; Discover turns the filter box into a search box.
+/// line. Every list tab uses it; Discover turns the filter box into a search box. The marker
+/// column holds <c>●</c> for a row marked for the batch, then the tab's own marker.
 /// </summary>
 internal sealed class PackageTable : View
 {
-    private const int MarkerWidth = 2;
-    private const int CountWidth = 14;
+    private const string MarkedGlyph = "●";
+
+    // The marked glyph, the tab's own marker, and the gap after them.
+    private const int MarkerWidth = 3;
+
+    // The narrowest the count label gets, so the filter box does not change width as a spinner or short count comes and goes.
+    private const int MinCountWidth = 14;
     private const int WheelStep = 3;
 
     // The header is a single row because the header overline and underline are turned off.
@@ -47,6 +54,7 @@ internal sealed class PackageTable : View
     private string? _countText;
     private string? _emptyText;
     private string? _footer;
+    private int _countWidth = MinCountWidth;
 
     private bool _isLoading;
     private object? _spinnerTimer;
@@ -63,7 +71,7 @@ internal sealed class PackageTable : View
         {
             X = Pos.Right(_promptLabel),
             Y = 0,
-            Width = Dim.Fill(CountWidth + 1),
+            Width = Dim.Fill(MinCountWidth + 1),
         };
         _filterField.SetScheme(theme.InputScheme);
         _filterField.TextChanged += (_, _) => OnFilterTextChanged();
@@ -71,14 +79,14 @@ internal sealed class PackageTable : View
 
         _countLabel = new Label
         {
-            X = Pos.AnchorEnd(CountWidth + 1),
+            X = Pos.AnchorEnd(MinCountWidth + 1),
             Y = 0,
-            Width = CountWidth,
+            Width = MinCountWidth,
             TextAlignment = Alignment.End,
         };
 
         _textWidths = new int[columns.Count + 1];
-        _source = new PackageTableSource(columns, [], null, null, false, _textWidths);
+        _source = new PackageTableSource(columns, [], MarkerText, null, false, _textWidths);
         _tableView = new KeyPassingTableView(_source)
         {
             X = 0,
@@ -101,7 +109,7 @@ internal sealed class PackageTable : View
         style.ExpandLastColumn = true;
         style.AlwaysShowHeaders = true;
         style.HeaderScheme = theme.HeaderScheme;
-        style.GetOrCreateColumnStyle(0).ColorGetter = args => RowSchemeAt(args.RowIndex) ?? MarkerScheme;
+        style.GetOrCreateColumnStyle(0).ColorGetter = args => MarkerSchemeAt(args.RowIndex);
         style.RowColorGetter = args => RowSchemeAt(args.RowIndex);
 
         _tableView.ValueChanged += (_, _) => RaiseCursorChangedIfMoved();
@@ -132,11 +140,17 @@ internal sealed class PackageTable : View
     /// <summary>Raised with the box's text when Enter is pressed in it while <see cref="FiltersRows"/> is false.</summary>
     public event Action<string>? QuerySubmitted;
 
-    /// <summary>Text for the leading marker column, such as <c>✓</c>; the column stays blank when null.</summary>
+    /// <summary>The tab's own marker, such as <c>✓</c>, drawn after the marked glyph's cell; none when null.</summary>
     public Func<PackageRow, string>? Marker { get; set; }
 
     /// <summary>Colors of the marker column; the row's own colors when null.</summary>
     public Scheme? MarkerScheme { get; set; }
+
+    /// <summary>Whether a row is marked for the batch, which puts <c>●</c> first in its marker column; no row is when null.</summary>
+    public Func<PackageRow, bool>? IsMarked { get; set; }
+
+    /// <summary>Colors of a marked row's marker column, over <see cref="RowScheme"/> and <see cref="MarkerScheme"/>.</summary>
+    public Scheme? MarkedScheme { get; set; }
 
     /// <summary>Colors for a whole row, marker included, such as dim for a held package; the usual colors when it returns null.</summary>
     public Func<PackageRow, Scheme?>? RowScheme { get; set; }
@@ -158,7 +172,13 @@ internal sealed class PackageTable : View
     /// </summary>
     public bool FiltersRows { get; set; } = true;
 
-    /// <summary>What the count label shows when not loading; <c>12 of 142</c> when null.</summary>
+    /// <summary>
+    /// The count label's text from the visible rows and all rows, when <see cref="CountText"/> is null;
+    /// <c>12 of 142</c> when this is null too. Call <see cref="RefreshCount"/> when what it reads changes.
+    /// </summary>
+    public Func<IReadOnlyList<PackageRow>, IReadOnlyList<PackageRow>, string>? CountFormat { get; set; }
+
+    /// <summary>What the count label shows when not loading, over <see cref="CountFormat"/>.</summary>
     public string? CountText
     {
         get => _countText;
@@ -193,6 +213,9 @@ internal sealed class PackageTable : View
             _tableView.Height = value is null ? Dim.Fill() : Dim.Fill(FooterRows);
         }
     }
+
+    /// <summary>The rows the filter lets through, in display order.</summary>
+    public IReadOnlyList<PackageRow> VisibleRows => _source.Packages;
 
     public PackageRow? CurrentRow
     {
@@ -246,8 +269,11 @@ internal sealed class PackageTable : View
         ApplyView();
     }
 
-    /// <summary>Redraws the rows so <see cref="Marker"/> is asked again, for when what it reads has changed.</summary>
+    /// <summary>Redraws the rows so <see cref="Marker"/> and <see cref="IsMarked"/> are asked again, for when what they read has changed.</summary>
     public void RefreshMarkers() => _tableView.SetNeedsDraw();
+
+    /// <summary>Asks <see cref="CountFormat"/> again, for when what it reads has changed.</summary>
+    public void RefreshCount() => UpdateCountLabel();
 
     public void FocusFilter() => _filterField.SetFocus();
 
@@ -305,6 +331,34 @@ internal sealed class PackageTable : View
         return RowScheme is { } rowScheme && isOnRow ? rowScheme(_source.Packages[index]) : null;
     }
 
+    private Scheme? MarkerSchemeAt(int index)
+    {
+        var isOnRow = index >= 0 && index < _source.Packages.Count;
+        var isMarked = isOnRow && IsMarked is { } isMarkedFor && isMarkedFor(_source.Packages[index]);
+        if (isMarked && MarkedScheme is { } markedScheme)
+        {
+            return markedScheme;
+        }
+
+        return RowSchemeAt(index) ?? MarkerScheme;
+    }
+
+    /// <summary>
+    /// <c>●</c> or a blank, then the tab's marker, such as <c>●✓</c> or <c> ✓</c>, so the tab's
+    /// markers stay in one column whether or not a row is marked.
+    /// </summary>
+    private string MarkerText(PackageRow row)
+    {
+        var ownMarker = Marker?.Invoke(row) ?? "";
+        var isMarked = IsMarked?.Invoke(row) ?? false;
+        if (!isMarked && ownMarker.Length == 0)
+        {
+            return "";
+        }
+
+        return (isMarked ? MarkedGlyph : " ") + ownMarker;
+    }
+
     private void OnFilterTextChanged()
     {
         if (FiltersRows)
@@ -338,7 +392,7 @@ internal sealed class PackageTable : View
                 : [.. visible.OrderBy(column.Value, comparer)];
         }
 
-        _source = new PackageTableSource(_columns, visible, Marker, _sortColumn, _sortDescending, _textWidths);
+        _source = new PackageTableSource(_columns, visible, MarkerText, _sortColumn, _sortDescending, _textWidths);
         _tableView.Table = _source;
 
         var cursorIndex = visible.FindIndex(row => string.Equals(row.Id, keepId, StringComparison.OrdinalIgnoreCase));
@@ -546,15 +600,36 @@ internal sealed class PackageTable : View
 
     private void UpdateCountLabel()
     {
+        string text;
         if (_isLoading)
         {
             var activity = FiltersRows ? "Loading" : "Searching";
-            _countLabel.Text = $"{SpinnerFrames[_spinnerFrame]} {activity}";
+            text = $"{SpinnerFrames[_spinnerFrame]} {activity}";
+        }
+        else if (_countText is not null)
+        {
+            text = _countText;
+        }
+        else if (CountFormat is { } format)
+        {
+            text = format(_source.Packages, _allRows);
         }
         else
         {
-            _countLabel.Text = _countText ?? $"{_source.Rows} of {_allRows.Count}";
+            text = $"{_source.Rows} of {_allRows.Count}";
         }
+
+        // The label grows leftward over the filter box for a long count such as "6 available · 3 marked · 1 held".
+        var width = Math.Max(MinCountWidth, DisplayWidth.Of(text));
+        if (width != _countWidth)
+        {
+            _countWidth = width;
+            _countLabel.X = Pos.AnchorEnd(width + 1);
+            _countLabel.Width = width;
+            _filterField.Width = Dim.Fill(width + 1);
+        }
+
+        _countLabel.Text = text;
     }
 
     private void UpdateEmptyLabel()
@@ -579,8 +654,18 @@ internal sealed class PackageTable : View
     /// TableView swallows them then, as type-to-search with nothing to search, which would leave the
     /// tab keys, the key bar, and <c>q</c> dead on an empty list.
     /// </summary>
-    private sealed class KeyPassingTableView(ITableSource source) : TableView(source)
+    /// <remarks>
+    /// Space is unbound too: TableView toggles a cell into its multi-selection on it, which this
+    /// table never uses, and the tabs mark the cursor row for the batch with it instead.
+    /// </remarks>
+    private sealed class KeyPassingTableView : TableView
     {
+        public KeyPassingTableView(ITableSource source)
+            : base(source)
+        {
+            KeyBindings.Remove(Key.Space);
+        }
+
         protected override bool OnKeyDownNotHandled(Key key) => Table is { Rows: > 0 } && base.OnKeyDownNotHandled(key);
     }
 }

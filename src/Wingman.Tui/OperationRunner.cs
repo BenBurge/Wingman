@@ -1,15 +1,9 @@
 using System.Diagnostics;
 using Wingman.Core.Models;
+using Wingman.Core.Operations;
 using Wingman.Core.Winget;
 
 namespace Wingman.Tui;
-
-internal enum OperationKind
-{
-    Install,
-    Upgrade,
-    Uninstall,
-}
 
 /// <summary>The operation <see cref="OperationRunner"/> is running: what it does, and to which package.</summary>
 internal sealed record RunningOperation(OperationKind Kind, string Id)

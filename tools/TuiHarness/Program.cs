@@ -2,6 +2,8 @@ using Terminal.Gui.App;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
 using TuiHarness;
+using Wingman.Core.Bundles;
+using Wingman.Core.Options;
 using Wingman.Core.Winget;
 using Wingman.Tui;
 
@@ -13,6 +15,19 @@ if (args.Length < 2 || !int.TryParse(args[0], out var width) || !int.TryParse(ar
 
 var theme = Theme.ByName(args.Length > 2 ? args[2] : null);
 
+// A throwaway data directory, so the run never reads or writes the real settings and package
+// options. Azd gets machine scope, which needs elevation, and a post-update command.
+const string ElevatedId = "Microsoft.Azd";
+const string ElevatedPostCommand = "azd config set defaults.location eastus2";
+var dataDirectory = Path.Combine(Path.GetTempPath(), "wingman-harness-" + Guid.NewGuid().ToString("N"));
+Environment.SetEnvironmentVariable(WingmanApp.DataDirectoryVariable, dataDirectory);
+new PackageOptionsStore(dataDirectory).SetInstallOptions(ElevatedId, new InstallOptions
+{
+    InstallationScope = "machine",
+    PostUpdateCommand = ElevatedPostCommand,
+});
+var settings = WingmanApp.CreateSettingsStore().Load();
+
 using var app = Application.Create();
 app.Init(DriverRegistry.Names.ANSI);
 
@@ -22,7 +37,7 @@ screen.HoldSize();
 
 // A short step delay so an operation streams its ten lines in about half a second.
 var client = new SlowClient(new FakeWingetClient(TimeSpan.FromMilliseconds(50)));
-var shell = WingmanApp.CreateShell(app, theme, client);
+var shell = WingmanApp.CreateShell(app, theme, client, settings);
 string Focused() => shell.Window.MostFocused?.GetType().Name ?? "none";
 
 // Stand-ins so a run never overwrites the real clipboard or starts a browser.
@@ -75,6 +90,10 @@ int KeyBarX(string item) => screen.Rows()[height - 2].IndexOf(item, StringCompar
 int TabStripX(string title) => screen.Rows()[1].IndexOf(" " + title + " ", StringComparison.Ordinal) + 1;
 bool IsCursorRow(int y) => screen.AttributeAt(10, y) == theme.Selected.ToString();
 bool IsMenuOpen() => ScreenHas("│ Copy id");
+
+// Table rows whose marker column starts with the marked glyph; the Discover legend's ● is further right.
+int MarkedRowCount() => screen.Rows().Skip(FirstRowY).Take(height - FirstRowY - 4).Count(row => row[1] == '●');
+bool AnyMarkedRow(char ownMarker) => screen.Rows().Skip(FirstRowY).Take(height - FirstRowY - 4).Any(row => row[1] == '●' && row[2] == ownMarker);
 bool IsHelpOpen() => ScreenHas("┌─ Keys ");
 
 // The rows between the tab separator and the footer separator. The separators are left out: the
@@ -237,8 +256,11 @@ Step[] steps =
         Check("Name ▲", ScreenHas(" Name ▲"))),
     new(50, "click the Name header again: descending", () => screen.Click(4, FirstRowY - 1), Verify: () =>
         Check("Name ▼", ScreenHas(" Name ▼"))),
-    new(50, "click s Sort on the key bar: next column", () => screen.Click(KeyBarX("s Sort"), height - 2), Verify: () =>
-        Check("Id ▲", ScreenHas(" Id ▲"))),
+    new(50, "s, which the key bar leaves off: next column", () => screen.Press(Key.S), Verify: () =>
+    {
+        Check("Id ▲", ScreenHas(" Id ▲"));
+        Check("s Sort not on the key bar", KeyBarX("s Sort") < 0);
+    }),
     new(50, "click the filter box: it takes focus", () => screen.Click(12, 3), Verify: () =>
         Check("filter box has focus", Focused() == "TextField")),
     new(50, "filter GitHub.cli", () => { screen.Type("GitHub.cli"); screen.Press(Key.Enter); }),
@@ -348,7 +370,7 @@ Step[] steps =
     new(50, "click n No on the key bar", () => screen.Click(KeyBarX("n No"), height - 2), Verify: () =>
     {
         Check("question gone", !ScreenHas("(y/n)"));
-        Check("tab keys back", ScreenHas(" m Menu "));
+        Check("tab keys back", ScreenHas(" a Mark all "));
     }),
     new(50, "m, Enter on Upgrade again", () => { screen.Press(Key.M); screen.Press(Key.Enter); }),
     new(50, "click y Yes on the key bar", () => screen.Click(KeyBarX("y Yes"), height - 2)),
@@ -375,6 +397,94 @@ Step[] steps =
     }),
     new(50, "click Installed on the tab strip", () => screen.Click(TabStripX("Installed"), 1), Verify: () =>
         Check("Installed keys", ScreenHas(" x Uninstall "))),
+
+    new(50, "3, clear the filter, filter Azure", () => { screen.Press(new Key('3')); screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(new Key('/')); screen.Type("Azure"); screen.Press(Key.Enter); }, Verify: () =>
+    {
+        Check("batch keys on the Updates bar", ScreenHas(" u Upgrade   ␣ Mark   a Mark all   c Clear   g Run   p Hold   r Refresh   ? Help   q Quit "));
+        Check("three rows, nothing marked", ScreenHas("3 of 15 available") && MarkedRowCount() == 0);
+    }),
+    new(50, "Ctrl+Home, Space, Down, Space: two rows marked", () => { screen.Press(Key.Home.WithCtrl); screen.Press(Key.Space); screen.Press(Key.CursorDown); screen.Press(Key.Space); }, Verify: () =>
+    {
+        Check("two marked rows", MarkedRowCount() == 2);
+        Check("count shows the marks", ScreenHas("3 of 15 available · 2 marked"));
+        Check("queue pane title", ScreenHas(" Queue  2 operations"));
+        Check("Azd first", ScreenHas(" 1  " + ElevatedId));
+        Check("Azd needs admin", ScreenHas("upgrade → 1.34.200") && ScreenHas("⚡") && ScreenHas(" admin"));
+        Check("post command", ScreenHas("    post: azd config set"));
+        Check("elevation summary", ScreenHas(" 1 of 2 need elevation."));
+        Check("queue keys", ScreenHas(" g run queue   c clear"));
+        Check("details pane gone", !ScreenHas(" Pinned     "));
+    }),
+    new(50, "a: marks the third", () => screen.Press(Key.A), WithColors: true, Verify: () =>
+    {
+        Check("three marked rows", MarkedRowCount() == 3);
+        Check("count shows three marked", ScreenHas("3 of 15 available · 3 marked"));
+        Check("queue pane title", ScreenHas(" Queue  3 operations"));
+        Check("one of three elevated", ScreenHas(" 1 of 3 need elevation."));
+        Check("UAC line", ScreenHas(" One UAC prompt will be shown."));
+        Check("● in accent on a row off the cursor", screen.AttributeAt(1, FirstRowY) == theme.On(theme.Accent).ToString());
+    }),
+    new(50, "clear the filter: the marks stay", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); }, Verify: () =>
+    {
+        Check("count for the whole list", ScreenHas("15 available · 3 marked"));
+        Check("three marked rows", MarkedRowCount() == 3);
+    }),
+    new(50, "filter Docker, p: hold it", () => { screen.Press(new Key('/')); screen.Type("Docker"); screen.Press(Key.Enter); screen.Press(Key.P); }),
+    new(150, "clear the filter, a: marks all but held and explicit", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(Key.A); }, Verify: () =>
+    {
+        Check("count with held", ScreenHas("15 available · 13 marked · 1 held"));
+        Check("held row not marked", !AnyMarkedRow('⊘'));
+        Check("explicit-targeting row not marked", !AnyMarkedRow('!'));
+        Check("queue pane title", ScreenHas(" Queue  13 operations"));
+        Check("summary pinned at the bottom", ScreenHas(" 1 of 13 need elevation.") && ScreenHas(" g run queue   c clear"));
+    }),
+    new(50, "wheel down over the queue pane: entries scroll", () => { before = screen.Rows(); screen.Wheel(Divider() + 10, FirstRowY + 2, down: true); }, Verify: () =>
+    {
+        Check("entries moved", RightPaneText(screen.Rows()) != RightPaneText(before));
+        Check("title stays", ScreenHas(" Queue  13 operations"));
+        Check("keys stay", ScreenHas(" g run queue   c clear"));
+    }),
+    new(50, "c: queue cleared", () => screen.Press(Key.C), Verify: () =>
+    {
+        Check("cleared message", ScreenHas(Shell.QueueClearedText));
+        Check("no marked rows", MarkedRowCount() == 0);
+        Check("details pane back", ScreenHas(" Pinned     "));
+        Check("count without marks", ScreenHas("15 available · 1 held"));
+    }),
+    new(50, "g: runner not here yet", () => screen.Press(Key.G), Verify: () =>
+        Check("pending message", ScreenHas(Shell.BatchRunnerPendingText))),
+
+    new(50, "1, filter Git.Git, Space: nothing to upgrade", () => { screen.Press(new Key('1')); screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(new Key('/')); screen.Type("Git.Git"); screen.Press(Key.Enter); screen.Press(Key.Space); }, Verify: () =>
+    {
+        Check("nothing-to-upgrade message", ScreenHas("Nothing to upgrade for Git.Git; use x to uninstall"));
+        Check("batch keys on the Installed bar", ScreenHas(" ␣ Mark   c Clear   g Run   / Filter   ? Help   q Quit "));
+        Check("nothing marked", MarkedRowCount() == 0);
+    }),
+    new(50, "filter ClaudeCode, Space: marked", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(new Key('/')); screen.Type("ClaudeCode"); screen.Press(Key.Enter); screen.Press(Key.Space); }, Verify: () =>
+    {
+        Check("marked row", MarkedRowCount() == 1);
+        Check("count shows the mark", ScreenHas(" · 1 marked"));
+        Check("queue pane title", ScreenHas(" Queue  1 operation"));
+        Check("upgrade target", ScreenHas("upgrade → 2.1.268"));
+        Check("no elevation", ScreenHas(" No elevation needed."));
+    }),
+    new(50, "2, search git", () => { screen.Press(new Key('2')); screen.Press(new Key('/')); screen.Press(Key.Backspace, 7); screen.Type("git"); screen.Press(Key.Enter); }),
+    new(600, "Ctrl+Home, Space: Git.Git marked for install", () => { screen.Press(Key.Home.WithCtrl); screen.Press(Key.Space); }, WithColors: true, Verify: () =>
+    {
+        Check("installed and marked", AnyMarkedRow('✓') && LeftPaneHas("Git.Git"));
+        Check("queue pane title", ScreenHas(" Queue  2 operations"));
+        Check("install target", ScreenHas(" 2  Git.Git") && ScreenHas("install → latest"));
+        Check("no elevation", ScreenHas(" No elevation needed."));
+        Check("legend", ScreenHas("✓ installed   ● marked for batch"));
+        Check("batch keys on the Discover bar", ScreenHas(" i Install   ␣ Mark   c Clear   g Run   ⏎ Search"));
+    }),
+    new(50, "m: Unmark in the menu", () => screen.Press(Key.M), Verify: () =>
+        Check("unmark entry", ScreenHas("│ Unmark "))),
+    new(50, "Down, Enter: Git.Git unmarked", () => { screen.Press(Key.CursorDown); screen.Press(Key.Enter); }, Verify: () =>
+    {
+        Check("no marked rows", MarkedRowCount() == 0);
+        Check("queue pane title", ScreenHas(" Queue  1 operation"));
+    }),
     new(50, "q quits", () => screen.Press(Key.Q)),
 ];
 
@@ -395,6 +505,14 @@ void RunStep()
 app.AddTimeout(TimeSpan.FromMilliseconds(steps[0].DelayMs), () => { RunStep(); return false; });
 app.Run(shell.Window);
 shell.Window.Dispose();
+
+try
+{
+    Directory.Delete(dataDirectory, recursive: true);
+}
+catch (IOException)
+{
+}
 
 screen.Log($"exited normally, {failedChecks} failed checks");
 Console.WriteLine($"wrote {screen.OutputPath}, {failedChecks} failed checks");

@@ -7,6 +7,9 @@ using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Wingman.Core.Models;
+using Wingman.Core.Operations;
+using Wingman.Core.Options;
+using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Wingman.Tui.Tabs;
 
@@ -16,12 +19,14 @@ namespace Wingman.Tui;
 /// The window chrome every tab shares: title bar, tab strip, message line, and key bar, plus the
 /// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n prompt on
 /// the message line, the row context menu and the help overlay, which take every key while open,
-/// the one <see cref="OperationRunner"/>, and the pins every tab marks. Every
+/// the one <see cref="OperationRunner"/>, the batch <see cref="Queue"/>, and the pins every tab marks. Every
 /// member must be called on the UI thread; background work marshals back with <c>App.Invoke</c>.
 /// </summary>
 internal sealed class Shell
 {
     public const string AlreadyRunningText = "An operation is already running";
+    public const string QueueClearedText = "Queue cleared";
+    public const string BatchRunnerPendingText = "Batch runner arrives in #39";
 
     private const string AppTitle = "Wingman";
     private static readonly TimeSpan StatusLifetime = TimeSpan.FromSeconds(5);
@@ -45,7 +50,7 @@ internal sealed class Shell
     private readonly KeyHint _quitHint;
     private readonly KeyHint[] _globalHints;
     private readonly KeyHint[] _promptHints;
-    private readonly HashSet<string> _installedIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PackageRow> _installed = new(StringComparer.OrdinalIgnoreCase);
     private readonly ContextMenu _menu;
     private readonly HelpOverlay _help;
 
@@ -64,12 +69,14 @@ internal sealed class Shell
     // A message posted while the prompt is up, shown once it is answered.
     private (string Text, Scheme Scheme, bool IsTransient)? _heldMessage;
 
-    public Shell(IApplication app, Theme theme, IWingetClient client)
+    public Shell(IApplication app, Theme theme, IWingetClient client, WingmanSettings settings)
     {
         App = app;
         Theme = theme;
+        Settings = settings;
         _client = client;
         Runner = new OperationRunner(client, action => app.Invoke(action));
+        Options = WingmanApp.CreatePackageOptionsStore();
 
         Window = new Window { Title = AppTitle, BorderStyle = LineStyle.Single };
         Window.SetScheme(theme.Normal);
@@ -149,17 +156,23 @@ internal sealed class Shell
 
     public Theme Theme { get; }
 
+    /// <summary>The settings the app started with; the theme came from these.</summary>
+    public WingmanSettings Settings { get; }
+
+    /// <summary>Per-package install options, which shape every queued operation.</summary>
+    public PackageOptionsStore Options { get; }
+
+    /// <summary>The operations marked for the batch, shared by every tab.</summary>
+    public OperationQueue Queue { get; } = new();
+
     /// <summary>Runs the one install, upgrade, or uninstall allowed at a time.</summary>
     public OperationRunner Runner { get; }
 
-    /// <summary>Raised after <see cref="InstalledIds"/> changes.</summary>
+    /// <summary>Raised after the installed set changes.</summary>
     public event Action? InstalledChanged;
 
     /// <summary>Raised after <see cref="Pins"/> changes.</summary>
     public event Action? PinsChanged;
-
-    /// <summary>Ids of the installed packages as of the Installed tab's last load, ignoring case; empty before it.</summary>
-    public IReadOnlySet<string> InstalledIds => _installedIds;
 
     /// <summary>Winget's pins as of the last load or pin change; empty until the first load finishes.</summary>
     public IReadOnlyList<Pin> Pins => _pins;
@@ -219,19 +232,43 @@ internal sealed class Shell
         }
     }
 
-    /// <summary>Replaces <see cref="InstalledIds"/> with the Ids of <paramref name="rows"/>.</summary>
+    /// <summary>Replaces the installed set with <paramref name="rows"/>; the first row wins for an Id listed twice.</summary>
     public void SetInstalled(IReadOnlyList<PackageRow> rows)
     {
-        _installedIds.Clear();
+        _installed.Clear();
         foreach (var row in rows)
         {
-            _installedIds.Add(row.Id);
+            _installed.TryAdd(row.Id, row);
         }
 
         InstalledChanged?.Invoke();
     }
 
-    /// <summary>Starts the Installed tab's first load, for a tab that needs <see cref="InstalledIds"/> before Installed was shown.</summary>
+    /// <summary>Whether the Installed tab's last load listed <paramref name="id"/>, ignoring case; false before it.</summary>
+    public bool IsInstalled(string id) => _installed.ContainsKey(id);
+
+    /// <summary>The installed row for <paramref name="id"/> as of the Installed tab's last load, or null.</summary>
+    public PackageRow? FindInstalled(string id) => _installed.GetValueOrDefault(id);
+
+    /// <summary>
+    /// A queue entry for <paramref name="kind"/> on <paramref name="row"/>, shaped by the package's
+    /// saved install options and the settings, as the batch runner will run it.
+    /// </summary>
+    public QueuedOperation BuildOperation(OperationKind kind, PackageRow row)
+    {
+        var plan = OperationRequestFactory.Create(kind, row, Settings, Options.GetInstallOptions(row.Id));
+        return new QueuedOperation(kind, row, plan);
+    }
+
+    public void ClearQueue()
+    {
+        Queue.Clear();
+        SetStatus(QueueClearedText);
+    }
+
+    public void RunQueue() => SetStatus(BatchRunnerPendingText);
+
+    /// <summary>Starts the Installed tab's first load, for a tab that needs the installed set before Installed was shown.</summary>
     public void EnsureInstalledLoaded()
     {
         foreach (var tab in _tabs)

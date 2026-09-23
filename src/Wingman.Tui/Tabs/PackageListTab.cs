@@ -4,6 +4,7 @@ using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Wingman.Core.Models;
+using Wingman.Core.Operations;
 using Wingman.Core.Winget;
 
 namespace Wingman.Tui.Tabs;
@@ -11,8 +12,9 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// A tab with a <see cref="PackageTable"/> on the left and a <see cref="DetailsPane"/> for the
 /// cursor row on the right, filled by a background load. Installed, Discover, and Updates are
-/// these; they differ in their columns, what they load, and their keys. An operation started from
-/// the tab swaps the details pane for a <see cref="LogPane"/> until it is over and dismissed.
+/// these; they differ in their columns, what they load, and their keys. While the batch queue has
+/// entries a <see cref="QueuePane"/> takes the details pane's place. An operation started from
+/// the tab swaps either for a <see cref="LogPane"/> until it is over and dismissed.
 /// </summary>
 internal abstract class PackageListTab : ShellTab
 {
@@ -31,6 +33,7 @@ internal abstract class PackageListTab : ShellTab
     ]);
 
     private readonly Line _divider;
+    private readonly QueuePane _queuePane;
     private readonly KeyHint[] _runningHints;
     private readonly KeyHint[] _finishedHints;
 
@@ -80,6 +83,17 @@ internal abstract class PackageListTab : ShellTab
             PinFor = shell.FindPin,
         };
 
+        _queuePane = new QueuePane(shell.Theme, shell.Queue)
+        {
+            X = WideLeftPaneWidth + 1,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            Visible = false,
+        };
+        _queuePane.RunRequested += shell.RunQueue;
+        _queuePane.ClearRequested += shell.ClearQueue;
+
         Log = new LogPane(shell.Theme)
         {
             X = WideLeftPaneWidth + 1,
@@ -103,12 +117,20 @@ internal abstract class PackageListTab : ShellTab
             new(Key.CursorUp, "Scroll log", FocusLog, "↑↓"),
         ];
 
+        Table.IsMarked = row => shell.Queue.Contains(row.Id);
+        Table.MarkedScheme = shell.Theme.CellScheme(shell.Theme.Accent);
+
+        MarkHint = new(Key.Space, "Mark", MarkCursorRow, "␣");
+        ClearHint = new(Key.C, "Clear", shell.ClearQueue);
+        RunHint = new(Key.G, "Run", shell.RunQueue);
+
         Table.CursorChanged += OnCursorChanged;
         Table.RowActivated += _ => OnRowActivated();
         Table.RowMenuRequested += OpenContextMenu;
         shell.PinsChanged += OnPinsChanged;
+        shell.Queue.Changed += OnQueueChanged;
 
-        Add(Table, _divider, Details, Log);
+        Add(Table, _divider, Details, _queuePane, Log);
     }
 
     public sealed override IReadOnlyList<KeyHint> Hints
@@ -146,6 +168,15 @@ internal abstract class PackageListTab : ShellTab
 
     protected LogPane Log { get; }
 
+    /// <summary><c>␣ Mark</c>, which toggles the cursor row in the batch queue.</summary>
+    protected KeyHint MarkHint { get; }
+
+    /// <summary><c>c Clear</c>, which empties the batch queue.</summary>
+    protected KeyHint ClearHint { get; }
+
+    /// <summary><c>g Run</c>, which runs the batch queue.</summary>
+    protected KeyHint RunHint { get; }
+
     /// <summary>The tab's own keys, shown while the details pane is.</summary>
     protected abstract IReadOnlyList<KeyHint> TableHints { get; }
 
@@ -153,6 +184,8 @@ internal abstract class PackageListTab : ShellTab
     protected abstract HelpGroup TabHelp { get; }
 
     protected bool IsLogShown => Log.Visible;
+
+    private bool IsQueueShown => _queuePane.Visible;
 
     protected bool IsCursorRowPinned => Table.CurrentRow is { } row && Shell.IsPinned(row.Id);
 
@@ -235,6 +268,53 @@ internal abstract class PackageListTab : ShellTab
     }
 
     /// <summary>
+    /// Takes <paramref name="row"/> out of the batch queue when it is there, or adds it with the
+    /// operation the tab marks it for; a tab that has none for the row says why on the message line.
+    /// </summary>
+    protected abstract void ToggleMark(PackageRow row);
+
+    /// <summary>Takes <paramref name="row"/> out of the queue when it is there, or queues <paramref name="kind"/> on it.</summary>
+    protected void ToggleQueued(OperationKind kind, PackageRow row)
+    {
+        if (!Shell.Queue.Remove(row.Id))
+        {
+            Shell.Queue.Add(Shell.BuildOperation(kind, row));
+        }
+    }
+
+    /// <summary><c>Unmark</c> for a queued row, <c>Mark for batch</c> otherwise; each runs <see cref="ToggleMark"/> on it.</summary>
+    protected MenuEntry MarkMenuEntry(PackageRow row) =>
+        new(Shell.Queue.Contains(row.Id) ? "Unmark" : "Mark for batch", () => ToggleMark(row));
+
+    /// <summary><c> · 3 marked</c> for the queue entries among <paramref name="rows"/>, or empty when there are none.</summary>
+    protected string MarkedSuffix(IReadOnlyList<PackageRow> rows)
+    {
+        var marked = MarkedCount(rows);
+        return marked == 0 ? "" : $" · {marked} marked";
+    }
+
+    /// <summary>How many queue entries are for a package among <paramref name="rows"/>, counting an Id listed twice once.</summary>
+    protected int MarkedCount(IReadOnlyList<PackageRow> rows)
+    {
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            ids.Add(row.Id);
+        }
+
+        var count = 0;
+        foreach (var item in Shell.Queue.Items)
+        {
+            if (ids.Contains(item.Row.Id))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
     /// The context menu's entries for <paramref name="row"/>. Each one runs what the tab's key for it
     /// runs, on this row even if the cursor has moved since the menu opened.
     /// </summary>
@@ -266,7 +346,7 @@ internal abstract class PackageListTab : ShellTab
 
     protected void SwitchPane()
     {
-        View rightPane = IsLogShown ? Log : Details;
+        var rightPane = RightPane();
         if (rightPane.HasFocus)
         {
             Table.FocusTable();
@@ -293,6 +373,7 @@ internal abstract class PackageListTab : ShellTab
             Table.Width = leftWidth;
             _divider.X = leftWidth;
             Details.X = leftWidth + 1;
+            _queuePane.X = leftWidth + 1;
             Log.X = leftWidth + 1;
         }
     }
@@ -362,6 +443,7 @@ internal abstract class PackageListTab : ShellTab
         Shell.Runner.Start(kind, request, Log.Append, outcome => FinishOperation(operation, outcome));
 
         Details.Visible = false;
+        _queuePane.Visible = false;
         Log.Visible = true;
         Log.SetFocus();
         Shell.RefreshHints(this);
@@ -427,8 +509,55 @@ internal abstract class PackageListTab : ShellTab
         }
 
         Log.Visible = false;
-        Details.Visible = true;
+        ShowQueueOrDetails();
         Shell.RefreshHints(this);
+    }
+
+    /// <summary>The pane right of the divider that is showing: the log, the queue, or the details.</summary>
+    private View RightPane()
+    {
+        if (IsLogShown)
+        {
+            return Log;
+        }
+
+        return IsQueueShown ? _queuePane : Details;
+    }
+
+    /// <summary>Shows the queue while it has entries and the details otherwise, unless the log is showing.</summary>
+    private void ShowQueueOrDetails()
+    {
+        if (IsLogShown)
+        {
+            return;
+        }
+
+        var showsQueue = Shell.Queue.Count > 0;
+
+        // Moved first, so hiding the focused pane does not leave focus to Terminal.Gui's choice.
+        var hidesFocusedPane = showsQueue ? Details.HasFocus : _queuePane.HasFocus;
+        if (hidesFocusedPane)
+        {
+            Table.FocusTable();
+        }
+
+        Details.Visible = !showsQueue;
+        _queuePane.Visible = showsQueue;
+    }
+
+    private void OnQueueChanged()
+    {
+        Table.RefreshMarkers();
+        Table.RefreshCount();
+        ShowQueueOrDetails();
+    }
+
+    private void MarkCursorRow()
+    {
+        if (Table.CurrentRow is { } row)
+        {
+            ToggleMark(row);
+        }
     }
 
     private void FocusLog() => Log.SetFocus();
@@ -451,7 +580,7 @@ internal abstract class PackageListTab : ShellTab
     {
         if (!IsLogShown)
         {
-            Details.SetFocus();
+            RightPane().SetFocus();
         }
         else if (Log.IsRunning)
         {
