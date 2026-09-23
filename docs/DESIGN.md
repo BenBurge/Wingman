@@ -21,7 +21,8 @@ src/Wingman.Core   models, IWingetClient + WingetCliClient, output parsers, bund
                    settings, package-options store, history store. No UI dependency. Cross-platform.
 src/Wingman.Tui    Terminal.Gui views. Depends on Core only.
 src/Wingman        the `wingman` executable. No args: launches the TUI. Subcommands: headless CLI.
-src/Wingman.Windows (phase 3) elevated helper, Task Scheduler registration, toasts, tray icon.
+src/Wingman.Windows elevated helper launcher and worker (phase 2); Task Scheduler registration,
+                   toasts, tray icon (phase 3). Windows-only; referenced by src/Wingman only.
 tests/Wingman.Core.Tests   xunit; parsers are tested against captured winget output in Fixtures/.
 ```
 
@@ -51,6 +52,8 @@ The update policy dialog (`p` on any row, also offered from a failed operation) 
 ### Batch queue and elevation
 
 The TUI marks packages, then builds an ordered queue of operations. Operations that need elevation are sent to a single elevated helper (`wingman --elevated-worker <pipe-name>`) started once per batch with ShellExecute `runas`, communicating over a named pipe. Non-elevated operations run in-process. Progress and log lines flow back into the history store and the TUI log pane.
+
+The TUI is the pipe server: it creates the pipe, starts the helper with `runas`, and waits for it to connect, so the helper needs nothing but the pipe name. Messages are newline-delimited JSON (`run`, `line`, `finished`, `shutdown`). The helper's read-run-reply loop lives in Core (`ElevatedWorkerLoop`) and is tested cross-platform against an in-process pipe; only the launcher and the process entry point are Windows-only. Declining the UAC prompt cancels the elevated operations in the batch and still runs the others.
 
 ### Bundle export and import
 
