@@ -12,6 +12,10 @@ public class DisplayWidthTests
     [InlineData(0xFF41, 2)]  // fullwidth a
     [InlineData(0x0301, 0)]  // combining acute accent
     [InlineData(0x1F600, 2)] // grinning face emoji
+    [InlineData(0x26A1, 2)]  // ⚡ high voltage
+    [InlineData(0x2705, 2)]  // ✅ check mark button
+    [InlineData(0x2713, 1)]  // ✓ check mark stays narrow
+    [InlineData(0x2298, 1)]  // ⊘ stays narrow
     public void Of_Rune_ReturnsTerminalCellCount(int codePoint, int expectedWidth)
     {
         Assert.Equal(expectedWidth, DisplayWidth.Of(new Rune(codePoint)));
