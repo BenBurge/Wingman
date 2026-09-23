@@ -5,6 +5,21 @@
     <AssemblyName>wingman</AssemblyName>
   </PropertyGroup>
 
+  <!--
+    Publish output is a self-contained, untrimmed single file. Native AOT and trimming are
+    both off because Wingman.Core's System.Text.Json calls are reflection based (IL2026,
+    IL3050), and TreatWarningsAsErrors turns those analyzer warnings into build failures.
+    These properties apply only when a runtime identifier is given, so a plain dotnet build,
+    run, or test keeps the framework-dependent layout.
+  -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Wingman.Core\Wingman.Core.csproj" />
     <ProjectReference Include="..\Wingman.Tui\Wingman.Tui.csproj" />

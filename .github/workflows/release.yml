@@ -1,0 +1,63 @@
+# Publishes wingman.exe as a self-contained, untrimmed single file for win-x64 and win-arm64.
+# Native AOT and trimming are off: Wingman.Core's System.Text.Json calls are reflection based
+# (IL2026, IL3050) and TreatWarningsAsErrors fails the publish on those warnings. The publish
+# properties live in src/Wingman/Wingman.csproj under a RuntimeIdentifier condition.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  publish:
+    strategy:
+      matrix:
+        rid: [win-x64, win-arm64]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish
+        run: dotnet publish src/Wingman/Wingman.csproj -c Release -r ${{ matrix.rid }} -o out/${{ matrix.rid }}
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $zip = "wingman-${{ github.ref_name }}-${{ matrix.rid }}.zip"
+          Compress-Archive -Path out/${{ matrix.rid }}/wingman.exe -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Out-File -Encoding ascii "$zip.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wingman-${{ matrix.rid }}
+          path: |
+            wingman-${{ github.ref_name }}-${{ matrix.rid }}.zip
+            wingman-${{ github.ref_name }}-${{ matrix.rid }}.zip.sha256
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
