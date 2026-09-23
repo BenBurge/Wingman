@@ -12,7 +12,7 @@ namespace Wingman.Core.Winget;
 /// main Wide and Fullwidth blocks are listed, which covers the CJK, Hangul, fullwidth, and emoji
 /// text that shows up in package names.
 /// </remarks>
-internal static class DisplayWidth
+public static class DisplayWidth
 {
     // Inclusive and in ascending order; IsWide stops at the first range past the code point.
     private static readonly (int First, int Last)[] WideRanges =

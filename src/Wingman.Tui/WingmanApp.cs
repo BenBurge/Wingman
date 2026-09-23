@@ -1,44 +1,48 @@
 using Terminal.Gui.App;
-using Terminal.Gui.Input;
-using Terminal.Gui.ViewBase;
-using Terminal.Gui.Views;
+using Wingman.Core.Settings;
 using Wingman.Core.Winget;
+using Wingman.Tui.Tabs;
 
 namespace Wingman.Tui;
 
-/// <summary>
-/// Entry point for the terminal UI. Currently just the window shell with the three placeholder tabs
-/// phase 1 will fill in.
-/// </summary>
+/// <summary>Entry point for the terminal UI.</summary>
 public static class WingmanApp
 {
     public static void Run(IWingetClient client)
     {
-        // Fetched before Init so a fixed string never flashes in the title while the version
-        // loads; this whole call gets replaced once the TUI reads live client state some other way.
-        var version = client.GetVersionAsync(CancellationToken.None).GetAwaiter().GetResult();
+        var theme = Theme.ByName(SettingsStore.CreateDefault().Load().Theme);
 
         using var app = Application.Create();
         app.Init();
 
-        var window = new Window { Title = $"Wingman · {version}" };
+        var shell = new Shell(app, theme);
+        shell.SetTabs(
+        [
+            new InstalledTab(shell, client),
+            new PlaceholderTab(theme, "Discover", "Discover: coming in #15"),
+            new PlaceholderTab(theme, "Updates", "Updates: coming in #16"),
+            new PlaceholderTab(theme, "History", "History: coming in phase 2"),
+            new PlaceholderTab(theme, "Settings", "Settings: coming in phase 2"),
+        ]);
+        LoadWingetVersion(shell, client);
 
-        var tabs = new Tabs
+        app.Run(shell.Window);
+        shell.Window.Dispose();
+    }
+
+    private static void LoadWingetVersion(Shell shell, IWingetClient client)
+    {
+        _ = Task.Run(async () =>
         {
-            X = 0,
-            Y = 0,
-            Width = Dim.Fill(),
-            Height = Dim.Fill(1),
-        };
-        tabs.Add(new View { Title = "Installed" });
-        tabs.Add(new View { Title = "Discover" });
-        tabs.Add(new View { Title = "Updates" });
-
-        var quit = new Shortcut(Key.Q, "Quit", () => window.RequestStop(), "Quit Wingman");
-        var statusBar = new StatusBar([quit]);
-
-        window.Add(tabs, statusBar);
-
-        app.Run(window);
+            try
+            {
+                var version = await client.GetVersionAsync(CancellationToken.None);
+                shell.App.Invoke(() => shell.WingetVersion = version);
+            }
+            catch (Exception ex)
+            {
+                shell.App.Invoke(() => shell.SetError($"winget: {ex.Message}"));
+            }
+        });
     }
 }
