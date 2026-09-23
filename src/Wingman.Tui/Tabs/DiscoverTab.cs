@@ -20,6 +20,13 @@ internal sealed class DiscoverTab : PackageListTab
         new("Version", row => row.Version, 10, VersionComparer.Instance),
     ];
 
+    private static readonly HelpGroup Help = new("Discover",
+    [
+        new("⏎", "search"),
+        new("i", "install"),
+        new("⏎", "on a row: details"),
+    ]);
+
     private readonly KeyHint[] _hints;
     private string? _lastQuery;
 
@@ -42,10 +49,13 @@ internal sealed class DiscoverTab : PackageListTab
             new(Key.Enter, "Search", () => Search(Table.Filter), "⏎"),
             new(new Key('/'), "Search box", Table.FocusFilter),
             new(Key.Tab, "Pane", SwitchPane),
+            new(Key.M, "Menu", ShowContextMenu),
         ];
     }
 
     protected override IReadOnlyList<KeyHint> TableHints => _hints;
+
+    protected override HelpGroup TabHelp => Help;
 
     public override void OnShown()
     {
@@ -67,6 +77,19 @@ internal sealed class DiscoverTab : PackageListTab
         {
             Search(_lastQuery);
         }
+    }
+
+    protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row)
+    {
+        var entries = new List<MenuEntry> { new("Install", () => RunOperation(OperationKind.Install, row)) };
+        if (Shell.InstalledIds.Contains(row.Id))
+        {
+            entries.Add(new("Uninstall", () => RunOperation(OperationKind.Uninstall, row)));
+        }
+
+        entries.Add(MenuEntry.Rule);
+        entries.AddRange(PackageMenuEntries(row));
+        return entries;
     }
 
     protected override void OnLoaded(IReadOnlyList<PackageRow> rows)

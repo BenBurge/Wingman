@@ -14,6 +14,24 @@ internal sealed class Screen(IApplication app, int width, int height)
 
     public void Reset() => File.WriteAllText(OutputPath, "");
 
+    /// <summary>
+    /// Holds the driver at the harness size. Between steps the ANSI driver's size monitor sometimes
+    /// reports 120x30 instead, which would lay the app out at another size under the mouse
+    /// coordinates and the checks that read the frame drawn between steps.
+    /// </summary>
+    public void HoldSize()
+    {
+        var driver = app.Driver!;
+        driver.SizeChanged += (_, _) =>
+        {
+            if (driver.Cols != width || driver.Rows != height)
+            {
+                driver.SetScreenSize(width, height);
+            }
+        };
+        driver.SetScreenSize(width, height);
+    }
+
     public void Log(string text) => File.AppendAllText(OutputPath, text + "\n");
 
     /// <summary>
@@ -83,7 +101,17 @@ internal sealed class Screen(IApplication app, int width, int height)
         return rows;
     }
 
+    /// <summary>The attribute of the cell at column <paramref name="x"/>, row <paramref name="y"/> as last drawn, in the dump legend's format.</summary>
+    public string AttributeAt(int x, int y) => app.Driver!.Contents![y, x].Attribute?.ToString() ?? "null";
+
     public void Click(int x, int y) => app.InjectSequence(InputInjectionExtensions.LeftButtonClick(new Point(x, y)));
+
+    public void DoubleClick(int x, int y) => app.InjectSequence(InputInjectionExtensions.LeftButtonDoubleClick(new Point(x, y)));
+
+    public void RightClick(int x, int y) => app.InjectSequence(InputInjectionExtensions.RightButtonClick(new Point(x, y)));
+
+    public void Wheel(int x, int y, bool down) =>
+        app.InjectMouse(new Mouse { ScreenPosition = new Point(x, y), Flags = down ? MouseFlags.WheeledDown : MouseFlags.WheeledUp });
 
     public void Press(Key key, int times = 1)
     {

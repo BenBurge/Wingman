@@ -6,13 +6,17 @@ namespace TuiHarness;
 /// <summary>
 /// <see cref="FakeWingetClient"/> with winget-like delays, plus rows the fixtures lack: a wide-character
 /// package at the end of the installed list whose <c>show</c> fails, one upgrade that needs
-/// explicit targeting, and a catalog package, <c>Vendor.WillFail</c>, whose install fails.
+/// explicit targeting, and a catalog package, <c>Vendor.WillFail</c>, whose install prints more lines than
+/// the log pane holds and then fails.
 /// </summary>
 internal sealed class SlowClient(IWingetClient inner) : IWingetClient
 {
     public const string WideId = "Wide.漢字漢字漢字漢字漢字";
     public const string FailingId = "Vendor.WillFail";
     private const string ExplicitTargetingId = "Microsoft.VisualStudio.2022.Professional";
+
+    // More than a 40-row terminal's log pane shows, so the wheel has something to scroll.
+    private const int FailingInstallExtraLines = 40;
 
     // FakeWingetClient fails any operation on an Id containing "fail".
     private static readonly PackageRow FailingRow = new("Will Fail Tool", FailingId, "1.0.0", null, "winget");
@@ -56,7 +60,7 @@ internal sealed class SlowClient(IWingetClient inner) : IWingetClient
         return id == "Git.Git" && details is not null ? WithReleaseNotes(details) : details;
     }
 
-    /// <summary>Long enough to scroll in a 30-row terminal, with a URL wider than the pane.</summary>
+    /// <summary>Long enough to scroll in a 40-row terminal, with a URL wider than the pane.</summary>
     private static PackageDetails WithReleaseNotes(PackageDetails details) => new()
     {
         Id = details.Id,
@@ -73,6 +77,10 @@ internal sealed class SlowClient(IWingetClient inner) : IWingetClient
             "",
             "Bug fixes: a crash when the index is locked by another process is gone; git clone no longer hangs over slow HTTP proxies; long paths work again when core.longpaths is set in the system config.",
             "",
+            "Known issues: the credential manager may ask for a token twice after upgrading from 2.4x, and git gui can render blank on high-contrast themes until it is restarted.",
+            "",
+            "Deprecations: the bundled Perl will be removed in a future release, so scripts that rely on it should install Perl separately; the legacy rebase backend is gone.",
+            "",
             "Full notes: https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.3"),
         AdditionalFields = new Dictionary<string, string> { ["Installer.Scope"] = "machine" },
     };
@@ -81,8 +89,18 @@ internal sealed class SlowClient(IWingetClient inner) : IWingetClient
 
     public Task<IReadOnlyList<Pin>> ListPinsAsync(CancellationToken ct) => inner.ListPinsAsync(ct);
 
-    public Task<OperationResult> InstallAsync(OperationRequest request, IProgress<string> output, CancellationToken ct) =>
-        inner.InstallAsync(request, output, ct);
+    public Task<OperationResult> InstallAsync(OperationRequest request, IProgress<string> output, CancellationToken ct)
+    {
+        if (request.Id == FailingId)
+        {
+            for (var i = 1; i <= FailingInstallExtraLines; i++)
+            {
+                output.Report($"Extracting file {i} of {FailingInstallExtraLines}");
+            }
+        }
+
+        return inner.InstallAsync(request, output, ct);
+    }
 
     public Task<OperationResult> UpgradeAsync(OperationRequest request, IProgress<string> output, CancellationToken ct) =>
         inner.UpgradeAsync(request, output, ct);

@@ -126,6 +126,9 @@ internal sealed class PackageTable : View
     /// <summary>Raised on Enter or double-click on a row.</summary>
     public event Action<PackageRow>? RowActivated;
 
+    /// <summary>Raised on a right-click on a row, after the cursor has moved to it, with the click's screen position.</summary>
+    public event Action<PackageRow, Point>? RowMenuRequested;
+
     /// <summary>Raised with the box's text when Enter is pressed in it while <see cref="FiltersRows"/> is false.</summary>
     public event Action<string>? QuerySubmitted;
 
@@ -249,6 +252,23 @@ internal sealed class PackageTable : View
     public void FocusFilter() => _filterField.SetFocus();
 
     public void FocusTable() => _tableView.SetFocus();
+
+    /// <summary>
+    /// The screen position of the cursor row at <paramref name="column"/> cells from the table's
+    /// left edge, scrolling the row into view first; null when the table has no rows.
+    /// </summary>
+    public Point? CursorRowScreenPosition(int column)
+    {
+        if (_tableView.Value is not { } selection || CurrentRow is null)
+        {
+            return null;
+        }
+
+        _tableView.EnsureCursorIsVisible();
+        var origin = _tableView.ViewportToScreen(Point.Empty);
+        var rowOnScreen = HeaderRows + selection.SelectedCell.Y - _tableView.RowOffset;
+        return new Point(origin.X + column, origin.Y + rowOnScreen);
+    }
 
     /// <summary>Sorts by the next column, ascending, wrapping from the last column back to the first.</summary>
     public void CycleSort()
@@ -456,7 +476,19 @@ internal sealed class PackageTable : View
             return;
         }
 
-        _tableView.ScreenToCell(position, out int? headerColumn);
+        var cell = _tableView.ScreenToCell(position, out int? headerColumn);
+        if (mouse.Flags.HasFlag(MouseFlags.RightButtonClicked))
+        {
+            mouse.Handled = true;
+            if (headerColumn is null && cell is { } rowCell && rowCell.Y >= 0 && rowCell.Y < _source.Rows)
+            {
+                _tableView.Value = new TableSelection(new Point(0, rowCell.Y));
+                RowMenuRequested?.Invoke(_source.Packages[rowCell.Y], mouse.ScreenPosition);
+            }
+
+            return;
+        }
+
         if (headerColumn is not { } tableColumn)
         {
             return;

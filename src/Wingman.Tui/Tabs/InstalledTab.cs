@@ -20,6 +20,14 @@ internal sealed class InstalledTab : PackageListTab
         new("Version", row => row.Version, 14, VersionComparer.Instance),
     ];
 
+    private static readonly HelpGroup Help = new("Installed",
+    [
+        new("u", "upgrade"),
+        new("x", "uninstall"),
+        new("p", "pin / unpin"),
+        new("⏎", "details"),
+    ]);
+
     private readonly KeyHint[] _hints;
     private readonly KeyHint[] _pinnedRowHints;
     private bool _hasStartedLoading;
@@ -35,6 +43,8 @@ internal sealed class InstalledTab : PackageListTab
     }
 
     protected override IReadOnlyList<KeyHint> TableHints => IsCursorRowPinned ? _pinnedRowHints : _hints;
+
+    protected override HelpGroup TabHelp => Help;
 
     public override void OnShown()
     {
@@ -60,6 +70,22 @@ internal sealed class InstalledTab : PackageListTab
         Shell.SetInstalled(rows);
     }
 
+    protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row)
+    {
+        var entries = new List<MenuEntry>();
+        if (!string.IsNullOrEmpty(row.AvailableVersion))
+        {
+            entries.Add(new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)));
+        }
+
+        entries.Add(new("Uninstall", () => RunOperation(OperationKind.Uninstall, row)));
+        entries.Add(new(Shell.IsPinned(row.Id) ? "Unpin" : "Pin", () => Shell.TogglePin(row.Id)));
+        entries.Add(MenuEntry.Rule);
+        entries.AddRange(PackageMenuEntries(row));
+        return entries;
+    }
+
+    /// <remarks><c>Tab Pane</c> is left off so <c>m Menu</c> fits at 96 columns; Tab still switches panes.</remarks>
     private KeyHint[] BuildHints(string pinLabel) =>
     [
         new(Key.U, "Upgrade", () => RunOperation(OperationKind.Upgrade)),
@@ -68,7 +94,7 @@ internal sealed class InstalledTab : PackageListTab
         new(new Key('/'), "Filter", Table.FocusFilter),
         new(Key.S, "Sort", Table.CycleSort),
         new(Key.R, "Reload", Reload),
-        new(Key.Tab, "Pane", SwitchPane),
+        new(Key.M, "Menu", ShowContextMenu),
     ];
 
     private void Reload()

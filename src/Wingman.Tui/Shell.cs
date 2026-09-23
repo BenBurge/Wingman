@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Drawing;
 using System.Text;
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
@@ -13,7 +15,8 @@ namespace Wingman.Tui;
 /// <summary>
 /// The window chrome every tab shares: title bar, tab strip, message line, and key bar, plus the
 /// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n prompt on
-/// the message line, the one <see cref="OperationRunner"/>, and the pins every tab marks. Every
+/// the message line, the row context menu and the help overlay, which take every key while open,
+/// the one <see cref="OperationRunner"/>, and the pins every tab marks. Every
 /// member must be called on the UI thread; background work marshals back with <c>App.Invoke</c>.
 /// </summary>
 internal sealed class Shell
@@ -23,6 +26,18 @@ internal sealed class Shell
     private const string AppTitle = "Wingman";
     private static readonly TimeSpan StatusLifetime = TimeSpan.FromSeconds(5);
 
+    private static readonly HelpGroup GlobalHelp = new("Global",
+    [
+        new("1-5", "tabs"),
+        new("Tab", "switch pane"),
+        new("/", "filter or search"),
+        new("s", "cycle sort"),
+        new("r", "reload"),
+        new("m", "context menu"),
+        new("?", "help"),
+        new("q", "quit"),
+    ]);
+
     private readonly IWingetClient _client;
     private readonly View _content;
     private readonly Label _message;
@@ -31,6 +46,8 @@ internal sealed class Shell
     private readonly KeyHint[] _globalHints;
     private readonly KeyHint[] _promptHints;
     private readonly HashSet<string> _installedIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ContextMenu _menu;
+    private readonly HelpOverlay _help;
 
     private List<ShellTab> _tabs = [];
     private TabStrip? _tabStrip;
@@ -61,13 +78,20 @@ internal sealed class Shell
         // The title and version are drawn over the top border by DrawTitleBar instead, because the
         // border's own title cannot carry right-aligned text.
         Window.Border.Settings &= ~BorderSettings.Title;
-        Window.DrawComplete += (_, _) => DrawTitleBar();
+        Window.DrawComplete += (_, _) =>
+        {
+            DrawTitleBar();
+            PaintOverlay();
+        };
         Window.KeyDown += OnKeyDown;
         Window.IsRunningChanged += (_, running) => OnRunningChanged(running.Value);
 
-        // The application sees keys before any view does, so the prompt can take every key,
-        // including Enter and the arrows that the focused table would otherwise act on.
-        App.Keyboard.KeyDown += OnPromptKeyDown;
+        // The application sees keys and mouse events before any view does, so the prompt and the
+        // overlays can take every key, including Enter and the arrows that the focused table would
+        // otherwise act on, and an overlay can close on a click outside it before that click
+        // reaches the view under it.
+        App.Keyboard.KeyDown += OnAppKeyDown;
+        App.Mouse.MouseEvent += OnAppMouseEvent;
 
         var borderAttribute = theme.On(theme.Border);
 
@@ -106,7 +130,7 @@ internal sealed class Shell
         _quitHint = new(Key.Q, "Quit", Quit);
         _globalHints =
         [
-            new(new Key('?'), "Help", () => SetStatus("Not implemented yet: help")),
+            new(new Key('?'), "Help", ShowHelp),
             _quitHint,
         ];
         _promptHints =
@@ -115,7 +139,10 @@ internal sealed class Shell
             new(Key.N, "No", () => AnswerPrompt(false)),
         ];
 
-        Window.Add(tabSeparator, _content, footerSeparator, _message, _keyBar);
+        _menu = new ContextMenu(theme);
+        _help = new HelpOverlay(theme);
+
+        Window.Add(tabSeparator, _content, footerSeparator, _message, _keyBar, _menu, _help);
     }
 
     public IApplication App { get; }
@@ -141,6 +168,9 @@ internal sealed class Shell
     public Dictionary<string, PackageDetails?> DetailsCache { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Window Window { get; }
+
+    /// <summary>Opens a web address in the default browser; <c>tools/TuiHarness</c> replaces it so a run never starts one.</summary>
+    public Action<string> OpenUrl { get; set; } = OpenInBrowser;
 
     /// <summary>Winget's version as <c>GetVersionAsync</c> reports it, shown at the right of the title bar.</summary>
     public string WingetVersion
@@ -325,6 +355,69 @@ internal sealed class Shell
     /// <summary>Shows <paramref name="text"/> on the message line in the error color until the next message.</summary>
     public void SetError(string text) => PostMessage(text, Theme.ErrorScheme, isTransient: false);
 
+    /// <summary>
+    /// Opens the context menu titled <paramref name="title"/> with its corner at <paramref name="screenPosition"/>,
+    /// kept inside the content area. Ignored while the y/n prompt is up, since the menu's entries ask questions of their own.
+    /// </summary>
+    public void ShowContextMenu(string title, IReadOnlyList<MenuEntry> entries, Point screenPosition)
+    {
+        if (_onPromptYes is not null || OpenOverlay is not null)
+        {
+            return;
+        }
+
+        var position = Window.ScreenToViewport(screenPosition);
+        Window.MoveSubViewToEnd(_menu);
+        _menu.Open(title, entries, position, _content.Frame);
+    }
+
+    /// <summary>Opens the key list for the active tab over the content.</summary>
+    public void ShowHelp()
+    {
+        if (_onPromptYes is not null || OpenOverlay is not null)
+        {
+            return;
+        }
+
+        IReadOnlyList<HelpGroup> tabGroups = _activeTab?.HelpGroups ?? [];
+        Window.MoveSubViewToEnd(_help);
+        _help.Open([GlobalHelp, .. tabGroups], _content.Frame);
+    }
+
+    /// <summary>Puts <paramref name="id"/> on the system clipboard and says whether that worked.</summary>
+    public void CopyId(string id)
+    {
+        var isCopied = App.Clipboard?.TrySetClipboardData(id) ?? false;
+        SetStatus(isCopied ? $"Copied {id}" : "Clipboard is not available");
+    }
+
+    /// <summary>Opens the package's homepage from <c>winget show</c>, asking winget on a background task unless <see cref="DetailsCache"/> already has it.</summary>
+    public void OpenHomepage(string id)
+    {
+        if (DetailsCache.TryGetValue(id, out var cached))
+        {
+            OpenHomepageFrom(id, cached);
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var details = await _client.ShowAsync(id, CancellationToken.None);
+                App.Invoke(() =>
+                {
+                    DetailsCache[id] = details;
+                    OpenHomepageFrom(id, details);
+                });
+            }
+            catch (Exception ex)
+            {
+                App.Invoke(() => SetError($"winget: {ex.Message}"));
+            }
+        });
+    }
+
     private void PostMessage(string text, Scheme scheme, bool isTransient)
     {
         if (_onPromptYes is not null)
@@ -383,7 +476,99 @@ internal sealed class Shell
         }
     }
 
-    private void OnPromptKeyDown(object? sender, Key key)
+    /// <summary>The context menu or help overlay while one is open, or null.</summary>
+    private View? OpenOverlay
+    {
+        get
+        {
+            if (_menu.Visible)
+            {
+                return _menu;
+            }
+
+            if (_help.Visible)
+            {
+                return _help;
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Opens only http and https addresses, since a manifest's homepage is whatever its author typed
+    /// and the shell would run a file path or another scheme's handler just as readily.
+    /// </summary>
+    private void OpenHomepageFrom(string id, PackageDetails? details)
+    {
+        var homepage = details?.Homepage;
+        if (string.IsNullOrWhiteSpace(homepage))
+        {
+            SetStatus($"No homepage for {id}");
+            return;
+        }
+
+        var isWebAddress = Uri.TryCreate(homepage, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+        if (!isWebAddress)
+        {
+            SetError($"Not opening {homepage}: not a web address");
+            return;
+        }
+
+        try
+        {
+            OpenUrl(uri!.AbsoluteUri);
+            SetStatus($"Opened {uri.AbsoluteUri}");
+        }
+        catch (Exception ex)
+        {
+            SetError($"Could not open {homepage}: {ex.Message}");
+        }
+    }
+
+    private static void OpenInBrowser(string url) =>
+        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })?.Dispose();
+
+    private void OnAppKeyDown(object? sender, Key key)
+    {
+        if (_menu.Visible)
+        {
+            key.Handled = true;
+            _menu.HandleKey(key);
+            return;
+        }
+
+        if (_help.Visible)
+        {
+            key.Handled = true;
+            _help.HandleKey(key);
+            return;
+        }
+
+        OnPromptKeyDown(key);
+    }
+
+    /// <summary>
+    /// Keeps every mouse event outside an open overlay from reaching the views behind it, and
+    /// closes the overlay on a click there. The press and release before that click are taken too,
+    /// or the table would move its cursor on them.
+    /// </summary>
+    private void OnAppMouseEvent(object? sender, Mouse mouse)
+    {
+        if (OpenOverlay is not { } overlay || overlay.FrameToScreen().Contains(mouse.ScreenPosition))
+        {
+            return;
+        }
+
+        mouse.Handled = true;
+        if (mouse.IsSingleDoubleOrTripleClicked)
+        {
+            overlay.Visible = false;
+        }
+    }
+
+    private void OnPromptKeyDown(Key key)
     {
         if (_onPromptYes is null)
         {
@@ -524,6 +709,21 @@ internal sealed class Shell
                 key.Handled = true;
                 return;
             }
+
+            // Help and the menu work on every tab and while a log shows, whether or not the key bar lists them.
+            if (rune.Value == '?')
+            {
+                ShowHelp();
+                key.Handled = true;
+                return;
+            }
+
+            if (rune.Value == 'm')
+            {
+                _activeTab?.ShowContextMenu();
+                key.Handled = true;
+                return;
+            }
         }
 
         foreach (var hint in _keyBar.Hints)
@@ -535,6 +735,27 @@ internal sealed class Shell
                 return;
             }
         }
+    }
+
+    /// <summary>Draws the open overlay over everything else the window drew, its line canvas included.</summary>
+    private void PaintOverlay()
+    {
+        if (OpenOverlay is null)
+        {
+            return;
+        }
+
+        var savedClip = Window.SetClipToScreen();
+        if (_menu.Visible)
+        {
+            _menu.Paint();
+        }
+        else
+        {
+            _help.Paint();
+        }
+
+        Window.SetClip(savedClip);
     }
 
     /// <summary>Draws <c>┌─ Wingman ──── winget 1.29.380 ─┐</c> over the top border.</summary>

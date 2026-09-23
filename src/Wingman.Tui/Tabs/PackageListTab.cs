@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Globalization;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
@@ -18,6 +19,16 @@ internal abstract class PackageListTab : ShellTab
     private const int WideLayoutWidth = 96;
     private const int WideLeftPaneWidth = 57;
     private const int NarrowLeftPanePercent = 60;
+
+    // The left-pane column where m opens the menu on the cursor row, as the mockup draws it.
+    private const int MenuColumn = 24;
+
+    private static readonly HelpGroup LogHelp = new("Log",
+    [
+        new("Esc", "cancel"),
+        new("↑↓", "scroll log"),
+        new("⏎", "back"),
+    ]);
 
     private readonly Line _divider;
     private readonly KeyHint[] _runningHints;
@@ -94,6 +105,7 @@ internal abstract class PackageListTab : ShellTab
 
         Table.CursorChanged += OnCursorChanged;
         Table.RowActivated += _ => OnRowActivated();
+        Table.RowMenuRequested += OpenContextMenu;
         shell.PinsChanged += OnPinsChanged;
 
         Add(Table, _divider, Details, Log);
@@ -114,6 +126,16 @@ internal abstract class PackageListTab : ShellTab
 
     public override bool ShowsHelpHint => !IsLogShown;
 
+    public sealed override IReadOnlyList<HelpGroup> HelpGroups => IsLogShown ? [TabHelp, LogHelp] : [TabHelp];
+
+    public override void ShowContextMenu()
+    {
+        if (Table.CurrentRow is { } row && Table.CursorRowScreenPosition(MenuColumn) is { } position)
+        {
+            OpenContextMenu(row, position);
+        }
+    }
+
     protected Shell Shell { get; }
 
     protected IWingetClient Client { get; }
@@ -126,6 +148,9 @@ internal abstract class PackageListTab : ShellTab
 
     /// <summary>The tab's own keys, shown while the details pane is.</summary>
     protected abstract IReadOnlyList<KeyHint> TableHints { get; }
+
+    /// <summary>The tab's own keys in the help overlay.</summary>
+    protected abstract HelpGroup TabHelp { get; }
 
     protected bool IsLogShown => Log.Visible;
 
@@ -183,11 +208,15 @@ internal abstract class PackageListTab : ShellTab
     /// <summary>Asks to confirm <paramref name="kind"/> on the cursor row, then runs it with its log in place of the details.</summary>
     protected void RunOperation(OperationKind kind)
     {
-        if (Table.CurrentRow is not { } row)
+        if (Table.CurrentRow is { } row)
         {
-            return;
+            RunOperation(kind, row);
         }
+    }
 
+    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/>, then runs it with its log in place of the details.</summary>
+    protected void RunOperation(OperationKind kind, PackageRow row)
+    {
         if (Shell.Runner.IsRunning)
         {
             Shell.SetStatus(Shell.AlreadyRunningText);
@@ -204,6 +233,23 @@ internal abstract class PackageListTab : ShellTab
             Shell.TogglePin(row.Id);
         }
     }
+
+    /// <summary>
+    /// The context menu's entries for <paramref name="row"/>. Each one runs what the tab's key for it
+    /// runs, on this row even if the cursor has moved since the menu opened.
+    /// </summary>
+    protected abstract IReadOnlyList<MenuEntry> MenuEntries(PackageRow row);
+
+    /// <summary><c>Copy id</c> and <c>Open homepage</c>, which end every tab's menu.</summary>
+    protected IReadOnlyList<MenuEntry> PackageMenuEntries(PackageRow row) =>
+    [
+        new("Copy id", () => Shell.CopyId(row.Id)),
+        new("Open homepage", () => Shell.OpenHomepage(row.Id)),
+    ];
+
+    /// <summary><c>Upgrade to 2.81.0</c>, or plain <c>Upgrade</c> when the row has no available version.</summary>
+    protected static string UpgradeLabel(PackageRow row) =>
+        string.IsNullOrEmpty(row.AvailableVersion) ? "Upgrade" : $"Upgrade to {row.AvailableVersion}";
 
     /// <summary>Focuses the log when it is showing, so coming back to the tab keeps the arrows on it, and the table otherwise.</summary>
     protected void FocusTableOrLog()
@@ -251,9 +297,18 @@ internal abstract class PackageListTab : ShellTab
         }
     }
 
-    /// <summary>Esc while the log is shown but the table has focus; the log handles its own Esc.</summary>
+    /// <summary>
+    /// Tab switches panes here rather than through the key bar, because a bar may leave <c>Tab Pane</c>
+    /// off to make room. Esc is for when the log is shown but the table has focus; the log handles its own Esc.
+    /// </summary>
     protected override bool OnKeyDown(Key key)
     {
+        if (key == Key.Tab)
+        {
+            SwitchPane();
+            return true;
+        }
+
         if (key == Key.Esc && IsLogShown)
         {
             if (Log.IsRunning)
@@ -377,6 +432,9 @@ internal abstract class PackageListTab : ShellTab
     }
 
     private void FocusLog() => Log.SetFocus();
+
+    private void OpenContextMenu(PackageRow row, Point screenPosition) =>
+        Shell.ShowContextMenu(row.Name, MenuEntries(row), screenPosition);
 
     private void OnCursorChanged(PackageRow? row)
     {

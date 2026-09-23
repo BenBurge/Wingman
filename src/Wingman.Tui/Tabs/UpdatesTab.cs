@@ -26,6 +26,12 @@ internal sealed class UpdatesTab : PackageListTab
         new("Available", row => row.AvailableVersion ?? "", 11, VersionComparer.Instance),
     ];
 
+    private static readonly HelpGroup Help = new("Updates",
+    [
+        new("u", "upgrade"),
+        new("p", "hold / release"),
+    ]);
+
     private readonly KeyHint[] _hints;
     private readonly KeyHint[] _heldRowHints;
     private IReadOnlyList<PackageRow> _rows = [];
@@ -45,6 +51,8 @@ internal sealed class UpdatesTab : PackageListTab
     }
 
     protected override IReadOnlyList<KeyHint> TableHints => IsCursorRowPinned ? _heldRowHints : _hints;
+
+    protected override HelpGroup TabHelp => Help;
 
     public override void OnShown()
     {
@@ -104,6 +112,14 @@ internal sealed class UpdatesTab : PackageListTab
         Table.Footer = string.Join(FooterSeparator, legends);
     }
 
+    protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row) =>
+    [
+        new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)),
+        new(Shell.IsPinned(row.Id) ? "Release" : "Hold", () => Shell.TogglePin(row.Id)),
+        MenuEntry.Rule,
+        .. PackageMenuEntries(row),
+    ];
+
     private KeyHint[] BuildHints(string pinLabel) =>
     [
         new(Key.U, "Upgrade", () => RunOperation(OperationKind.Upgrade)),
@@ -112,6 +128,7 @@ internal sealed class UpdatesTab : PackageListTab
         new(new Key('/'), "Filter", Table.FocusFilter),
         new(Key.S, "Sort", Table.CycleSort),
         new(Key.Tab, "Pane", SwitchPane),
+        new(Key.M, "Menu", ShowContextMenu),
     ];
 
     private void Reload()
