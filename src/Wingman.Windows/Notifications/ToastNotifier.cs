@@ -38,7 +38,7 @@ public sealed class ToastNotifier : IToastSender
 
         try
         {
-            var result = await _runner.RunAsync(argv[0], argv[1..], timeout.Token);
+            var result = await _runner.RunAsync(WindowsPowerShellPath, argv[1..], timeout.Token);
             if (result.ExitCode != 0)
             {
                 ReportFailure(FirstNonBlankLine(result.StandardError) ?? $"powershell exited with code {result.ExitCode}");
@@ -46,13 +46,23 @@ public sealed class ToastNotifier : IToastSender
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            ReportFailure($"powershell did not finish within {Timeout.TotalSeconds:0} s");
+            ReportFailure($"timed out after {Timeout.TotalSeconds:0} s");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ReportFailure(ex.Message);
         }
     }
+
+    /// <summary>
+    /// Windows PowerShell 5.1, not a bare <c>powershell.exe</c> resolved off PATH: the WinRT toast
+    /// types <see cref="ToastBuilder"/> activates are not loadable from PowerShell 7+ (<c>pwsh</c>),
+    /// which does not host the WinRT activation factories. In Constrained Language mode those WinRT
+    /// types are blocked outright, and the toast then fails harmlessly through the same non-zero
+    /// exit code path above.
+    /// </summary>
+    private static string WindowsPowerShellPath =>
+        Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
 
     private static void ReportFailure(string reason) =>
         Console.Error.WriteLine($"wingman: toast failed: {reason}");
