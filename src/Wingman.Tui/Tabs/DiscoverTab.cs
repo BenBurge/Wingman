@@ -75,11 +75,11 @@ internal sealed class DiscoverTab : PackageListTab
         }
         else
         {
-            FocusTableOrLog();
+            FocusTableOrBatch();
         }
     }
 
-    /// <summary>Only the tab that ran the operation searches again; its <c>✓</c> markers follow the Installed tab by themselves.</summary>
+    /// <summary>Only the tab that ran the batch searches again; its <c>✓</c> markers follow the Installed tab by themselves.</summary>
     public override void RefreshAfterOperation(bool isOrigin)
     {
         if (isOrigin && _lastQuery is not null)
@@ -132,11 +132,11 @@ internal sealed class DiscoverTab : PackageListTab
     /// <summary>
     /// <c>r</c> reruns the last search. It is not on the key bar, so the shell does not dispatch
     /// it; this sees it only after the focused view has passed on it, so typing an r in the search
-    /// box never gets here.
+    /// box never gets here, nor while the batch screen hides the results.
     /// </summary>
     protected override bool OnKeyDown(Key key)
     {
-        if (key == Key.R)
+        if (key == Key.R && !IsBatchShown)
         {
             if (_lastQuery is not null)
             {

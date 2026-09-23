@@ -3,6 +3,7 @@ using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
 using TuiHarness;
 using Wingman.Core.Bundles;
+using Wingman.Core.History;
 using Wingman.Core.Options;
 using Wingman.Core.Winget;
 using Wingman.Tui;
@@ -35,9 +36,10 @@ var screen = new Screen(app, width, height);
 screen.Reset();
 screen.HoldSize();
 
-// A short step delay so an operation streams its ten lines in about half a second.
-var client = new SlowClient(new FakeWingetClient(TimeSpan.FromMilliseconds(50)));
-var shell = WingmanApp.CreateShell(app, theme, client, settings);
+// A short step delay so an operation streams its nine lines in under half a second.
+var client = new SlowClient(new FakeWingetClient(TimeSpan.FromMilliseconds(40)));
+var shell = WingmanApp.CreateShell(app, theme, client, settings, elevation: null, new FakeCommandRunner());
+var historyDirectory = Path.Combine(dataDirectory, "history");
 string Focused() => shell.Window.MostFocused?.GetType().Name ?? "none";
 
 // Stand-ins so a run never overwrites the real clipboard or starts a browser.
@@ -88,7 +90,7 @@ string LeftOf(string row) => row[..Divider()];
 string RightPaneText(IReadOnlyList<string> rows) => string.Join("\n", rows.Skip(3).Take(rows.Count - 6).Select(row => row[(Divider() + 1)..]));
 int KeyBarX(string item) => screen.Rows()[height - 2].IndexOf(item, StringComparison.Ordinal);
 int TabStripX(string title) => screen.Rows()[1].IndexOf(" " + title + " ", StringComparison.Ordinal) + 1;
-bool IsCursorRow(int y) => screen.AttributeAt(10, y) == theme.Selected.ToString();
+bool IsCursorRow(int y) => y >= 0 && screen.AttributeAt(10, y) == theme.Selected.ToString();
 bool IsMenuOpen() => ScreenHas("│ Copy id");
 
 // Table rows whose marker column starts with the marked glyph; the Discover legend's ● is further right.
@@ -96,12 +98,16 @@ int MarkedRowCount() => screen.Rows().Skip(FirstRowY).Take(height - FirstRowY - 
 bool AnyMarkedRow(char ownMarker) => screen.Rows().Skip(FirstRowY).Take(height - FirstRowY - 4).Any(row => row[1] == '●' && row[2] == ownMarker);
 bool IsHelpOpen() => ScreenHas("┌─ Keys ");
 
+// The batch screen draws each operation as " ✓ Id …" from the window border, so the glyph is at column 2 and the Id starts at 4.
+int BatchRowY(string id) => screen.Rows().ToList().FindIndex(row => row.Length > 4 && row[4..].StartsWith(id + " ", StringComparison.Ordinal));
+string BatchRow(string id) => BatchRowY(id) is var y && y >= 0 ? screen.Rows()[y] : "";
+char BatchGlyph(string id) => BatchRow(id) is { Length: > 2 } row ? row[2] : ' ';
+bool HasBarOrSpinner(string row) => row.Contains('%') || "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".Any(row.Contains);
+
 // The rows between the tab separator and the footer separator. The separators are left out: the
 // window's line canvas sometimes redraws the footer separator's left end as │ rather than ├ between steps.
 string PaneRows(IReadOnlyList<string> rows) => string.Join("\n", rows.Skip(3).Take(rows.Count - 7));
 
-// The table rows below the filter row, whose count label animates during a load.
-string LeftPaneRows(IReadOnlyList<string> rows) => string.Join("\n", rows.Skip(4).Take(rows.Count - 8).Select(LeftOf));
 string HelpBoxArea(IReadOnlyList<string> rows)
 {
     var top = rows.ToList().FindIndex(row => row.Contains("┌─ Keys ", StringComparison.Ordinal));
@@ -154,65 +160,119 @@ Step[] steps =
     }),
     new(50, "x and Down while prompting are ignored", () => { screen.Press(Key.X); screen.Press(Key.CursorDown); }, Verify: () =>
         Check("question still up", ScreenHas("Upgrade AutoHotkey.AutoHotkey to 2.0.28? (y/n)"))),
-    new(50, "y: the upgrade starts and the log replaces the details", () => screen.Press(Key.Y)),
-    new(200, "Log streaming", () => { }, WithColors: true, Verify: () =>
+    new(50, "n, then Space: AutoHotkey.AutoHotkey queued", () => { screen.Press(Key.N); screen.Press(Key.Space); }, Verify: () =>
     {
-        Check("running title", ScreenHas("▶ upgrade AutoHotkey.AutoHotkey"));
-        Check("command line", ScreenHas("$ winget upgrade --id AutoHotkey.A"));
-        Check("running key bar", ScreenHas(" Esc Cancel   ↑↓ Scroll log   Tab Pane   q Quit "));
+        Check("question gone", !ScreenHas("(y/n)"));
+        Check("AutoHotkey queued", shell.Queue.Count == 1 && shell.Queue.Contains("AutoHotkey.AutoHotkey"));
     }),
-    new(50, "1 then x on Installed while running: refused", () => { screen.Press(new Key('1')); screen.Press(Key.X); }, Verify: () =>
-        Check("refusal message", ScreenHas(Shell.AlreadyRunningText))),
-    new(50, "3: back to Updates while the log streams", () => screen.Press(new Key('3'))),
-    new(1800, "Upgrade done, Updates reloaded", () => { }, WithColors: true, Verify: () =>
+    new(50, "2, search vendor", () => { screen.Press(new Key('2')); screen.Press(new Key('/')); screen.Press(Key.Backspace, 4); screen.Type("vendor"); screen.Press(Key.Enter); }),
+    new(600, "Space: Vendor.WillFail queued for install", () => screen.Press(Key.Space), Verify: () =>
+        Check("both queued", shell.Queue.Count == 2 && shell.Queue.Contains(SlowClient.FailingId))),
+    new(50, "3, g: the batch screen takes the content area", () => { screen.Press(new Key('3')); screen.Press(Key.G); }, Verify: () =>
     {
-        Check("done title", ScreenHas("✓ upgrade AutoHotkey.AutoHotkey"));
-        Check("done line", ScreenHas("Done in "));
-        Check("success message", ScreenHas("Upgraded AutoHotkey.AutoHotkey in "));
-        Check("finished key bar", ScreenHas(" ⏎ Back   ↑↓ Scroll log   q Quit "));
+        Check("running title", ScreenHas(" Running batch  1 of 2"));
+        Check("no elevation needed", ScreenHas("elevated helper: not needed "));
+        Check("running key bar", ScreenHas(" Esc Cancel remaining   ↑↓ Scroll log   q Quit "));
+        Check("table hidden", !ScreenHas("Filter:"));
+        Check("upgrade action", BatchRow("AutoHotkey.AutoHotkey").Contains("upgrade  2.0.26 → 2.0.28"));
+        Check("install action", BatchRow(SlowClient.FailingId).Contains("install  → latest"));
+        Check("install waiting", BatchGlyph(SlowClient.FailingId) == '·' && BatchRow(SlowClient.FailingId).Contains("waiting"));
+    }),
+    new(600, "mid-batch: one done, one running", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("title counts the running one", ScreenHas(" Running batch  2 of 2"));
+        Check("AutoHotkey done", BatchGlyph("AutoHotkey.AutoHotkey") == '✓' && BatchRow("AutoHotkey.AutoHotkey").Contains("done"));
+        Check("install running", BatchGlyph(SlowClient.FailingId) == '▶');
+        Check("bar or spinner", HasBarOrSpinner(BatchRow(SlowClient.FailingId)));
+        Check("log follows the running one", ScreenHas(" ─ Log · " + SlowClient.FailingId + " ─"));
+    }),
+    new(900, "batch finished", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("finished title", ScreenHas(" Batch finished  2 of 2 · 1 failed"));
+        Check("failed row", BatchGlyph(SlowClient.FailingId) == '✗' && BatchRow(SlowClient.FailingId).Contains("failed  exit 1603"));
+        Check("finished key bar", ScreenHas(" ⏎ Back   ↑↓ Select   l Full log   q Quit "));
+        Check("first row selected", IsCursorRow(BatchRowY("AutoHotkey.AutoHotkey")));
+        Check("its log saved", ScreenHas(" Log is saved to history/") && ScreenHas("-upgrade-AutoHotkey.AutoHotkey.log"));
+    }),
+    new(50, "Down: the failed row and its log", () => screen.Press(Key.CursorDown), Verify: () =>
+    {
+        Check("failed row selected", IsCursorRow(BatchRowY(SlowClient.FailingId)));
+        Check("its log", ScreenHas(" ─ Log · " + SlowClient.FailingId + " ─"));
+        Check("installer failure line", ScreenHas("Installer failed with exit code: 1603"));
+        Check("its history file", ScreenHas("-install-" + SlowClient.FailingId + ".log"));
+    }),
+    new(50, "wheel up over the log: older lines", () => screen.Wheel(width / 2, height - 8, down: false), Verify: () =>
+        Check("failure line scrolled out of view", !ScreenHas("Installer failed with exit code: 1603"))),
+    new(50, "wheel down over the log: newest lines", () => screen.Wheel(width / 2, height - 8, down: true), Verify: () =>
+        Check("failure line back in view", ScreenHas("Installer failed with exit code: 1603"))),
+    new(50, "l: the log fills the screen", () => screen.Press(Key.L), Verify: () =>
+    {
+        Check("title and rows hidden", !ScreenHas("Batch finished") && BatchRow(SlowClient.FailingId).Length == 0);
+        Check("rule on the first row", screen.Rows()[3].Contains(" ─ Log · " + SlowClient.FailingId));
+    }),
+    new(50, "l again: rows back", () => screen.Press(Key.L), Verify: () =>
+        Check("title back", ScreenHas(" Batch finished  2 of 2 · 1 failed"))),
+    new(50, "Enter: the list is back", () => screen.Press(Key.Enter), Verify: () =>
+    {
+        Check("table back", ScreenHas("Filter:"));
+        Check("queue empty", shell.Queue.Count == 0 && !ScreenHas(" Queue  "));
+    }),
+    new(600, "Updates reloaded without AutoHotkey", () => { }, WithColors: true, Verify: () =>
+    {
         Check("tab strip reads Updates 16", ScreenHas(" Updates 16 "));
         Check("AutoHotkey.AutoHotkey gone from the table", !LeftPaneHas("AutoHotkey.AutoHotkey"));
+        Check("details pane back", ScreenHas(" Pinned     no"));
+        var entries = new HistoryStore(historyDirectory).List();
+        Check("two operation entries and one batch entry", Directory.GetFiles(historyDirectory, "*.json").Length == 3
+            && entries.Count(entry => entry.Operation == "batch") == 1
+            && entries.Count(entry => entry.Operation != "batch") == 2);
     }),
-    new(50, "Enter: details pane back", () => screen.Press(Key.Enter), Verify: () =>
+
+    new(50, "Space on Microsoft.Azd, Down, Space, g", () => { screen.Press(Key.Space); screen.Press(Key.CursorDown); screen.Press(Key.Space); screen.Press(Key.G); }, Verify: () =>
     {
-        Check("details shown", ScreenHas(" Pinned     no"));
-        Check("log gone", !ScreenHas("Done in "));
+        Check("two operations", ScreenHas(" Running batch  1 of 2") && BatchRow(ElevatedId).Length > 0);
+        Check("elevated but no helper", ScreenHas("elevated helper: not available "));
     }),
-    new(50, "u, y on Microsoft.Azd", () => { screen.Press(Key.U); screen.Press(Key.Y); }),
-    new(100, "q while running: quit prompt", () => screen.Press(Key.Q), Verify: () =>
-        Check("quit question", ScreenHas("Quit and cancel upgrade Microsoft.Azd? (y/n)"))),
-    new(50, "n: keep running", () => screen.Press(Key.N), Verify: () =>
-    {
-        Check("still running", ScreenHas("▶ upgrade Microsoft.Azd"));
-        Check("running key bar back", ScreenHas(" Esc Cancel   ↑↓ Scroll log   Tab Pane   q Quit "));
-    }),
-    new(50, "Esc while running: cancel prompt", () => screen.Press(Key.Esc), Verify: () =>
-        Check("cancel question", ScreenHas("Cancel upgrade Microsoft.Azd? (y/n)"))),
+    new(100, "Esc while running: cancel prompt", () => screen.Press(Key.Esc), Verify: () =>
+        Check("cancel question", ScreenHas("Cancel remaining operations? (y/n)"))),
     new(50, "y: cancel", () => screen.Press(Key.Y)),
-    new(400, "Canceled", () => { }, Verify: () =>
+    new(400, "batch canceled", () => { }, Verify: () =>
     {
-        Check("canceled line", ScreenHas("Canceled after "));
-        Check("canceled message", ScreenHas("Canceled upgrade Microsoft.Azd"));
+        Check("finished title", ScreenHas(" Batch finished  0 of 2 · 2 canceled"));
+        Check("both rows canceled", screen.Rows().Count(row => row.Length > 4 && row[2] == '○' && row.Contains("canceled")) == 2);
+        Check("the log of Azd says so", ScreenHas(" Canceled"));
     }),
-    new(700, "Esc: details pane back", () => screen.Press(Key.Esc), Verify: () =>
+    new(50, "Esc: the list is back", () => screen.Press(Key.Esc), Verify: () =>
         Check("Updates still 16", ScreenHas(" Updates 16 "))),
 
     new(50, "2 then r: Discover reruns the last search", () => { screen.Press(new Key('2')); screen.Press(Key.R); }),
     new(600, "Discover after the rerun", () => { }),
-    new(50, "Search vendor", () => { screen.Press(new Key('/')); screen.Press(Key.Backspace, 4); screen.Type("vendor"); screen.Press(Key.Enter); }),
-    new(600, "Discover after searching vendor", () => { }),
-    new(50, "i, y on Vendor.WillFail", () => { screen.Press(Key.I); screen.Press(Key.Y); }),
-    new(1200, "Install failed", () => { }, WithColors: true, Verify: () =>
+    new(50, "i, y on Vendor.WillFail: a batch of one", () => { screen.Press(Key.I); screen.Press(Key.Y); }, Verify: () =>
     {
-        Check("failed title", ScreenHas("✗ install " + SlowClient.FailingId));
-        Check("failed line", ScreenHas("Failed with exit code 1603"));
-        Check("failure message", ScreenHas($"install {SlowClient.FailingId} failed with exit code 1603"));
+        Check("running title", ScreenHas(" Running batch  1 of 1"));
+        Check("install row", BatchRow(SlowClient.FailingId).Contains("install  → latest"));
     }),
-    new(50, "wheel up over the log: older lines", () => screen.Wheel(Divider() + 10, height / 2, down: false), Verify: () =>
-        Check("verdict scrolled out of view", !ScreenHas("Failed with exit code 1603"))),
-    new(50, "wheel down over the log: newest lines", () => screen.Wheel(Divider() + 10, height / 2, down: true), Verify: () =>
-        Check("verdict back in view", ScreenHas("Failed with exit code 1603"))),
-    new(50, "Enter: details pane back", () => screen.Press(Key.Enter)),
+    new(50, "q while running: quit prompt", () => screen.Press(Key.Q), Verify: () =>
+        Check("quit question", ScreenHas("Quit and cancel the batch? (y/n)"))),
+    new(50, "n: keep running", () => screen.Press(Key.N), Verify: () =>
+    {
+        Check("still running", ScreenHas(" Running batch  1 of 1"));
+        Check("running key bar back", ScreenHas(" Esc Cancel remaining   ↑↓ Scroll log   q Quit "));
+    }),
+    new(50, "1 then x on Installed while running: refused", () => { screen.Press(new Key('1')); screen.Press(Key.X); }, Verify: () =>
+        Check("refusal message", ScreenHas(Shell.BatchRunningText))),
+    new(50, "g on Installed while running: refused", () => screen.Press(Key.G), Verify: () =>
+        Check("refusal message", ScreenHas(Shell.BatchRunningText))),
+    new(50, "2: back to the running batch", () => screen.Press(new Key('2')), Verify: () =>
+        Check("batch screen back", ScreenHas(" ─ Log · " + SlowClient.FailingId + " ─"))),
+    new(1200, "install failed", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("finished title", ScreenHas(" Batch finished  1 of 1 · 1 failed"));
+        Check("failed row", BatchRow(SlowClient.FailingId).Contains("failed  exit 1603"));
+        Check("failure line", ScreenHas("Installer failed with exit code: 1603"));
+    }),
+    new(50, "Enter: search results back", () => screen.Press(Key.Enter), Verify: () =>
+        Check("table back", ScreenHas("Search:"))),
 
     new(50, "1, filter GitHub.cli", () => { screen.Press(new Key('1')); screen.Press(new Key('/')); screen.Type("GitHub.cli"); screen.Press(Key.Enter); }),
     new(600, "p: pin GitHub.cli", () => screen.Press(Key.P)),
@@ -375,11 +435,11 @@ Step[] steps =
     new(50, "m, Enter on Upgrade again", () => { screen.Press(Key.M); screen.Press(Key.Enter); }),
     new(50, "click y Yes on the key bar", () => screen.Click(KeyBarX("y Yes"), height - 2)),
     new(200, "upgrade running", () => { }, Verify: () =>
-        Check("running title", ScreenHas("▶ upgrade GitHub.cli"))),
-    new(50, "?: help while the log shows", () => screen.Press(new Key('?')), Verify: () =>
+        Check("running row", BatchGlyph("GitHub.cli") == '▶')),
+    new(50, "?: help while the batch runs", () => screen.Press(new Key('?')), Verify: () =>
     {
         Check("help open", IsHelpOpen());
-        Check("log group", ScreenHas("scroll log"));
+        Check("batch group", ScreenHas("back when done"));
     }),
     new(150, "help stays whole while the log streams under it", () => before = screen.Rows(), Verify: () =>
         CheckSameText("incremental frame shows the same help box", HelpBoxArea(before), HelpBoxArea(screen.Rows()))),
@@ -388,12 +448,15 @@ Step[] steps =
         Check("help closed", !IsHelpOpen());
         Check("no cancel question", !ScreenHas("(y/n)"));
     }),
-    new(50, "the table redraws where the help was", () => before = screen.Rows(), Verify: () =>
-        CheckSameText("incremental table rows match a full redraw", LeftPaneRows(before), LeftPaneRows(screen.Rows()))),
-    new(1000, "upgrade done, Enter: GitHub.cli leaves the filtered list", () => screen.Press(Key.Enter), Verify: () =>
+    new(1000, "upgrade done: the screen redraws where the help was", () => before = screen.Rows(), Verify: () =>
     {
-        Check("log gone", !ScreenHas("Done in "));
-        Check("upgraded message", ScreenHas("Upgraded GitHub.cli in "));
+        Check("finished", ScreenHas(" Batch finished  1 of 1"));
+        CheckSameText("incremental panes match a full redraw", PaneRows(before), PaneRows(screen.Rows()));
+    }),
+    new(50, "Enter: the list is back and GitHub.cli has left it", () => screen.Press(Key.Enter), Verify: () =>
+    {
+        Check("screen gone", !ScreenHas("Batch finished"));
+        Check("GitHub CLI gone from the filtered list", !LeftPaneHas("GitHub CLI"));
     }),
     new(50, "click Installed on the tab strip", () => screen.Click(TabStripX("Installed"), 1), Verify: () =>
         Check("Installed keys", ScreenHas(" x Uninstall "))),
@@ -451,8 +514,8 @@ Step[] steps =
         Check("details pane back", ScreenHas(" Pinned     "));
         Check("count without marks", ScreenHas("15 available · 1 held"));
     }),
-    new(50, "g: runner not here yet", () => screen.Press(Key.G), Verify: () =>
-        Check("pending message", ScreenHas(Shell.BatchRunnerPendingText))),
+    new(50, "g with an empty queue", () => screen.Press(Key.G), Verify: () =>
+        Check("empty-queue message", ScreenHas(Shell.QueueEmptyText))),
 
     new(50, "1, filter Git.Git, Space: nothing to upgrade", () => { screen.Press(new Key('1')); screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(new Key('/')); screen.Type("Git.Git"); screen.Press(Key.Enter); screen.Press(Key.Space); }, Verify: () =>
     {

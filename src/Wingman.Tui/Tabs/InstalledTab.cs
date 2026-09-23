@@ -8,7 +8,7 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// Every installed package, loaded from <see cref="IWingetClient.ListInstalledAsync"/> the first
 /// time the tab is shown or another tab needs the installed set, again on <c>r</c>, and after
-/// every operation. Pinned packages are marked <c>⊘</c>. Space marks a row with an upgrade
+/// every batch. Pinned packages are marked <c>⊘</c>. Space marks a row with an upgrade
 /// available for the batch.
 /// </summary>
 internal sealed class InstalledTab : PackageListTab
@@ -54,7 +54,7 @@ internal sealed class InstalledTab : PackageListTab
 
     public override void OnShown()
     {
-        FocusTableOrLog();
+        FocusTableOrBatch();
         EnsureLoaded();
     }
 
@@ -67,7 +67,7 @@ internal sealed class InstalledTab : PackageListTab
         }
     }
 
-    /// <summary>Reloads after every operation from any tab, since each changes what is installed and Discover's <c>✓</c> markers come from this list.</summary>
+    /// <summary>Reloads after every batch from any tab, since each can change what is installed and Discover's <c>✓</c> markers come from this list.</summary>
     public override void RefreshAfterOperation(bool isOrigin) => Reload();
 
     protected override void OnLoaded(IReadOnlyList<PackageRow> rows)

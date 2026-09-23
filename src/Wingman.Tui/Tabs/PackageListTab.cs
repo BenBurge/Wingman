@@ -1,5 +1,4 @@
 using System.Drawing;
-using System.Globalization;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
@@ -13,8 +12,8 @@ namespace Wingman.Tui.Tabs;
 /// A tab with a <see cref="PackageTable"/> on the left and a <see cref="DetailsPane"/> for the
 /// cursor row on the right, filled by a background load. Installed, Discover, and Updates are
 /// these; they differ in their columns, what they load, and their keys. While the batch queue has
-/// entries a <see cref="QueuePane"/> takes the details pane's place. An operation started from
-/// the tab swaps either for a <see cref="LogPane"/> until it is over and dismissed.
+/// entries a <see cref="QueuePane"/> takes the details pane's place. A batch started from the tab
+/// puts its <see cref="BatchRunnerScreen"/> in place of both panes until it is over and dismissed.
 /// </summary>
 internal abstract class PackageListTab : ShellTab
 {
@@ -25,28 +24,17 @@ internal abstract class PackageListTab : ShellTab
     // The left-pane column where m opens the menu on the cursor row, as the mockup draws it.
     private const int MenuColumn = 24;
 
-    private static readonly HelpGroup LogHelp = new("Log",
-    [
-        new("Esc", "cancel"),
-        new("↑↓", "scroll log"),
-        new("⏎", "back"),
-    ]);
-
     private readonly Line _divider;
     private readonly QueuePane _queuePane;
-    private readonly KeyHint[] _runningHints;
-    private readonly KeyHint[] _finishedHints;
 
     // Only the load this points at may touch the UI; an older one finishing late is ignored.
     private CancellationTokenSource? _loadCancellation;
     private int _leftPaneWidth = WideLeftPaneWidth;
 
-    // True while a load's rows go into the table, so the cursor moving onto a surviving row is
-    // not taken for the user moving it.
-    private bool _isShowingRows;
-
     // Whether the key bar was last given the hints for a pinned cursor row.
     private bool _hintsAreForPinnedRow;
+
+    private BatchRunnerScreen? _batchScreen;
 
     protected PackageListTab(Shell shell, IWingetClient client, string title, IReadOnlyList<PackageColumn> columns)
         : base(title)
@@ -91,38 +79,15 @@ internal abstract class PackageListTab : ShellTab
             Height = Dim.Fill(),
             Visible = false,
         };
-        _queuePane.RunRequested += shell.RunQueue;
+        _queuePane.RunRequested += RunQueue;
         _queuePane.ClearRequested += shell.ClearQueue;
-
-        Log = new LogPane(shell.Theme)
-        {
-            X = WideLeftPaneWidth + 1,
-            Y = 0,
-            Width = Dim.Fill(),
-            Height = Dim.Fill(),
-            Visible = false,
-        };
-        Log.CancelRequested += AskCancel;
-        Log.BackRequested += CloseLog;
-
-        _runningHints =
-        [
-            new(Key.Esc, "Cancel", AskCancel),
-            new(Key.CursorUp, "Scroll log", FocusLog, "↑↓"),
-            new(Key.Tab, "Pane", SwitchPane),
-        ];
-        _finishedHints =
-        [
-            new(Key.Enter, "Back", CloseLog, "⏎"),
-            new(Key.CursorUp, "Scroll log", FocusLog, "↑↓"),
-        ];
 
         Table.IsMarked = row => shell.Queue.Contains(row.Id);
         Table.MarkedScheme = shell.Theme.CellScheme(shell.Theme.Accent);
 
         MarkHint = new(Key.Space, "Mark", MarkCursorRow, "␣");
         ClearHint = new(Key.C, "Clear", shell.ClearQueue);
-        RunHint = new(Key.G, "Run", shell.RunQueue);
+        RunHint = new(Key.G, "Run", RunQueue);
 
         Table.CursorChanged += OnCursorChanged;
         Table.RowActivated += _ => OnRowActivated();
@@ -130,32 +95,57 @@ internal abstract class PackageListTab : ShellTab
         shell.PinsChanged += OnPinsChanged;
         shell.Queue.Changed += OnQueueChanged;
 
-        Add(Table, _divider, Details, _queuePane, Log);
+        Add(Table, _divider, Details, _queuePane);
     }
 
-    public sealed override IReadOnlyList<KeyHint> Hints
-    {
-        get
-        {
-            if (!IsLogShown)
-            {
-                return TableHints;
-            }
+    public sealed override IReadOnlyList<KeyHint> Hints => _batchScreen?.Hints ?? TableHints;
 
-            return Log.IsRunning ? _runningHints : _finishedHints;
-        }
-    }
+    public override bool ShowsHelpHint => !IsBatchShown;
 
-    public override bool ShowsHelpHint => !IsLogShown;
-
-    public sealed override IReadOnlyList<HelpGroup> HelpGroups => IsLogShown ? [TabHelp, LogHelp] : [TabHelp];
+    public sealed override IReadOnlyList<HelpGroup> HelpGroups => IsBatchShown ? [BatchRunnerScreen.Help] : [TabHelp];
 
     public override void ShowContextMenu()
     {
+        if (IsBatchShown)
+        {
+            return;
+        }
+
         if (Table.CurrentRow is { } row && Table.CursorRowScreenPosition(MenuColumn) is { } position)
         {
             OpenContextMenu(row, position);
         }
+    }
+
+    /// <summary>Puts <paramref name="screen"/> in place of the table and the right pane, and gives it focus.</summary>
+    public void ShowBatchScreen(BatchRunnerScreen screen)
+    {
+        _batchScreen = screen;
+        Add(screen);
+
+        // Focused first, so hiding the focused table does not leave focus to Terminal.Gui's choice.
+        screen.SetFocus();
+        Table.Visible = false;
+        _divider.Visible = false;
+        Details.Visible = false;
+        _queuePane.Visible = false;
+    }
+
+    /// <summary>Takes the batch screen down and disposes it, putting the table and the right pane back.</summary>
+    public void HideBatchScreen()
+    {
+        if (_batchScreen is not { } screen)
+        {
+            return;
+        }
+
+        _batchScreen = null;
+        Table.Visible = true;
+        _divider.Visible = true;
+        Table.FocusTable();
+        Remove(screen);
+        screen.Dispose();
+        ShowQueueOrDetails();
     }
 
     protected Shell Shell { get; }
@@ -166,8 +156,6 @@ internal abstract class PackageListTab : ShellTab
 
     protected DetailsPane Details { get; }
 
-    protected LogPane Log { get; }
-
     /// <summary><c>␣ Mark</c>, which toggles the cursor row in the batch queue.</summary>
     protected KeyHint MarkHint { get; }
 
@@ -177,20 +165,21 @@ internal abstract class PackageListTab : ShellTab
     /// <summary><c>g Run</c>, which runs the batch queue.</summary>
     protected KeyHint RunHint { get; }
 
-    /// <summary>The tab's own keys, shown while the details pane is.</summary>
+    /// <summary>The tab's own keys, shown while the table is.</summary>
     protected abstract IReadOnlyList<KeyHint> TableHints { get; }
 
     /// <summary>The tab's own keys in the help overlay.</summary>
     protected abstract HelpGroup TabHelp { get; }
 
-    protected bool IsLogShown => Log.Visible;
+    /// <summary>Whether a batch screen has the tab's content area.</summary>
+    protected bool IsBatchShown => _batchScreen is not null;
 
     private bool IsQueueShown => _queuePane.Visible;
 
     protected bool IsCursorRowPinned => Table.CurrentRow is { } row && Shell.IsPinned(row.Id);
 
     /// <summary>
-    /// Called on the UI thread after any operation finishes, from whichever tab. <paramref name="isOrigin"/>
+    /// Called on the UI thread after any batch finishes, from whichever tab. <paramref name="isOrigin"/>
     /// is true on the tab that started it.
     /// </summary>
     public abstract void RefreshAfterOperation(bool isOrigin);
@@ -238,7 +227,7 @@ internal abstract class PackageListTab : ShellTab
         UpdateHintsForCursorRow();
     }
 
-    /// <summary>Asks to confirm <paramref name="kind"/> on the cursor row, then runs it with its log in place of the details.</summary>
+    /// <summary>Asks to confirm <paramref name="kind"/> on the cursor row, then runs it as a batch of one.</summary>
     protected void RunOperation(OperationKind kind)
     {
         if (Table.CurrentRow is { } row)
@@ -247,16 +236,17 @@ internal abstract class PackageListTab : ShellTab
         }
     }
 
-    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/>, then runs it with its log in place of the details.</summary>
+    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/>, then runs it as a batch of one.</summary>
     protected void RunOperation(OperationKind kind, PackageRow row)
     {
-        if (Shell.Runner.IsRunning)
+        if (Shell.IsBatchRunning)
         {
-            Shell.SetStatus(Shell.AlreadyRunningText);
+            Shell.SetStatus(Shell.BatchRunningText);
             return;
         }
 
-        Shell.AskConfirm(ConfirmQuestion(kind, row), () => StartOperation(kind, row.Id));
+        // Built when the question is answered, so the batch uses the package's options as they are then.
+        Shell.AskConfirm(ConfirmQuestion(kind, row), () => Shell.RunOperation(Shell.BuildOperation(kind, row), this));
     }
 
     protected void TogglePin()
@@ -331,12 +321,12 @@ internal abstract class PackageListTab : ShellTab
     protected static string UpgradeLabel(PackageRow row) =>
         string.IsNullOrEmpty(row.AvailableVersion) ? "Upgrade" : $"Upgrade to {row.AvailableVersion}";
 
-    /// <summary>Focuses the log when it is showing, so coming back to the tab keeps the arrows on it, and the table otherwise.</summary>
-    protected void FocusTableOrLog()
+    /// <summary>Focuses the batch screen when it is showing, so coming back to the tab keeps the arrows on it, and the table otherwise.</summary>
+    protected void FocusTableOrBatch()
     {
-        if (IsLogShown)
+        if (_batchScreen is { } screen)
         {
-            Log.SetFocus();
+            screen.SetFocus();
         }
         else
         {
@@ -374,31 +364,20 @@ internal abstract class PackageListTab : ShellTab
             _divider.X = leftWidth;
             Details.X = leftWidth + 1;
             _queuePane.X = leftWidth + 1;
-            Log.X = leftWidth + 1;
         }
     }
 
     /// <summary>
     /// Tab switches panes here rather than through the key bar, because a bar may leave <c>Tab Pane</c>
-    /// off to make room. Esc is for when the log is shown but the table has focus; the log handles its own Esc.
+    /// off to make room. The batch screen is the only pane while it shows, so Tab does nothing then.
     /// </summary>
     protected override bool OnKeyDown(Key key)
     {
         if (key == Key.Tab)
         {
-            SwitchPane();
-            return true;
-        }
-
-        if (key == Key.Esc && IsLogShown)
-        {
-            if (Log.IsRunning)
+            if (!IsBatchShown)
             {
-                AskCancel();
-            }
-            else
-            {
-                CloseLog();
+                SwitchPane();
             }
 
             return true;
@@ -424,110 +403,15 @@ internal abstract class PackageListTab : ShellTab
             : $"Upgrade {row.Id} to {row.AvailableVersion}? (y/n)";
     }
 
-    private static string Seconds(TimeSpan elapsed) =>
-        elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " s";
+    private void RunQueue() => Shell.RunQueue(this);
 
-    private void StartOperation(OperationKind kind, string id)
-    {
-        // Checked again because the question can outlive an operation started elsewhere.
-        if (Shell.Runner.IsRunning)
-        {
-            Shell.SetStatus(Shell.AlreadyRunningText);
-            return;
-        }
+    /// <summary>The pane right of the divider that is showing: the queue or the details.</summary>
+    private View RightPane() => IsQueueShown ? _queuePane : Details;
 
-        // Version stays null so winget picks the latest; the row's Available column can be stale.
-        var request = new OperationRequest(id);
-        var operation = new RunningOperation(kind, id);
-        Log.Begin($"{operation.Verb} {id}", OperationRunner.CommandLine(kind, request));
-        Shell.Runner.Start(kind, request, Log.Append, outcome => FinishOperation(operation, outcome));
-
-        Details.Visible = false;
-        _queuePane.Visible = false;
-        Log.Visible = true;
-        Log.SetFocus();
-        Shell.RefreshHints(this);
-    }
-
-    private void FinishOperation(RunningOperation operation, OperationOutcome outcome)
-    {
-        var elapsed = Seconds(outcome.Elapsed);
-        var subject = $"{operation.Verb} {operation.Id}";
-        if (outcome.Succeeded)
-        {
-            Log.Finish(true, $"Done in {elapsed}");
-            Shell.SetSuccess($"{PastTense(operation.Kind)} {operation.Id} in {elapsed}");
-        }
-        else if (outcome.WasCanceled)
-        {
-            Log.Finish(false, $"Canceled after {elapsed}");
-            Shell.SetStatus($"Canceled {subject}");
-        }
-        else if (outcome.Result is { } result)
-        {
-            Log.Finish(false, $"Failed with exit code {result.ExitCode}");
-            Shell.SetError($"{subject} failed with exit code {result.ExitCode}");
-        }
-        else
-        {
-            var message = outcome.Error?.Message ?? "unknown error";
-            Log.Finish(false, $"Failed: {message}");
-            Shell.SetError($"{subject} failed: {message}");
-        }
-
-        Shell.RefreshHints(this);
-        Shell.RefreshAfterOperation(this);
-    }
-
-    private static string PastTense(OperationKind kind) => kind switch
-    {
-        OperationKind.Install => "Installed",
-        OperationKind.Upgrade => "Upgraded",
-        _ => "Uninstalled",
-    };
-
-    private void AskCancel()
-    {
-        if (Shell.Runner.Current is { } operation && Log.IsRunning)
-        {
-            Shell.AskConfirm($"Cancel {operation.Verb} {operation.Id}? (y/n)", Shell.Runner.Cancel);
-        }
-    }
-
-    /// <summary>Puts the details pane back once the operation is over; does nothing while it runs.</summary>
-    private void CloseLog()
-    {
-        if (!IsLogShown || Log.IsRunning)
-        {
-            return;
-        }
-
-        // Moved first, so hiding the log does not leave focus to Terminal.Gui's choice.
-        if (Log.HasFocus)
-        {
-            Table.FocusTable();
-        }
-
-        Log.Visible = false;
-        ShowQueueOrDetails();
-        Shell.RefreshHints(this);
-    }
-
-    /// <summary>The pane right of the divider that is showing: the log, the queue, or the details.</summary>
-    private View RightPane()
-    {
-        if (IsLogShown)
-        {
-            return Log;
-        }
-
-        return IsQueueShown ? _queuePane : Details;
-    }
-
-    /// <summary>Shows the queue while it has entries and the details otherwise, unless the log is showing.</summary>
+    /// <summary>Shows the queue while it has entries and the details otherwise, unless the batch screen is showing.</summary>
     private void ShowQueueOrDetails()
     {
-        if (IsLogShown)
+        if (IsBatchShown)
         {
             return;
         }
@@ -560,37 +444,16 @@ internal abstract class PackageListTab : ShellTab
         }
     }
 
-    private void FocusLog() => Log.SetFocus();
-
     private void OpenContextMenu(PackageRow row, Point screenPosition) =>
         Shell.ShowContextMenu(row.Name, MenuEntries(row), screenPosition);
 
     private void OnCursorChanged(PackageRow? row)
     {
         Details.Show(row);
-        if (!_isShowingRows)
-        {
-            CloseLog();
-        }
-
         UpdateHintsForCursorRow();
     }
 
-    private void OnRowActivated()
-    {
-        if (!IsLogShown)
-        {
-            RightPane().SetFocus();
-        }
-        else if (Log.IsRunning)
-        {
-            Log.SetFocus();
-        }
-        else
-        {
-            CloseLog();
-        }
-    }
+    private void OnRowActivated() => RightPane().SetFocus();
 
     /// <summary>Refreshes the key bar when the cursor row's pin state differs from what its hints were built for, such as <c>p Pin</c> against <c>p Unpin</c>.</summary>
     private void UpdateHintsForCursorRow()
@@ -610,9 +473,7 @@ internal abstract class PackageListTab : ShellTab
             return;
         }
 
-        _isShowingRows = true;
         Table.SetRows(rows);
-        _isShowingRows = false;
         Table.IsLoading = false;
         OnLoaded(rows);
     }

@@ -6,6 +6,7 @@ using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
+using Wingman.Core.History;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
 using Wingman.Core.Options;
@@ -19,17 +20,19 @@ namespace Wingman.Tui;
 /// The window chrome every tab shares: title bar, tab strip, message line, and key bar, plus the
 /// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n prompt on
 /// the message line, the row context menu and the help overlay, which take every key while open,
-/// the one <see cref="OperationRunner"/>, the batch <see cref="Queue"/>, and the pins every tab marks. Every
+/// the one batch allowed to run at a time, the batch <see cref="Queue"/>, and the pins every tab marks. Every
 /// member must be called on the UI thread; background work marshals back with <c>App.Invoke</c>.
 /// </summary>
 internal sealed class Shell
 {
-    public const string AlreadyRunningText = "An operation is already running";
+    public const string BatchRunningText = "A batch is already running";
+    public const string PinChangingText = "A pin change is already running";
     public const string QueueClearedText = "Queue cleared";
-    public const string BatchRunnerPendingText = "Batch runner arrives in #39";
+    public const string QueueEmptyText = "The queue is empty; press Space to mark rows";
 
     private const string AppTitle = "Wingman";
     private static readonly TimeSpan StatusLifetime = TimeSpan.FromSeconds(5);
+    private static readonly BatchOptions BatchOptions = new(ContinueOnFailure: true, AutoElevate: true);
 
     private static readonly HelpGroup GlobalHelp = new("Global",
     [
@@ -44,6 +47,9 @@ internal sealed class Shell
     ]);
 
     private readonly IWingetClient _client;
+    private readonly BatchRunner _batchRunner;
+    private readonly HistoryStore _history;
+    private readonly bool _canElevate;
     private readonly View _content;
     private readonly Label _message;
     private readonly KeyBar _keyBar;
@@ -63,19 +69,32 @@ internal sealed class Shell
     private IReadOnlyList<Pin> _pins = [];
     private bool _isChangingPin;
 
+    // The running batch, or the finished one whose screen is still up; null once that is dismissed.
+    private ActiveBatch? _batch;
+
     // Set while the y/n prompt is up: what y runs.
     private Action? _onPromptYes;
 
     // A message posted while the prompt is up, shown once it is answered.
     private (string Text, Scheme Scheme, bool IsTransient)? _heldMessage;
 
-    public Shell(IApplication app, Theme theme, IWingetClient client, WingmanSettings settings)
+    /// <param name="canElevate">Whether <paramref name="batchRunner"/> has an elevated helper to start.</param>
+    public Shell(
+        IApplication app,
+        Theme theme,
+        IWingetClient client,
+        WingmanSettings settings,
+        BatchRunner batchRunner,
+        HistoryStore history,
+        bool canElevate)
     {
         App = app;
         Theme = theme;
         Settings = settings;
         _client = client;
-        Runner = new OperationRunner(client, action => app.Invoke(action));
+        _batchRunner = batchRunner;
+        _history = history;
+        _canElevate = canElevate;
         Options = WingmanApp.CreatePackageOptionsStore();
 
         Window = new Window { Title = AppTitle, BorderStyle = LineStyle.Single };
@@ -165,8 +184,8 @@ internal sealed class Shell
     /// <summary>The operations marked for the batch, shared by every tab.</summary>
     public OperationQueue Queue { get; } = new();
 
-    /// <summary>Runs the one install, upgrade, or uninstall allowed at a time.</summary>
-    public OperationRunner Runner { get; }
+    /// <summary>Whether a batch is running; only one may run at a time.</summary>
+    public bool IsBatchRunning => _batch is { IsRunning: true };
 
     /// <summary>Raised after the installed set changes.</summary>
     public event Action? InstalledChanged;
@@ -266,7 +285,35 @@ internal sealed class Shell
         SetStatus(QueueClearedText);
     }
 
-    public void RunQueue() => SetStatus(BatchRunnerPendingText);
+    /// <summary>Runs every queued operation as one batch, with its screen in place of <paramref name="origin"/>'s content.</summary>
+    public void RunQueue(PackageListTab origin)
+    {
+        if (IsBatchRunning)
+        {
+            SetStatus(BatchRunningText);
+            return;
+        }
+
+        if (Queue.Count == 0)
+        {
+            SetStatus(QueueEmptyText);
+            return;
+        }
+
+        StartBatch([.. Queue.Items], origin, isFromQueue: true);
+    }
+
+    /// <summary>Runs <paramref name="operation"/> as a batch of one, leaving the queue alone.</summary>
+    public void RunOperation(QueuedOperation operation, PackageListTab origin)
+    {
+        if (IsBatchRunning)
+        {
+            SetStatus(BatchRunningText);
+            return;
+        }
+
+        StartBatch([operation], origin, isFromQueue: false);
+    }
 
     /// <summary>Starts the Installed tab's first load, for a tab that needs the installed set before Installed was shown.</summary>
     public void EnsureInstalledLoaded()
@@ -280,7 +327,7 @@ internal sealed class Shell
         }
     }
 
-    /// <summary>Tells every list tab that an operation started from <paramref name="origin"/> has finished, so each reloads what it may have changed.</summary>
+    /// <summary>Tells every list tab that a batch started from <paramref name="origin"/> has finished, so each reloads what it may have changed.</summary>
     public void RefreshAfterOperation(ShellTab origin)
     {
         foreach (var tab in _tabs)
@@ -327,14 +374,20 @@ internal sealed class Shell
 
     /// <summary>
     /// Removes the package's pin, or adds a blocking one when it has none, on a background task,
-    /// then reloads <see cref="Pins"/> and reports the result on the message line. Refused while an
-    /// operation or another pin change is running.
+    /// then reloads <see cref="Pins"/> and reports the result on the message line. Refused while a
+    /// batch or another pin change is running.
     /// </summary>
     public void TogglePin(string id)
     {
-        if (Runner.IsRunning || _isChangingPin)
+        if (IsBatchRunning)
         {
-            SetStatus(AlreadyRunningText);
+            SetStatus(BatchRunningText);
+            return;
+        }
+
+        if (_isChangingPin)
+        {
+            SetStatus(PinChangingText);
             return;
         }
 
@@ -648,17 +701,161 @@ internal sealed class Shell
 
     private void Quit()
     {
-        if (Runner.Current is not { } operation)
+        if (_batch is not { IsRunning: true } batch)
         {
             App.RequestStop();
             return;
         }
 
-        AskConfirm($"Quit and cancel {operation.Verb} {operation.Id}? (y/n)", () =>
+        AskConfirm("Quit and cancel the batch? (y/n)", () =>
         {
-            Runner.Cancel();
+            batch.Cancellation.Cancel();
             App.RequestStop();
         });
+    }
+
+    /// <summary>
+    /// Shows a new <see cref="BatchRunnerScreen"/> on <paramref name="origin"/>, dismissing a
+    /// finished one still up on any tab, and runs <paramref name="operations"/> on a background
+    /// task that reports back through <c>App.Invoke</c>.
+    /// </summary>
+    private void StartBatch(IReadOnlyList<QueuedOperation> operations, PackageListTab origin, bool isFromQueue)
+    {
+        CloseBatch();
+
+        var screen = new BatchRunnerScreen(App, Theme, operations, InitialElevationState(operations));
+        var batch = new ActiveBatch(screen, origin, operations, isFromQueue);
+        _batch = batch;
+        screen.CancelRequested += () => AskCancelBatch(batch);
+        screen.BackRequested += CloseBatch;
+        origin.ShowBatchScreen(screen);
+        RefreshHints(origin);
+
+        var progress = new InvokingProgress<BatchProgress>(update => App.Invoke(() => screen.Apply(update)));
+        var token = batch.Cancellation.Token;
+        _ = Task.Run(async () =>
+        {
+            Exception? error = null;
+            IReadOnlyList<string?> logFiles = [];
+            try
+            {
+                var summary = await _batchRunner.RunAsync(operations, BatchOptions, progress, token);
+                logFiles = LogFilesFor(summary.BatchId, operations);
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+
+            App.Invoke(() => FinishBatch(batch, logFiles, error));
+        });
+    }
+
+    /// <summary>What the batch screen shows for the elevated helper before the runner reports on it.</summary>
+    private string InitialElevationState(IReadOnlyList<QueuedOperation> operations)
+    {
+        var needsElevation = operations.Any(operation => operation.Plan.RequiresElevation);
+        if (!needsElevation)
+        {
+            return "not needed";
+        }
+
+        // Without a helper to start, the runner runs elevated operations in-process and says nothing.
+        return _canElevate ? "requesting" : "not available";
+    }
+
+    /// <summary>
+    /// Each operation's history log file name, or null for one that never ran, read from the
+    /// store the runner wrote to; called on the background task, since it reads every entry.
+    /// </summary>
+    private IReadOnlyList<string?> LogFilesFor(string batchId, IReadOnlyList<QueuedOperation> operations)
+    {
+        var files = new string?[operations.Count];
+        IReadOnlyList<HistoryEntry> entries;
+        try
+        {
+            entries = _history.List();
+        }
+        catch (IOException)
+        {
+            return files;
+        }
+
+        for (var i = 0; i < operations.Count; i++)
+        {
+            var id = operations[i].Row.Id;
+            var verb = operations[i].Kind.ToString().ToLowerInvariant();
+            foreach (var entry in entries)
+            {
+                var isThisOperation = entry.BatchId == batchId
+                    && entry.Operation == verb
+                    && string.Equals(entry.PackageId, id, StringComparison.OrdinalIgnoreCase);
+                if (isThisOperation)
+                {
+                    files[i] = entry.LogFileName;
+                    break;
+                }
+            }
+        }
+
+        return files;
+    }
+
+    /// <summary>
+    /// Ends the batch on its screen, takes what it ran out of the queue, and has every list tab
+    /// reload what the batch may have changed, whether or not its screen is dismissed yet.
+    /// </summary>
+    private void FinishBatch(ActiveBatch batch, IReadOnlyList<string?> logFiles, Exception? error)
+    {
+        batch.IsRunning = false;
+        batch.Screen.Finish(logFiles);
+        if (error is not null)
+        {
+            SetError($"Batch stopped: {error.Message}");
+        }
+
+        // Taken out one by one rather than cleared, so rows marked while the batch ran stay marked.
+        if (batch.IsFromQueue)
+        {
+            foreach (var operation in batch.Operations)
+            {
+                Queue.Remove(operation.Row.Id);
+            }
+        }
+
+        RefreshHints(batch.Origin);
+        RefreshAfterOperation(batch.Origin);
+    }
+
+    private void AskCancelBatch(ActiveBatch batch)
+    {
+        if (!batch.IsRunning)
+        {
+            return;
+        }
+
+        AskConfirm("Cancel remaining operations? (y/n)", () =>
+        {
+            // Checked again because the batch can finish while the question is up.
+            if (batch.IsRunning)
+            {
+                batch.Screen.MarkCancelRequested();
+                batch.Cancellation.Cancel();
+            }
+        });
+    }
+
+    /// <summary>Takes a finished batch's screen down and puts its tab's list back; does nothing while the batch runs.</summary>
+    private void CloseBatch()
+    {
+        if (_batch is not { IsRunning: false } batch)
+        {
+            return;
+        }
+
+        _batch = null;
+        batch.Origin.HideBatchScreen();
+        RefreshHints(batch.Origin);
     }
 
     private void SetPins(IReadOnlyList<Pin> pins)
@@ -836,5 +1033,37 @@ internal sealed class Shell
         }
 
         Window.SetClip(savedClip);
+    }
+
+    /// <summary>A batch the shell started: its screen, the tab showing it, and what it runs.</summary>
+    private sealed class ActiveBatch(
+        BatchRunnerScreen screen,
+        PackageListTab origin,
+        IReadOnlyList<QueuedOperation> operations,
+        bool isFromQueue)
+    {
+        public BatchRunnerScreen Screen { get; } = screen;
+
+        public PackageListTab Origin { get; } = origin;
+
+        public IReadOnlyList<QueuedOperation> Operations { get; } = operations;
+
+        /// <summary>Whether <see cref="Operations"/> came from the queue, which then gives them up when the batch ends.</summary>
+        public bool IsFromQueue { get; } = isFromQueue;
+
+        // Not disposed: a source without a timer holds no resources, and a late cancel must not throw.
+        public CancellationTokenSource Cancellation { get; } = new();
+
+        public bool IsRunning { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Forwards each report synchronously, so the order of <c>App.Invoke</c> calls is the order the
+    /// runner reported in. <see cref="Progress{T}"/> posts each report to the thread pool when there
+    /// is no synchronization context instead, which can reorder them.
+    /// </summary>
+    private sealed class InvokingProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 }

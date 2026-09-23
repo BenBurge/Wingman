@@ -8,7 +8,7 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// Installed packages with an upgrade available, loaded from
 /// <see cref="IWingetClient.ListUpgradesAsync"/> the first time the tab is shown, again on
-/// <c>r</c>, and after every operation once it has loaded. The tab strip shows how many there are
+/// <c>r</c>, and after every batch once it has loaded. The tab strip shows how many there are
 /// once a load has finished. Held (pinned) packages stay listed, dimmed and marked <c>⊘</c>.
 /// Space marks a row for the batch, and <c>a</c> marks every listed row an upgrade-all would take.
 /// </summary>
@@ -63,14 +63,14 @@ internal sealed class UpdatesTab : PackageListTab
 
     public override void OnShown()
     {
-        FocusTableOrLog();
+        FocusTableOrBatch();
         if (!_hasStartedLoading)
         {
             Reload();
         }
     }
 
-    /// <summary>Reloads once the tab has loaded, since any operation can add or remove an upgrade.</summary>
+    /// <summary>Reloads once the tab has loaded, since any batch can add or remove an upgrade.</summary>
     public override void RefreshAfterOperation(bool isOrigin)
     {
         if (_hasStartedLoading)

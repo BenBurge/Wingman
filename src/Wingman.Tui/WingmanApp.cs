@@ -1,4 +1,7 @@
 using Terminal.Gui.App;
+using Wingman.Core.Elevation;
+using Wingman.Core.History;
+using Wingman.Core.Operations;
 using Wingman.Core.Options;
 using Wingman.Core.Settings;
 using Wingman.Core.Winget;
@@ -10,12 +13,18 @@ namespace Wingman.Tui;
 public static class WingmanApp
 {
     /// <summary>
-    /// Names a directory to keep <c>settings.json</c> and <c>package-options.json</c> in instead of
-    /// <c>%APPDATA%\Wingman</c>, so <c>tools/TuiHarness</c> never reads or writes the real profile.
+    /// Names a directory to keep <c>settings.json</c>, <c>package-options.json</c>, and the
+    /// <c>history</c> folder in instead of <c>%APPDATA%\Wingman</c>, so <c>tools/TuiHarness</c>
+    /// never reads or writes the real profile.
     /// </summary>
     internal const string DataDirectoryVariable = "WINGMAN_DATA_DIR";
 
-    public static void Run(IWingetClient client)
+    /// <summary>Runs the TUI with every operation in-process, never starting the elevated helper.</summary>
+    public static void Run(IWingetClient client) => Run(client, elevation: null);
+
+    /// <param name="elevation">Starts the elevated helper for a batch, prompting for UAC; null runs
+    /// every operation in-process.</param>
+    public static void Run(IWingetClient client, Func<CancellationToken, Task<IElevatedOperationChannel>>? elevation)
     {
         var settings = CreateSettingsStore().Load();
         var theme = Theme.ByName(settings.Theme);
@@ -23,7 +32,7 @@ public static class WingmanApp
         using var app = Application.Create();
         app.Init();
 
-        var shell = CreateShell(app, theme, client, settings);
+        var shell = CreateShell(app, theme, client, settings, elevation, new ProcessRunner());
         app.Run(shell.Window);
         shell.Window.Dispose();
     }
@@ -34,10 +43,25 @@ public static class WingmanApp
     internal static PackageOptionsStore CreatePackageOptionsStore() =>
         DataDirectoryOverride() is { } directory ? new PackageOptionsStore(directory) : PackageOptionsStore.CreateDefault();
 
-    /// <summary>Builds the window and every tab. <c>tools/TuiHarness</c> calls this too, so it draws exactly what the app draws.</summary>
-    internal static Shell CreateShell(IApplication app, Theme theme, IWingetClient client, WingmanSettings settings)
+    internal static HistoryStore CreateHistoryStore() =>
+        DataDirectoryOverride() is { } directory ? new HistoryStore(Path.Combine(directory, "history")) : HistoryStore.CreateDefault();
+
+    /// <summary>
+    /// Builds the window and every tab. <c>tools/TuiHarness</c> calls this too, so it draws exactly
+    /// what the app draws; it passes a <paramref name="commandRunner"/> that never starts a process,
+    /// since that runner runs each package's pre- and post-commands.
+    /// </summary>
+    internal static Shell CreateShell(
+        IApplication app,
+        Theme theme,
+        IWingetClient client,
+        WingmanSettings settings,
+        Func<CancellationToken, Task<IElevatedOperationChannel>>? elevation,
+        IProcessRunner commandRunner)
     {
-        var shell = new Shell(app, theme, client, settings);
+        var history = CreateHistoryStore();
+        var batchRunner = new BatchRunner(client, new PrePostCommandRunner(commandRunner), history, elevation);
+        var shell = new Shell(app, theme, client, settings, batchRunner, history, canElevate: elevation is not null);
         shell.SetTabs(
         [
             new InstalledTab(shell, client),

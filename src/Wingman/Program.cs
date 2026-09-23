@@ -25,5 +25,8 @@ if (unrecognizedArgs.Length > 0)
 }
 
 IWingetClient client = isFake ? new FakeWingetClient() : new WingetCliClient(new ProcessRunner());
-WingmanApp.Run(client);
+
+// The fake never needs the elevated helper, and starting it would show a real UAC prompt.
+var elevation = isFake ? null : ElevationSupport.Factory;
+WingmanApp.Run(client, elevation);
 return 0;
