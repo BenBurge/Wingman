@@ -1,5 +1,6 @@
 using System.Text;
 using Wingman.Cli;
+using Wingman.Core.Elevation;
 using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Wingman.Tui;
@@ -9,11 +10,17 @@ using Wingman.Windows.Tray;
 
 // The elevated helper is this same executable relaunched by ElevatedHelperLauncher, so its
 // arguments are handled before anything that would start the TUI.
-if (args is ["--elevated-worker", var pipeName])
+if (args is ["--elevated-worker", ..])
 {
+    if (!ElevatedWorkerArguments.TryParse(args, out var pipeName, out var parentPid))
+    {
+        Console.Error.WriteLine($"wingman: usage: wingman {ElevatedWorkerArguments.Usage}");
+        return ExitCodes.Usage;
+    }
+
     if (OperatingSystem.IsWindows())
     {
-        return await ElevatedWorker.RunAsync(pipeName, CancellationToken.None);
+        return await ElevatedWorker.RunAsync(pipeName, parentPid, CancellationToken.None);
     }
 
     Console.Error.WriteLine("elevated worker is Windows-only");
