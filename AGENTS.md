@@ -61,4 +61,9 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - Key routing: the focused view sees a key first (`KeyDown`, bindings, `KeyDownNotHandled`), then parents. Handle global keys in `Window.KeyDown` and return early when `MostFocused is TextField`.
 - `StatusBar` always draws `│` separators and pads items, which overflows at 96 columns; the shell uses the custom `KeyBar` instead.
 - Show the first tab from `Window.IsRunningChanged`; focus and timers need the running app. Pane widths are set in `OnSubViewLayout`; a `Dim.Func` reading the parent's size can see the previous frame.
-- There is no headless test project; to check layout without a screen, compile the Tui sources into a small console harness on the ANSI driver at a fixed size and dump the screen cells (see `tools/` if such a harness has been committed, otherwise write one under `%TEMP%`).
+- `tools/TuiHarness` compiles the Tui sources into a console app on the ANSI driver at a fixed size, scripts keys and mouse events, and dumps every screen cell to `out.txt`. Run `dotnet run --project tools/TuiHarness -- 96 30 Midnight` and read the frames; use it to check any layout change, since nothing else can see the screen.
+- An empty `TableView` with focus returns true from `OnKeyDownNotHandled` for every printable key, even with `CollectionNavigator = null`, so `1`-`5`, `q`, and the key bar go dead. `PackageTable` uses a nested `TableView` subclass that returns false when there are no rows.
+- `Home` and `End` in `TableView` move between columns, which does nothing with `FullRowSelect`; `Ctrl+Home` and `Ctrl+End` move between rows.
+- Per-cell colors come from `ColumnStyle.ColorGetter`, which returns a `Scheme`. The cursor row draws with that scheme's `Focus` (or `Active` when unfocused), so a marker scheme must set both to the selected colors; `Theme.CellScheme(color)` does this.
+- Sibling views overlap in add order: a view added later draws over an earlier one. Add centered overlay labels after the `TableView`.
+- In Git Bash, `grep -c $'\r'` miscounts carriage returns; use `tr -cd '\r' < file | wc -c` to check line endings.
