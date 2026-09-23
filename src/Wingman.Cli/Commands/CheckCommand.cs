@@ -30,42 +30,36 @@ internal sealed class CheckCommand : ICliCommand
 
     public async Task<int> RunAsync(CliArgs args, CliContext context)
     {
+        DateTimeOffset checkedAt;
         UpdatesView view;
+        var available = new List<PackageRow>();
+
+        // The tray shows a working badge while this is set; the finally clears it even when the
+        // check throws, so a crash never leaves the badge stuck.
+        context.State.Update(state => state.Running = true);
         try
         {
-            var upgrades = await context.Client.ListUpgradesAsync(context.Cancel);
-            var pins = await context.Client.ListPinsAsync(context.Cancel);
-            view = UpdatesFilter.Apply(upgrades, pins, context.Options);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            context.State.Update(state => state.LastError = ex.Message);
-            throw;
-        }
-
-        var checkedAt = DateTimeOffset.Now;
-        var available = new List<PackageRow>();
-        foreach (var update in view.Visible)
-        {
-            if (update.Policy != UpdatePolicyKind.Hold)
+            view = await ListUpdatesAsync(context);
+            checkedAt = DateTimeOffset.Now;
+            foreach (var update in view.Visible)
             {
-                available.Add(update.Row);
+                if (update.Policy != UpdatePolicyKind.Hold)
+                {
+                    available.Add(update.Row);
+                }
             }
+
+            context.State.Update(state =>
+            {
+                state.LastCheck = checkedAt;
+                state.UpdatesAvailable = available.Count;
+                state.UpdateIds = [.. available.Select(row => row.Id)];
+                state.LastError = "";
+            });
         }
-
-        context.State.Update(state =>
+        finally
         {
-            state.LastCheck = checkedAt;
-            state.UpdatesAvailable = available.Count;
-            state.UpdateIds = [.. available.Select(row => row.Id)];
-            state.LastError = "";
-        });
-
-        var settings = context.Settings;
-        var wantsToast = context.Notify && available.Count > 0 && settings.ToastOnUpdates && !settings.NotificationsPaused;
-        if (wantsToast && context.Notifier is { } notify)
-        {
-            notify(ToastBuilder.UpdatesAvailable(available));
+            context.State.Update(state => state.Running = false);
         }
 
         if (context.Json)
@@ -77,7 +71,29 @@ internal sealed class CheckCommand : ICliCommand
             WriteText(context, view, available.Count);
         }
 
+        var settings = context.Settings;
+        var wantsToast = context.Notify && available.Count > 0 && settings.ToastOnUpdates && !settings.NotificationsPaused;
+        if (wantsToast && context.ToastSender is { } toasts)
+        {
+            await toasts.SendAsync(ToastBuilder.UpdatesAvailable(available), context.Cancel);
+        }
+
         return available.Count > 0 ? ExitCodes.UpdatesAvailable : ExitCodes.Success;
+    }
+
+    private static async Task<UpdatesView> ListUpdatesAsync(CliContext context)
+    {
+        try
+        {
+            var upgrades = await context.Client.ListUpgradesAsync(context.Cancel);
+            var pins = await context.Client.ListPinsAsync(context.Cancel);
+            return UpdatesFilter.Apply(upgrades, pins, context.Options);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            context.State.Update(state => state.LastError = ex.Message);
+            throw;
+        }
     }
 
     private static void WriteText(CliContext context, UpdatesView view, int availableCount)

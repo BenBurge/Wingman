@@ -10,7 +10,8 @@ namespace Wingman.Windows.Setup;
 /// <summary>
 /// Applies a <see cref="SetupPlan"/> to the current user's Task Scheduler, HKCU, and Start Menu.
 /// Each part is read before it is written, so a second run reports everything unchanged, and each
-/// is applied on its own, so one failure does not stop the rest.
+/// is applied on its own, so one failure does not stop the rest. What to do with a part once it
+/// has been read is <see cref="SetupOutcomes.Decide"/>'s call.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class SetupExecutor : ISetupExecutor
@@ -45,12 +46,7 @@ public sealed class SetupExecutor : ISetupExecutor
             results.Add(await ApplyTaskAsync(task, items.Dequeue(), remove, dryRun, ct));
         }
 
-        if (plan.StartupEntry is { } startupEntry)
-        {
-            var item = items.Dequeue();
-            results.Add(remove ? RemoveRegistryValue(startupEntry, item, dryRun) : SetRegistryValue(startupEntry, item, dryRun));
-        }
-
+        results.Add(ApplyRegistryValue(plan.StartupEntry, items.Dequeue(), remove, dryRun));
         results.Add(ApplyShortcut(plan.Shortcut, items.Dequeue(), remove, dryRun));
 
         var protocolItems = items.ToList();
@@ -62,7 +58,7 @@ public sealed class SetupExecutor : ISetupExecutor
         {
             for (var i = 0; i < plan.ProtocolValues.Count; i++)
             {
-                results.Add(SetRegistryValue(plan.ProtocolValues[i], protocolItems[i], dryRun));
+                results.Add(ApplyRegistryValue(plan.ProtocolValues[i], protocolItems[i], remove: false, dryRun));
             }
         }
 
@@ -78,40 +74,22 @@ public sealed class SetupExecutor : ISetupExecutor
             // any failure here counts as "not registered" and the create or delete reports the rest.
             var query = await _runner.RunAsync(Schtasks, ["/Query", "/TN", task.Name, "/XML"], ct);
             var exists = query.ExitCode == 0;
+            var upToDate = exists && ScheduledTaskXml.Matches(query.StandardOutput, task);
 
-            if (remove)
+            var outcome = SetupOutcomes.Decide(exists, task.Enabled, remove, dryRun, upToDate);
+            if (outcome == SetupResult.Removed)
             {
-                if (!exists)
-                {
-                    return Outcome(item, SetupResult.Unchanged);
-                }
-
-                if (dryRun)
-                {
-                    return Outcome(item, SetupResult.WouldRemove);
-                }
-
                 var delete = await _runner.RunAsync(Schtasks, task.SchtasksDeleteArgs, ct);
-                return delete.ExitCode == 0 ? Outcome(item, SetupResult.Removed) : Failed(item, FirstLine(delete));
+                return delete.ExitCode == 0 ? Outcome(item, outcome) : Failed(item, FirstLine(delete));
             }
 
-            if (exists && ScheduledTaskXml.Matches(query.StandardOutput, task))
+            if (outcome is SetupResult.Created or SetupResult.Updated)
             {
-                return Outcome(item, SetupResult.Unchanged);
+                var create = await _runner.RunAsync(Schtasks, task.SchtasksCreateArgs, ct);
+                return create.ExitCode == 0 ? Outcome(item, outcome) : Failed(item, FirstLine(create));
             }
 
-            if (dryRun)
-            {
-                return Outcome(item, SetupResult.WouldCreate);
-            }
-
-            var create = await _runner.RunAsync(Schtasks, task.SchtasksCreateArgs, ct);
-            if (create.ExitCode != 0)
-            {
-                return Failed(item, FirstLine(create));
-            }
-
-            return Outcome(item, exists ? SetupResult.Updated : SetupResult.Created);
+            return Outcome(item, outcome);
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
@@ -119,7 +97,7 @@ public sealed class SetupExecutor : ISetupExecutor
         }
     }
 
-    private static SetupResult SetRegistryValue(RegistryValueSpec spec, SetupItem item, bool dryRun)
+    private static SetupResult ApplyRegistryValue(RegistryValueSpec spec, SetupItem item, bool remove, bool dryRun)
     {
         try
         {
@@ -129,43 +107,20 @@ public sealed class SetupExecutor : ISetupExecutor
                 current = key?.GetValue(spec.ValueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
             }
 
-            if (current is string text && text == spec.Value)
+            var upToDate = current is string text && text == spec.Value;
+            var outcome = SetupOutcomes.Decide(current is not null, spec.Enabled, remove, dryRun, upToDate);
+            if (outcome == SetupResult.Removed)
             {
-                return Outcome(item, SetupResult.Unchanged);
+                using var writableKey = Registry.CurrentUser.OpenSubKey(spec.KeyPath, writable: true);
+                writableKey?.DeleteValue(spec.ValueName, throwOnMissingValue: false);
+            }
+            else if (outcome is SetupResult.Created or SetupResult.Updated)
+            {
+                using var writableKey = Registry.CurrentUser.CreateSubKey(spec.KeyPath);
+                writableKey.SetValue(spec.ValueName, spec.Value, RegistryValueKind.String);
             }
 
-            if (dryRun)
-            {
-                return Outcome(item, SetupResult.WouldCreate);
-            }
-
-            using var writableKey = Registry.CurrentUser.CreateSubKey(spec.KeyPath);
-            writableKey.SetValue(spec.ValueName, spec.Value, RegistryValueKind.String);
-            return Outcome(item, current is null ? SetupResult.Created : SetupResult.Updated);
-        }
-        catch (Exception ex) when (IsRegistryError(ex))
-        {
-            return Failed(item, ex.Message);
-        }
-    }
-
-    private static SetupResult RemoveRegistryValue(RegistryValueSpec spec, SetupItem item, bool dryRun)
-    {
-        try
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(spec.KeyPath, writable: !dryRun);
-            if (key?.GetValue(spec.ValueName) is null)
-            {
-                return Outcome(item, SetupResult.Unchanged);
-            }
-
-            if (dryRun)
-            {
-                return Outcome(item, SetupResult.WouldRemove);
-            }
-
-            key.DeleteValue(spec.ValueName, throwOnMissingValue: false);
-            return Outcome(item, SetupResult.Removed);
+            return Outcome(item, outcome);
         }
         catch (Exception ex) when (IsRegistryError(ex))
         {
@@ -191,10 +146,10 @@ public sealed class SetupExecutor : ISetupExecutor
                 Registry.CurrentUser.DeleteSubKeyTree(ProtocolRootKey, throwOnMissingSubKey: false);
             }
 
-            var removedOutcome = dryRun ? SetupResult.WouldRemove : SetupResult.Removed;
             for (var i = 0; i < items.Count; i++)
             {
-                results.Add(Outcome(items[i], existed[i] ? removedOutcome : SetupResult.Unchanged));
+                var outcome = SetupOutcomes.Decide(existed[i], values[i].Enabled, remove: true, dryRun, upToDate: false);
+                results.Add(Outcome(items[i], outcome));
             }
         }
         catch (Exception ex) when (IsRegistryError(ex))
@@ -215,36 +170,21 @@ public sealed class SetupExecutor : ISetupExecutor
         try
         {
             var exists = File.Exists(path);
+            var upToDate = exists && ShellLink.TryRead(path) is { } current && Matches(current, spec);
 
-            if (remove)
+            // The shortcut carries the toast AppUserModelID, so no setting turns it off.
+            var outcome = SetupOutcomes.Decide(exists, enabled: true, remove, dryRun, upToDate);
+            if (outcome == SetupResult.Removed)
             {
-                if (!exists)
-                {
-                    return Outcome(item, SetupResult.Unchanged);
-                }
-
-                if (dryRun)
-                {
-                    return Outcome(item, SetupResult.WouldRemove);
-                }
-
                 File.Delete(path);
-                return Outcome(item, SetupResult.Removed);
             }
-
-            if (exists && ShellLink.TryRead(path) is { } current && Matches(current, spec))
+            else if (outcome is SetupResult.Created or SetupResult.Updated)
             {
-                return Outcome(item, SetupResult.Unchanged);
+                Directory.CreateDirectory(_startMenuDirectory);
+                ShellLink.Save(path, spec);
             }
 
-            if (dryRun)
-            {
-                return Outcome(item, SetupResult.WouldCreate);
-            }
-
-            Directory.CreateDirectory(_startMenuDirectory);
-            ShellLink.Save(path, spec);
-            return Outcome(item, exists ? SetupResult.Updated : SetupResult.Created);
+            return Outcome(item, outcome);
         }
         catch (Exception ex) when (ShellLink.IsShellLinkError(ex))
         {

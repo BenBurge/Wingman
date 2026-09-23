@@ -11,7 +11,7 @@ public static class CliRunner
     /// The entry assembly's informational version, which the release build stamps; <c>0.0.0-dev</c>
     /// when it carries none.
     /// </summary>
-    internal static string Version
+    public static string Version
     {
         get
         {
@@ -23,7 +23,7 @@ public static class CliRunner
 
     /// <summary>
     /// True when the arguments name a command or ask for help or the version, so the host runs
-    /// <see cref="RunAsync(string[], TextWriter, TextWriter, CancellationToken)"/> instead of the TUI.
+    /// <see cref="RunAsync(string[], TextWriter, TextWriter, CancellationToken, CliHostServices)"/> instead of the TUI.
     /// </summary>
     public static bool IsHeadless(string[] args)
     {
@@ -31,8 +31,13 @@ public static class CliRunner
         return parsed.Command is not null || parsed.HasFlag("help") || parsed.HasFlag("version");
     }
 
+    /// <summary>Runs with no host services, as off Windows: setup, the tray, and toasts are unavailable.</summary>
     public static Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, CancellationToken ct) =>
-        RunAsync(args, CliCommands.All, parsed => CliContext.Create(parsed, output, error, ct), output, error);
+        RunAsync(args, output, error, ct, CliHostServices.None);
+
+    public static Task<int> RunAsync(
+        string[] args, TextWriter output, TextWriter error, CancellationToken ct, CliHostServices services) =>
+        RunAsync(args, CliCommands.All, parsed => CliContext.Create(parsed, output, error, services, ct), output, error);
 
     /// <summary>Runs against the given commands and context factory so tests can supply their own.</summary>
     internal static async Task<int> RunAsync(

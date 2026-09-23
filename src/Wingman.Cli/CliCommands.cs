@@ -15,9 +15,9 @@ public static class CliCommands
         new ExportCommand(),
         new ImportCommand(),
         new HistoryCommand(),
-        new NotImplementedCommand("setup", "Register scheduled checks, the tray icon, and shortcuts"),
-        new NotImplementedCommand("self-update", "Update Wingman through winget"),
-        new NotImplementedCommand("tray", "Run the system tray icon"),
-        new NotImplementedCommand("open", "Open the terminal UI on a tab"),
+        new SetupCommand(),
+        new SelfUpdateCommand(),
+        new TrayCommand(),
+        new OpenCommand(),
     ];
 }

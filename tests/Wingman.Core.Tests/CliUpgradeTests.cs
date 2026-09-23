@@ -212,4 +212,18 @@ public class CliUpgradeTests : IDisposable
 
         Assert.Equal(["skip Git.Git: already installed; use upgrade", "Nothing to do."], _cli.OutputLines);
     }
+
+    [Fact]
+    public async Task Upgrade_Notify_SendsOneBatchToast_UnlessToastOnBatchIsOff()
+    {
+        await _cli.RunAsync("upgrade", "--yes", "--notify", "AutoHotkey.AutoHotkey");
+
+        var toast = Assert.Single(_cli.Toasts);
+        Assert.Equal("1 of 1 updated", toast.Title);
+
+        _cli.Settings.ToastOnBatch = false;
+        await _cli.RunAsync("upgrade", "--yes", "--notify", "GitHub.cli");
+
+        Assert.Single(_cli.Toasts);
+    }
 }

@@ -138,9 +138,11 @@ internal static class CliBatch
         }
 
         var wantsToast = context.Notify && settings.ToastOnBatch && !settings.NotificationsPaused;
-        if (wantsToast && context.Notifier is { } notify)
+        if (wantsToast && context.ToastSender is { } toasts)
         {
-            notify(ToastBuilder.BatchFinished(summary.Total, summary.Succeeded, summary.Failed, summary.Canceled));
+            var toast = ToastBuilder.BatchFinished(summary.Total, summary.Succeeded, summary.Failed, summary.Canceled);
+            // A batch stopped by Ctrl+C still reports itself; the sender has its own timeout.
+            await toasts.SendAsync(toast, CancellationToken.None);
         }
 
         return new BatchRun(summary, reporter.Outcomes);

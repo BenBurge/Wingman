@@ -98,7 +98,7 @@ public class CliCheckTests : IDisposable
     }
 
     [Fact]
-    public async Task Check_Notify_HandsOneToastToTheNotifier()
+    public async Task Check_Notify_SendsOneToast()
     {
         await _cli.RunAsync("check");
         Assert.Empty(_cli.Toasts);
@@ -107,5 +107,46 @@ public class CliCheckTests : IDisposable
 
         var toast = Assert.Single(_cli.Toasts);
         Assert.Equal($"{FixtureUpgradeCount} updates available", toast.Title);
+    }
+
+    [Fact]
+    public async Task Check_Notify_SendsNothingWhenPausedOrTurnedOff()
+    {
+        _cli.Settings.NotificationsPaused = true;
+        await _cli.RunAsync("check", "--notify");
+
+        _cli.Settings.NotificationsPaused = false;
+        _cli.Settings.ToastOnUpdates = false;
+        await _cli.RunAsync("check", "--notify");
+
+        Assert.Empty(_cli.Toasts);
+    }
+
+    [Fact]
+    public async Task Check_ClearsRunning_WhenItSucceeds()
+    {
+        _cli.State.Update(state => state.Running = true);
+
+        await _cli.RunAsync("check");
+
+        Assert.False(_cli.State.Load().Running);
+    }
+
+    [Fact]
+    public async Task Check_ClearsRunningAndRecordsTheError_WhenWingetFails()
+    {
+        _cli.ClientOverride = new ScriptedWingetClient(_cli.Client)
+        {
+            ListUpgradesError = new InvalidOperationException("winget was not found"),
+        };
+        _cli.State.Update(state => state.Running = true);
+
+        var exitCode = await _cli.RunAsync("check", "--notify");
+
+        Assert.Equal(ExitCodes.Failure, exitCode);
+        var state = _cli.State.Load();
+        Assert.False(state.Running);
+        Assert.Equal("winget was not found", state.LastError);
+        Assert.Empty(_cli.Toasts);
     }
 }

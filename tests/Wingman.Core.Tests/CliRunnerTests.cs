@@ -169,16 +169,34 @@ public class CliRunnerTests : IDisposable
     }
 
     [Fact]
-    public async Task Placeholder_ReportsNotImplementedAndReturnsUsage()
+    public async Task WithoutHostServices_WindowsOnlyCommandsSaySoAndReturnUsage()
     {
         var tray = CliCommands.All.Single(c => c.Name == "tray");
 
         var exitCode = await RunAsync(["tray", "--fake"], tray);
 
         Assert.Equal(ExitCodes.Usage, exitCode);
-        Assert.Equal(
-            $"wingman tray: not implemented yet (see the Phase 3 issues){Environment.NewLine}",
-            _error.ToString());
+        Assert.Equal($"wingman tray: Windows only{Environment.NewLine}", _error.ToString());
+    }
+
+    [Fact]
+    public async Task Create_CopiesTheHostServicesIntoTheContext()
+    {
+        var command = new RecordingCommand();
+        var services = new CliHostServices { ExePath = @"C:\Tools\wingman.exe", HasConsole = false, ProcessIsElevated = true };
+
+        await CliRunner.RunAsync(
+            ["boom"],
+            [command],
+            parsed => CliContext.Create(parsed, _out, _error, _dataDirectory, services, CancellationToken.None),
+            _out,
+            _error);
+
+        Assert.Equal(@"C:\Tools\wingman.exe", command.Context!.ExePath);
+        Assert.False(command.Context.HasConsole);
+        Assert.True(command.Context.ProcessIsElevated);
+        Assert.True(command.Context.IsOutputRedirected);
+        Assert.Null(command.Context.SetupExecutor);
     }
 
     [Fact]
@@ -210,7 +228,7 @@ public class CliRunnerTests : IDisposable
         CliRunner.RunAsync(
             args,
             [command],
-            parsed => CliContext.Create(parsed, _out, _error, _dataDirectory, CancellationToken.None),
+            parsed => CliContext.Create(parsed, _out, _error, _dataDirectory, CliHostServices.None, CancellationToken.None),
             _out,
             _error);
 

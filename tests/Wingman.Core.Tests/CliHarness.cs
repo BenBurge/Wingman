@@ -2,7 +2,9 @@ using Wingman.Cli;
 using Wingman.Core.History;
 using Wingman.Core.Notifications;
 using Wingman.Core.Options;
+using Wingman.Core.SelfUpdate;
 using Wingman.Core.Settings;
+using Wingman.Core.Setup;
 using Wingman.Core.State;
 using Wingman.Core.Winget;
 
@@ -41,6 +43,27 @@ internal sealed class CliHarness : IDisposable
 
     public List<ToastContent> Toasts { get; } = [];
 
+    /// <summary>Replaces <see cref="Client"/> for commands that need a winget answer the fake does not give.</summary>
+    public IWingetClient? ClientOverride { get; set; }
+
+    public ISetupExecutor? SetupExecutor { get; set; }
+
+    public ISelfUpdateStarter? SelfUpdateStarter { get; set; }
+
+    public Func<string, string, int?>? TrayRunner { get; set; }
+
+    public Func<string?, CancellationToken, Task<int>>? TuiLauncher { get; set; }
+
+    public Func<string[], bool>? WindowSpawner { get; set; }
+
+    public bool HasConsole { get; set; } = true;
+
+    public bool IsOutputRedirected { get; set; } = true;
+
+    public string ExePath { get; set; } = @"C:\Tools\wingman.exe";
+
+    public string Version { get; set; } = "1.0.0";
+
     /// <summary>False to let commands prompt; <see cref="Input"/> then answers.</summary>
     public bool IsInputRedirected { get; set; } = true;
 
@@ -71,7 +94,7 @@ internal sealed class CliHarness : IDisposable
 
     private CliContext CreateContext(CliArgs args) => new()
     {
-        Client = Client,
+        Client = ClientOverride ?? Client,
         Settings = Settings,
         SettingsStore = new SettingsStore(DataDirectory),
         Options = Options,
@@ -85,7 +108,26 @@ internal sealed class CliHarness : IDisposable
         Notify = args.HasFlag("notify"),
         IsFake = true,
         Width = Width,
-        Notifier = Toasts.Add,
+        IsOutputRedirected = IsOutputRedirected,
+        ToastSender = new RecordingToastSender(Toasts),
+        SetupExecutor = SetupExecutor,
+        SelfUpdateStarter = SelfUpdateStarter,
+        TrayRunner = TrayRunner,
+        TuiLauncher = TuiLauncher,
+        WindowSpawner = WindowSpawner,
+        HasConsole = HasConsole,
+        ExePath = ExePath,
+        Version = Version,
         DataDirectory = DataDirectory,
     };
+}
+
+/// <summary>Collects every toast a command sends instead of showing it.</summary>
+internal sealed class RecordingToastSender(List<ToastContent> toasts) : IToastSender
+{
+    public Task SendAsync(ToastContent content, CancellationToken ct)
+    {
+        toasts.Add(content);
+        return Task.CompletedTask;
+    }
 }
