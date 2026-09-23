@@ -30,14 +30,9 @@ internal sealed class Screen(IApplication app, int width, int height)
         var columns = cells.GetLength(1);
         var text = new StringBuilder();
         text.AppendLine("--- " + label);
-        for (var y = 0; y < rows; y++)
+        foreach (var row in Rows())
         {
-            for (var x = 0; x < columns; x++)
-            {
-                text.Append(cells[y, x].Grapheme ?? "?");
-            }
-
-            text.AppendLine("|");
+            text.Append(row).AppendLine("|");
         }
 
         if (withColors)
@@ -67,6 +62,25 @@ internal sealed class Screen(IApplication app, int width, int height)
         }
 
         File.AppendAllText(OutputPath, text.ToString());
+    }
+
+    /// <summary>The screen's rows as last drawn, for checking what a frame shows.</summary>
+    public IReadOnlyList<string> Rows()
+    {
+        var cells = app.Driver!.Contents!;
+        var rows = new List<string>();
+        for (var y = 0; y < cells.GetLength(0); y++)
+        {
+            var row = new StringBuilder();
+            for (var x = 0; x < cells.GetLength(1); x++)
+            {
+                row.Append(cells[y, x].Grapheme ?? "?");
+            }
+
+            rows.Add(row.ToString());
+        }
+
+        return rows;
     }
 
     public void Click(int x, int y) => app.InjectSequence(InputInjectionExtensions.LeftButtonClick(new Point(x, y)));

@@ -22,6 +22,9 @@ internal abstract class ShellTab : View
     /// <summary>The tab's own key bar entries, shown before the global Help and Quit.</summary>
     public virtual IReadOnlyList<KeyHint> Hints => [];
 
+    /// <summary>False to leave <c>? Help</c> off the key bar after <see cref="Hints"/>; <c>q Quit</c> is always there.</summary>
+    public virtual bool ShowsHelpHint => true;
+
     /// <summary>Called on the UI thread every time the tab becomes the active one.</summary>
     public virtual void OnShown()
     {

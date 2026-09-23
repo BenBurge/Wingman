@@ -101,7 +101,8 @@ internal sealed class PackageTable : View
         style.ExpandLastColumn = true;
         style.AlwaysShowHeaders = true;
         style.HeaderScheme = theme.HeaderScheme;
-        style.GetOrCreateColumnStyle(0).ColorGetter = _ => MarkerScheme;
+        style.GetOrCreateColumnStyle(0).ColorGetter = args => RowSchemeAt(args.RowIndex) ?? MarkerScheme;
+        style.RowColorGetter = args => RowSchemeAt(args.RowIndex);
 
         _tableView.ValueChanged += (_, _) => RaiseCursorChangedIfMoved();
         _tableView.Accepting += OnTableAccepting;
@@ -133,6 +134,9 @@ internal sealed class PackageTable : View
 
     /// <summary>Colors of the marker column; the row's own colors when null.</summary>
     public Scheme? MarkerScheme { get; set; }
+
+    /// <summary>Colors for a whole row, marker included, such as dim for a held package; the usual colors when it returns null.</summary>
+    public Func<PackageRow, Scheme?>? RowScheme { get; set; }
 
     /// <summary>The label before the text box, such as <c>Filter:</c> or <c>Search:</c>.</summary>
     public string Prompt
@@ -181,7 +185,7 @@ internal sealed class PackageTable : View
         set
         {
             _footer = value;
-            _footerLabel.Text = value ?? "";
+            UpdateFooterLabel();
             _footerLabel.Visible = value is not null;
             _tableView.Height = value is null ? Dim.Fill() : Dim.Fill(FooterRows);
         }
@@ -264,7 +268,21 @@ internal sealed class PackageTable : View
         {
             _columnLayoutWidth = width;
             ApplyColumnWidths(width);
+            UpdateFooterLabel();
         }
+    }
+
+    /// <summary>Fits the footer to the pane with a trailing <c>…</c>; the label alone would cut it off mid-word.</summary>
+    private void UpdateFooterLabel()
+    {
+        var width = Math.Max(0, _columnLayoutWidth - 2);
+        _footerLabel.Text = CellText.Fit(_footer ?? "", width);
+    }
+
+    private Scheme? RowSchemeAt(int index)
+    {
+        var isOnRow = index >= 0 && index < _source.Packages.Count;
+        return RowScheme is { } rowScheme && isOnRow ? rowScheme(_source.Packages[index]) : null;
     }
 
     private void OnFilterTextChanged()

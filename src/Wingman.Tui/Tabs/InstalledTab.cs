@@ -6,10 +6,13 @@ namespace Wingman.Tui.Tabs;
 
 /// <summary>
 /// Every installed package, loaded from <see cref="IWingetClient.ListInstalledAsync"/> the first
-/// time the tab is shown or another tab needs the installed set, and again on <c>r</c>.
+/// time the tab is shown or another tab needs the installed set, again on <c>r</c>, and after
+/// every operation. Pinned packages are marked <c>⊘</c>.
 /// </summary>
 internal sealed class InstalledTab : PackageListTab
 {
+    private const string PinnedMarker = "⊘";
+
     private static readonly PackageColumn[] Columns =
     [
         new("Name", row => row.Name, 24),
@@ -18,28 +21,24 @@ internal sealed class InstalledTab : PackageListTab
     ];
 
     private readonly KeyHint[] _hints;
+    private readonly KeyHint[] _pinnedRowHints;
     private bool _hasStartedLoading;
 
     public InstalledTab(Shell shell, IWingetClient client)
         : base(shell, client, "Installed", Columns)
     {
-        _hints =
-        [
-            new(Key.U, "Upgrade", () => Shell.SetStatus("Not implemented yet: upgrade")),
-            new(Key.X, "Uninstall", () => Shell.SetStatus("Not implemented yet: uninstall")),
-            new(Key.P, "Pin", () => Shell.SetStatus("Not implemented yet: pin")),
-            new(new Key('/'), "Filter", Table.FocusFilter),
-            new(Key.S, "Sort", Table.CycleSort),
-            new(Key.R, "Reload", Reload),
-            new(Key.Tab, "Pane", SwitchPane),
-        ];
+        Table.Marker = row => shell.IsPinned(row.Id) ? PinnedMarker : "";
+        Table.MarkerScheme = shell.Theme.CellScheme(shell.Theme.Dim);
+
+        _hints = BuildHints("Pin");
+        _pinnedRowHints = BuildHints("Unpin");
     }
 
-    public override IReadOnlyList<KeyHint> Hints => _hints;
+    protected override IReadOnlyList<KeyHint> TableHints => IsCursorRowPinned ? _pinnedRowHints : _hints;
 
     public override void OnShown()
     {
-        Table.FocusTable();
+        FocusTableOrLog();
         EnsureLoaded();
     }
 
@@ -48,10 +47,12 @@ internal sealed class InstalledTab : PackageListTab
     {
         if (!_hasStartedLoading)
         {
-            _hasStartedLoading = true;
             Reload();
         }
     }
+
+    /// <summary>Reloads after every operation from any tab, since each changes what is installed and Discover's <c>✓</c> markers come from this list.</summary>
+    public override void RefreshAfterOperation(bool isOrigin) => Reload();
 
     protected override void OnLoaded(IReadOnlyList<PackageRow> rows)
     {
@@ -59,5 +60,20 @@ internal sealed class InstalledTab : PackageListTab
         Shell.SetInstalled(rows);
     }
 
-    private void Reload() => Load(Client.ListInstalledAsync);
+    private KeyHint[] BuildHints(string pinLabel) =>
+    [
+        new(Key.U, "Upgrade", () => RunOperation(OperationKind.Upgrade)),
+        new(Key.X, "Uninstall", () => RunOperation(OperationKind.Uninstall)),
+        new(Key.P, pinLabel, TogglePin),
+        new(new Key('/'), "Filter", Table.FocusFilter),
+        new(Key.S, "Sort", Table.CycleSort),
+        new(Key.R, "Reload", Reload),
+        new(Key.Tab, "Pane", SwitchPane),
+    ];
+
+    private void Reload()
+    {
+        _hasStartedLoading = true;
+        Load(Client.ListInstalledAsync);
+    }
 }

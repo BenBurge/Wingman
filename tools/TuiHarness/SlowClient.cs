@@ -5,20 +5,28 @@ namespace TuiHarness;
 
 /// <summary>
 /// <see cref="FakeWingetClient"/> with winget-like delays, plus rows the fixtures lack: a wide-character
-/// package at the end of the installed list whose <c>show</c> fails, and one upgrade that needs
-/// explicit targeting.
+/// package at the end of the installed list whose <c>show</c> fails, one upgrade that needs
+/// explicit targeting, and a catalog package, <c>Vendor.WillFail</c>, whose install fails.
 /// </summary>
 internal sealed class SlowClient(IWingetClient inner) : IWingetClient
 {
     public const string WideId = "Wide.漢字漢字漢字漢字漢字";
+    public const string FailingId = "Vendor.WillFail";
     private const string ExplicitTargetingId = "Microsoft.VisualStudio.2022.Professional";
+
+    // FakeWingetClient fails any operation on an Id containing "fail".
+    private static readonly PackageRow FailingRow = new("Will Fail Tool", FailingId, "1.0.0", null, "winget");
 
     public Task<string> GetVersionAsync(CancellationToken ct) => inner.GetVersionAsync(ct);
 
     public async Task<IReadOnlyList<PackageRow>> SearchAsync(string query, CancellationToken ct)
     {
         await Task.Delay(300, ct);
-        return await inner.SearchAsync(query, ct);
+        var rows = await inner.SearchAsync(query, ct);
+        var matchesFailingRow = query.Length > 0
+            && (FailingRow.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || FailingRow.Id.Contains(query, StringComparison.OrdinalIgnoreCase));
+        return matchesFailingRow ? [.. rows, FailingRow] : rows;
     }
 
     public async Task<IReadOnlyList<PackageRow>> ListInstalledAsync(CancellationToken ct)

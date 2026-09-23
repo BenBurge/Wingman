@@ -5,7 +5,7 @@ namespace Wingman.Core.Winget;
 /// <summary>
 /// Builds the argument list for each winget command <see cref="WingetCliClient"/> runs.
 /// </summary>
-internal static class WingetArguments
+public static class WingetArguments
 {
     private static readonly string[] CommonFlags = ["--disable-interactivity", "--accept-source-agreements"];
 

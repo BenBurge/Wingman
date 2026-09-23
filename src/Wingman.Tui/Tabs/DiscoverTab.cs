@@ -7,7 +7,7 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// Searches winget with <see cref="IWingetClient.SearchAsync"/> when Enter is pressed in the
 /// search box, never per keystroke, since each search is a winget process. Installed packages
-/// are marked <c>✓</c>; <c>r</c> runs the last search again.
+/// are marked <c>✓</c>; <c>r</c> runs the last search again, and <c>i</c> installs the cursor row.
 /// </summary>
 internal sealed class DiscoverTab : PackageListTab
 {
@@ -38,14 +38,14 @@ internal sealed class DiscoverTab : PackageListTab
 
         _hints =
         [
-            new(Key.I, "Install", InstallStub),
+            new(Key.I, "Install", () => RunOperation(OperationKind.Install)),
             new(Key.Enter, "Search", () => Search(Table.Filter), "⏎"),
             new(new Key('/'), "Search box", Table.FocusFilter),
             new(Key.Tab, "Pane", SwitchPane),
         ];
     }
 
-    public override IReadOnlyList<KeyHint> Hints => _hints;
+    protected override IReadOnlyList<KeyHint> TableHints => _hints;
 
     public override void OnShown()
     {
@@ -56,7 +56,16 @@ internal sealed class DiscoverTab : PackageListTab
         }
         else
         {
-            Table.FocusTable();
+            FocusTableOrLog();
+        }
+    }
+
+    /// <summary>Only the tab that ran the operation searches again; its <c>✓</c> markers follow the Installed tab by themselves.</summary>
+    public override void RefreshAfterOperation(bool isOrigin)
+    {
+        if (isOrigin && _lastQuery is not null)
+        {
+            Search(_lastQuery);
         }
     }
 
@@ -96,13 +105,5 @@ internal sealed class DiscoverTab : PackageListTab
 
         _lastQuery = trimmed;
         Load(ct => Client.SearchAsync(trimmed, ct));
-    }
-
-    private void InstallStub()
-    {
-        if (Table.CurrentRow is { } row)
-        {
-            Shell.SetStatus($"Not implemented yet: install {row.Id}");
-        }
     }
 }

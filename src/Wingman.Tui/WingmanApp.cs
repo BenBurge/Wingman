@@ -23,7 +23,7 @@ public static class WingmanApp
     /// <summary>Builds the window and every tab. <c>tools/TuiHarness</c> calls this too, so it draws exactly what the app draws.</summary>
     internal static Shell CreateShell(IApplication app, Theme theme, IWingetClient client)
     {
-        var shell = new Shell(app, theme);
+        var shell = new Shell(app, theme, client);
         shell.SetTabs(
         [
             new InstalledTab(shell, client),
@@ -33,6 +33,7 @@ public static class WingmanApp
             new PlaceholderTab(theme, "Settings", "Settings: coming in phase 2"),
         ]);
         LoadWingetVersion(shell, client);
+        shell.ReloadPins();
         return shell;
     }
 

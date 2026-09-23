@@ -54,8 +54,8 @@ internal sealed class DetailsPane : View
         CanFocus = true;
     }
 
-    /// <summary>Answers the <c>Pinned</c> row for a package Id; <c>no</c> for every package when null.</summary>
-    public Func<string, bool>? IsPinned { get; set; }
+    /// <summary>The pin on a package Id, or null when it has none, for the <c>Pinned</c> row; <c>no</c> for every package when unset.</summary>
+    public Func<string, Pin?>? PinFor { get; set; }
 
     /// <summary>Shows <paramref name="row"/>, or nothing when it is null. Call on every cursor move.</summary>
     public void Show(PackageRow? row)
@@ -110,7 +110,7 @@ internal sealed class DetailsPane : View
 
         string? scope = null;
         details?.AdditionalFields.TryGetValue("Installer.Scope", out scope);
-        var isPinned = IsPinned?.Invoke(row.Id) ?? false;
+        var pin = PinFor?.Invoke(row.Id);
 
         (string Label, (string Text, Attribute Color) Value)[] fields =
         [
@@ -122,7 +122,7 @@ internal sealed class DetailsPane : View
             ("Homepage", FromDetails(details?.Homepage)),
             ("Source", FromRow(row.Source, normal)),
             ("Scope", FromDetails(scope)),
-            ("Pinned", (isPinned ? "yes" : "no", normal)),
+            ("Pinned", (PinnedText(pin), normal)),
         ];
 
         var y = 2;
@@ -212,6 +212,18 @@ internal sealed class DetailsPane : View
         }
 
         return base.OnMouseEvent(mouse);
+    }
+
+    /// <summary><c>yes (blocking)</c>, <c>yes (gating 1.2.*)</c>, or <c>no</c>.</summary>
+    private static string PinnedText(Pin? pin)
+    {
+        if (pin is null)
+        {
+            return "no";
+        }
+
+        var type = pin.PinType.ToString().ToLowerInvariant();
+        return pin.PinnedVersion.Length == 0 ? $"yes ({type})" : $"yes ({type} {pin.PinnedVersion})";
     }
 
     private bool IsCurrent(string id) => string.Equals(_row?.Id, id, StringComparison.OrdinalIgnoreCase);
