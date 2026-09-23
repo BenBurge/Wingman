@@ -90,3 +90,9 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - `Key.R.ToString()` is `r`; use `KeyLabel` to show an uppercase letter, and remember `new Key('E')` is Shift+E and does not match a `Key.E` hint.
 - Harness checks next to an overlay should cover only the box, because rows under it change while a batch streams.
 - `python3` is not installed on the development machine; use PowerShell or a small C# script for scripted checks.
+- A view that draws with theme colors must implement `IThemedView`, or it keeps the old palette after a switch. Cell and row color getters take the `Theme` and read it at draw time rather than holding a `Scheme` built earlier.
+- `View.Activated` already exists, so an event named `Activated` on a subclass fails with CS0108; `ActionField` uses `Pressed`.
+- `Pos.GetAnchor` and `Dim.GetAnchor` are internal; compute field widths yourself (`CheckField.WidthFor`, `ActionField.WidthFor`).
+- `SetFocus()` on a container gives focus back to the subview that had it last; the Settings tab relies on this.
+- `HistoryEntry` has no canceled flag; `HistoryRow.FromEntries` infers it from the log (an operation whose log ends with `Canceled`, a batch that canceled something and failed nothing).
+- `ScreenHostTab` is the base for any tab that can show the batch screen or a form in its content area; `Shell.RunOperation` takes the host so History can retry from its own tab.
