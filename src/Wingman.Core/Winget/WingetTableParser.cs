@@ -14,7 +14,10 @@ namespace Wingman.Core.Winget;
 /// line up with the header even though they are shorter in chars. The <c>Match</c> column of
 /// <c>search</c> output is recognized only as a boundary and its value is not kept. winget
 /// truncates long values with an ellipsis only when stdout is a terminal, so redirected output,
-/// which is all this parser sees, always carries full values.
+/// which is all this parser sees, always carries full values. <c>upgrade</c> output can hold a
+/// second table, introduced by a line mentioning "require explicit targeting", for packages
+/// <c>--all</c> skips; its rows are returned with <see cref="PackageRow.RequiresExplicitTargeting"/>
+/// set to true.
 /// </remarks>
 public static partial class WingetTableParser
 {
@@ -24,25 +27,36 @@ public static partial class WingetTableParser
     {
         var lines = output.Replace("\r\n", "\n").Split('\n');
 
-        var headerIndex = Array.FindIndex(lines, IsHeaderLine);
-        if (headerIndex < 0)
-        {
-            return [];
-        }
-
-        var columns = ExtractColumns(lines[headerIndex]);
-
-        // headerIndex + 1 is the dash separator line; data starts right after it.
         var rows = new List<PackageRow>();
-        for (var i = headerIndex + 2; i < lines.Length; i++)
+        var lastNonBlankLine = "";
+        for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i];
-            if (string.IsNullOrWhiteSpace(line) || IsTrailingCountLine(line))
+            if (!IsHeaderLine(line))
             {
-                break;
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    lastNonBlankLine = line;
+                }
+
+                continue;
             }
 
-            rows.Add(ParseRow(line, columns));
+            var requiresExplicitTargeting = lastNonBlankLine.Contains("require explicit targeting");
+            var columns = ExtractColumns(line);
+
+            // i + 1 is the dash separator line; data starts right after it.
+            var dataIndex = i + 2;
+            while (dataIndex < lines.Length
+                && !string.IsNullOrWhiteSpace(lines[dataIndex])
+                && !IsTrailerLine(lines[dataIndex]))
+            {
+                rows.Add(ParseRow(lines[dataIndex], columns, requiresExplicitTargeting));
+                dataIndex++;
+            }
+
+            i = dataIndex;
+            lastNonBlankLine = "";
         }
 
         return rows;
@@ -52,7 +66,12 @@ public static partial class WingetTableParser
         HeaderWordRegex().Matches(line).Select(m => m.Value).ToHashSet()
             .IsSupersetOf(["Name", "Id", "Version"]);
 
-    private static bool IsTrailingCountLine(string line)
+    /// <summary>
+    /// A trailer line ends a table without being mistaken for a row: the "N upgrades available."
+    /// summary, or the "N package(s) ..." lines winget prints for unknown-version or pinned
+    /// packages it excluded from the count.
+    /// </summary>
+    private static bool IsTrailerLine(string line)
     {
         var trimmed = line.TrimStart();
         if (trimmed.Length == 0 || !char.IsDigit(trimmed[0]))
@@ -60,7 +79,7 @@ public static partial class WingetTableParser
             return false;
         }
 
-        return trimmed.Contains(" upgrades available") || trimmed.Contains(" package(s)");
+        return trimmed.Contains(" upgrades available") || trimmed.Contains(" package(s)") || trimmed.Contains(" packages ");
     }
 
     /// <summary>
@@ -81,7 +100,7 @@ public static partial class WingetTableParser
         return columns;
     }
 
-    private static PackageRow ParseRow(string line, List<(string Name, int Start)> columns)
+    private static PackageRow ParseRow(string line, List<(string Name, int Start)> columns, bool requiresExplicitTargeting)
     {
         var values = new Dictionary<string, string>();
         for (var i = 0; i < columns.Count; i++)
@@ -99,7 +118,8 @@ public static partial class WingetTableParser
             Id: values.GetValueOrDefault("Id", ""),
             Version: values.GetValueOrDefault("Version", ""),
             AvailableVersion: values.ContainsKey("Available") && availableVersion.Length > 0 ? availableVersion : null,
-            Source: values.GetValueOrDefault("Source", ""));
+            Source: values.GetValueOrDefault("Source", ""),
+            RequiresExplicitTargeting: requiresExplicitTargeting);
     }
 
     /// <summary>
