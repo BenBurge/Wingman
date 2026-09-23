@@ -12,7 +12,7 @@ namespace Wingman.Core.Winget;
 /// main Wide and Fullwidth blocks are listed, which covers the CJK, Hangul, fullwidth, and emoji
 /// text that shows up in package names.
 /// </remarks>
-internal static class DisplayWidth
+public static class DisplayWidth
 {
     // Inclusive and in ascending order; IsWide stops at the first range past the code point.
     private static readonly (int First, int Last)[] WideRanges =
@@ -54,6 +54,28 @@ internal static class DisplayWidth
         }
 
         return width;
+    }
+
+    /// <summary>
+    /// Returns the char index at which <paramref name="displayColumn"/> begins in
+    /// <paramref name="line"/>, or the line's length when the line is narrower than that.
+    /// </summary>
+    public static int CharIndexAtColumn(string line, int displayColumn)
+    {
+        var width = 0;
+        var index = 0;
+        foreach (var rune in line.EnumerateRunes())
+        {
+            if (width >= displayColumn)
+            {
+                break;
+            }
+
+            width += Of(rune);
+            index += rune.Utf16SequenceLength;
+        }
+
+        return index;
     }
 
     private static bool IsWide(int codePoint)

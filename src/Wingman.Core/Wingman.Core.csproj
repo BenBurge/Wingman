@@ -4,4 +4,13 @@
     <InternalsVisibleTo Include="Wingman.Core.Tests" />
   </ItemGroup>
 
+  <!--
+    FakeWingetClient serves these from the assembly manifest rather than reading the test
+    project's copy, so it works from the published single-file exe with no Fixtures folder
+    or test project around it.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\tests\Wingman.Core.Tests\Fixtures\*.txt" LinkBase="Fixtures" LogicalName="Wingman.Core.Fixtures.%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>

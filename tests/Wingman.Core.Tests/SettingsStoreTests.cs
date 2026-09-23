@@ -1,0 +1,112 @@
+using System.Text;
+using Wingman.Core.Settings;
+
+namespace Wingman.Core.Tests;
+
+public class SettingsStoreTests : IDisposable
+{
+    private readonly string _directoryPath =
+        Path.Combine(Path.GetTempPath(), "wingman-tests", Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_directoryPath))
+        {
+            Directory.Delete(_directoryPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_WithNoFile_ReturnsDefaultsAndDoesNotCreateFile()
+    {
+        var store = new SettingsStore(_directoryPath);
+
+        var settings = store.Load();
+
+        Assert.Equal("", settings.DefaultScope);
+        Assert.Equal("winget", settings.DefaultSource);
+        Assert.True(settings.AcceptAgreements);
+        Assert.True(settings.IncludeUnknown);
+        Assert.Equal("Midnight", settings.Theme);
+        Assert.False(File.Exists(store.FilePath));
+    }
+
+    [Fact]
+    public void SaveThenLoad_RoundTripsEveryPropertyWithNonDefaultValues()
+    {
+        var store = new SettingsStore(_directoryPath);
+        var settings = new WingmanSettings
+        {
+            DefaultScope = "machine",
+            DefaultSource = "msstore",
+            AcceptAgreements = false,
+            IncludeUnknown = false,
+            Theme = "Daylight",
+        };
+
+        store.Save(settings);
+        var loaded = store.Load();
+
+        Assert.Equal("machine", loaded.DefaultScope);
+        Assert.Equal("msstore", loaded.DefaultSource);
+        Assert.False(loaded.AcceptAgreements);
+        Assert.False(loaded.IncludeUnknown);
+        Assert.Equal("Daylight", loaded.Theme);
+    }
+
+    [Fact]
+    public void Load_WithUnknownKeysPlusOneKnownKey_LoadsThatKeyAndDefaultsTheRest()
+    {
+        var store = new SettingsStore(_directoryPath);
+        Directory.CreateDirectory(_directoryPath);
+        File.WriteAllText(store.FilePath, """
+            {
+              "theme": "Daylight",
+              "somethingFromAFutureVersion": true,
+              "anotherUnknownKey": 42
+            }
+            """);
+
+        var settings = store.Load();
+
+        Assert.Equal("Daylight", settings.Theme);
+        Assert.Equal("", settings.DefaultScope);
+        Assert.Equal("winget", settings.DefaultSource);
+        Assert.True(settings.AcceptAgreements);
+        Assert.True(settings.IncludeUnknown);
+    }
+
+    [Fact]
+    public void Load_WithInvalidJsonFile_ReturnsDefaults()
+    {
+        var store = new SettingsStore(_directoryPath);
+        Directory.CreateDirectory(_directoryPath);
+        File.WriteAllText(store.FilePath, "{ not valid json ");
+
+        var settings = store.Load();
+
+        Assert.Equal("", settings.DefaultScope);
+        Assert.Equal("winget", settings.DefaultSource);
+        Assert.True(settings.AcceptAgreements);
+        Assert.True(settings.IncludeUnknown);
+        Assert.Equal("Midnight", settings.Theme);
+    }
+
+    [Fact]
+    public void Save_WritesCamelCaseJsonWithNoBom()
+    {
+        var store = new SettingsStore(_directoryPath);
+
+        store.Save(new WingmanSettings());
+
+        var bytes = File.ReadAllBytes(store.FilePath);
+        Assert.False(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF);
+
+        var text = Encoding.UTF8.GetString(bytes);
+        Assert.Contains("\"defaultScope\"", text);
+        Assert.Contains("\"defaultSource\"", text);
+        Assert.Contains("\"acceptAgreements\"", text);
+        Assert.Contains("\"includeUnknown\"", text);
+        Assert.Contains("\"theme\"", text);
+    }
+}

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+
+PackageIdentifier: BenBurge.Wingman
+PackageVersion: 0.1.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: wingman.exe
+    PortableCommandAlias: wingman
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/BenBurge/Wingman/releases/download/v0.1.0/wingman-v0.1.0-win-x64.zip
+    # Placeholder until the first release is cut; see manifests/README.md.
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+  - Architecture: arm64
+    InstallerUrl: https://github.com/BenBurge/Wingman/releases/download/v0.1.0/wingman-v0.1.0-win-arm64.zip
+    # Placeholder until the first release is cut; see manifests/README.md.
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.10.0

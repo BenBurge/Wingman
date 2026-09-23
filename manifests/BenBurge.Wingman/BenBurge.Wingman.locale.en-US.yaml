@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+
+PackageIdentifier: BenBurge.Wingman
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Ben Burge
+PackageName: Wingman
+License: MIT
+LicenseUrl: https://github.com/BenBurge/Wingman/blob/main/LICENSE
+PackageUrl: https://github.com/BenBurge/Wingman
+PublisherSupportUrl: https://github.com/BenBurge/Wingman/issues
+ShortDescription: A keyboard-driven terminal UI for winget
+Tags:
+  - winget
+  - tui
+  - package-manager
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0
