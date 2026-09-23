@@ -578,7 +578,7 @@ Step[] mainSteps =
         Check("the prompt line", ScreenHas(" Waiting for the elevation prompt (UAC or Admin By Request)… Esc cancels."));
         Check("the wait counter", ScreenHas(" Waiting 0 s"));
     }),
-    new(700, "the prompt was declined", () => { }, Verify: () =>
+    new(700, "the prompt was declined", () => { }, Until: () => ScreenHas(" Batch finished  0 of 1 · 1 canceled"), Verify: () =>
     {
         Check("declined", ScreenHas("elevated helper: declined "));
         Check("finished title", ScreenHas(" Batch finished  0 of 1 · 1 canceled"));
@@ -1270,13 +1270,15 @@ Step[] mainSteps =
     new(50, "click Register scheduled tasks: the question", () => ClickText("⏎ Register scheduled tasks"), Verify: () =>
         Check("question", ScreenHas("Register Wingman's scheduled tasks, startup entry, and shortcut? (y/n)"))),
     new(50, "y: registered through the executor", () => screen.Press(Key.Y)),
-    new(100, "the outcome on the message line", () => { }, Verify: () =>
+    new(100, "the outcome on the message line", () => { }, Until: () => screen.Rows()[MessageY()].Contains("Registered: 8 created", StringComparison.Ordinal), Verify: () =>
     {
         Check("status", screen.Rows()[MessageY()].Contains("Registered: 8 created", StringComparison.Ordinal));
         Check("one register call", setupExecutor.Calls.Count == 1 && !setupExecutor.Calls[0].Remove);
         var checkTask = setupExecutor.Calls[0].Plan.Tasks[0];
         Check("the plan uses the new interval", checkTask.SchtasksCreateArgs.SkipWhile(arg => arg != "/MO").ElementAtOrDefault(1) == "12");
-        Check("the plan runs this executable", checkTask.Command.StartsWith($"\"{Environment.ProcessPath}\"", StringComparison.Ordinal));
+
+        // Scheduled tasks start wingman through conhost --headless so no console window appears.
+        Check("the plan runs this executable", checkTask.Command == $"conhost.exe --headless \"{Environment.ProcessPath}\" check --notify");
         Check("auto-install planned off", !setupExecutor.Calls[0].Plan.Tasks[2].Enabled);
     }),
     new(50, "click Remove scheduled tasks, y: removed", () => { ClickText("⏎ Remove scheduled tasks"); screen.Press(Key.Y); }),
@@ -1497,11 +1499,28 @@ else
     };
 }
 
+// A step with an Until condition polls after acting and dumps once the condition holds or the
+// timeout passes, for results that land a variable time after a background task; its checks then
+// run against that frame as usual.
+var untilPollInterval = TimeSpan.FromMilliseconds(100);
+var untilTimeout = TimeSpan.FromSeconds(5);
 var next = 0;
 void RunStep()
 {
     var step = steps[next];
     step.Act();
+    FinishStep(step, Stopwatch.StartNew());
+}
+
+void FinishStep(Step step, Stopwatch waited)
+{
+    var keepWaiting = step.Until is { } until && !until() && waited.Elapsed < untilTimeout;
+    if (keepWaiting)
+    {
+        app.AddTimeout(untilPollInterval, () => { FinishStep(step, waited); return false; });
+        return;
+    }
+
     screen.Dump($"{step.Label} | focused={Focused()}", step.WithColors);
     step.Verify?.Invoke();
     next++;
@@ -1594,4 +1613,4 @@ foreach (var childArgs in childRuns)
 
 return failedChecks == 0 && childrenPassed ? 0 : 1;
 
-internal sealed record Step(int DelayMs, string Label, Action Act, bool WithColors = false, Action? Verify = null);
+internal sealed record Step(int DelayMs, string Label, Action Act, bool WithColors = false, Action? Verify = null, Func<bool>? Until = null);

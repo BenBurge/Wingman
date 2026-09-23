@@ -36,8 +36,7 @@ internal static class NativeMethods
 
     public const uint NOTIFYICON_VERSION_4 = 4;
 
-    public const uint IMAGE_ICON = 1;
-    public const uint LR_LOADFROMFILE = 0x0010;
+    public const uint LR_DEFAULTCOLOR = 0x0000;
 
     public const uint MF_STRING = 0x0000;
     public const uint MF_CHECKED = 0x0008;
@@ -47,7 +46,6 @@ internal static class NativeMethods
     public const uint TPM_RETURNCMD = 0x0100;
 
     public const int SM_CXSMICON = 49;
-    public const int SM_CYSMICON = 50;
 
     public const int ERROR_CLASS_ALREADY_EXISTS = 1410;
 
@@ -211,9 +209,16 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetForegroundWindow(nint hwnd);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("user32.dll", SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    public static extern nint LoadImageW(nint instance, string name, uint type, int width, int height, uint flags);
+    public static extern nint CreateIconFromResourceEx(
+        byte[] resourceBits,
+        uint resourceSize,
+        [MarshalAs(UnmanagedType.Bool)] bool isIcon,
+        uint version,
+        int desiredWidth,
+        int desiredHeight,
+        uint flags);
 
     [DllImport("user32.dll", SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

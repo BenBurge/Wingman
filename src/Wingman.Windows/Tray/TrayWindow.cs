@@ -35,10 +35,9 @@ internal sealed class TrayWindow : IDisposable
 
     private readonly string _exePath;
     private readonly string _dataDirectory;
-    private readonly string _trayAssetDirectory;
     private readonly StateStore _stateStore;
     private readonly SettingsStore _settingsStore;
-    private readonly Dictionary<string, nint> _icons = [];
+    private readonly TrayIcons _trayIcons = new();
 
     // Held in a field so the garbage collector never frees the delegate Windows calls back into.
     private readonly WindowProcedure _windowProcedure;
@@ -67,7 +66,6 @@ internal sealed class TrayWindow : IDisposable
     {
         _exePath = exePath;
         _dataDirectory = dataDirectory;
-        _trayAssetDirectory = Path.Combine(Path.GetDirectoryName(exePath) ?? "", "assets", "tray");
         _stateStore = new StateStore(dataDirectory);
         _settingsStore = new SettingsStore(dataDirectory);
         _windowProcedure = WindowProc;
@@ -84,12 +82,7 @@ internal sealed class TrayWindow : IDisposable
             DestroyWindow(_hwnd);
         }
 
-        foreach (var icon in _icons.Values)
-        {
-            DestroyIcon(icon);
-        }
-
-        _icons.Clear();
+        _trayIcons.Dispose();
 
         if (_fallbackIcon != 0)
         {
@@ -494,37 +487,13 @@ internal sealed class TrayWindow : IDisposable
     };
 
     /// <summary>
-    /// Loads <c>assets/tray/<paramref name="fileName"/></c> next to the exe once and caches it,
-    /// falling back to the exe's own icon when the file is missing or unreadable.
+    /// The embedded tray icon <paramref name="fileName"/> at the small-icon size, falling back to
+    /// the exe's own icon when the resource is missing or unreadable.
     /// </summary>
     private nint LoadIcon(string fileName)
     {
-        if (_icons.TryGetValue(fileName, out var cached))
-        {
-            return cached;
-        }
-
-        var path = Path.Combine(_trayAssetDirectory, fileName);
-        if (File.Exists(path))
-        {
-            var width = GetSystemMetrics(SM_CXSMICON);
-            var height = GetSystemMetrics(SM_CYSMICON);
-            var icon = LoadImageW(0, path, IMAGE_ICON, width, height, LR_LOADFROMFILE);
-            if (icon != 0)
-            {
-                _icons[fileName] = icon;
-                Log($"loaded {path} at {width}x{height}");
-                return icon;
-            }
-
-            Log($"LoadImageW failed for {path} (error {Marshal.GetLastPInvokeError()})");
-        }
-        else
-        {
-            Log($"{path} is missing; using the exe icon");
-        }
-
-        return FallbackIcon();
+        var icon = _trayIcons.Load(fileName, GetSystemMetrics(SM_CXSMICON));
+        return icon != 0 ? icon : FallbackIcon();
     }
 
     private nint FallbackIcon()

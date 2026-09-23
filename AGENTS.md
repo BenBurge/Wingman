@@ -121,7 +121,7 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - The tray is a message-only window (`HWND_MESSAGE`), so it never receives `TaskbarCreated`; it re-adds the icon when `NIM_MODIFY` fails and re-reads the taskbar theme every 60 seconds. With `NOTIFYICON_VERSION_4`, handle `NIN_SELECT` and `WM_CONTEXTMENU`, not the raw button messages, and set `NIF_SHOWTIP` or the tooltip stays hidden.
 - `LibraryImport` needs `AllowUnsafeBlocks` and cannot marshal `NOTIFYICONDATAW`'s fixed-length strings; the tray uses `DllImport` with `DefaultDllImportSearchPaths(System32)`.
 - A class must not share the simple name of its namespace (`Settings.Settings`, `SelfUpdate.SelfUpdate`): callers outside the namespace then resolve the name to the namespace and fail to compile.
-- Icon assets ship as `Content` next to the exe under `assets/` and `assets/tray/`; `LinkBase` with a wildcard drops subfolders, so the two folders are separate items.
+- A single-file publish (`dotnet publish -r win-x64`) bundles `Content` files into the exe, so nothing lands beside it; anything the tray must read at runtime, such as its icons, is an `EmbeddedResource` in `Wingman.Windows`.
 - `wingman.exe` is a console program: the startup entry and scheduled tasks wrap it in `conhost.exe --headless` and `wingman tray` calls `FreeConsole()` so no console window lingers. Anything else that launches Wingman in the background needs the same treatment.
 - Setting `Console.OutputEncoding` throws `IOException` when there is no console; `Program.cs` catches it.
 - Under the test host the entry assembly is `testhost`, so CLI tests set `CliContext.Version` instead of relying on `CliRunner.Version`.
