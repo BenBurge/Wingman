@@ -67,3 +67,9 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - Per-cell colors come from `ColumnStyle.ColorGetter`, which returns a `Scheme`. The cursor row draws with that scheme's `Focus` (or `Active` when unfocused), so a marker scheme must set both to the selected colors; `Theme.CellScheme(color)` does this.
 - Sibling views overlap in add order: a view added later draws over an earlier one. Add centered overlay labels after the `TableView`.
 - In Git Bash, `grep -c $'\r'` miscounts carriage returns; use `tr -cd '\r' < file | wc -c` to check line endings.
+- `app.Keyboard.KeyDown` fires before any view, including the focused table; the y/n confirmation prompt in `Shell` uses it to take every key while a question is up.
+- A tab's `OnShown` that calls `Table.FocusTable()` steals focus from a `LogPane` that is showing; check for a visible log first.
+- Reloading rows after an operation that removed the cursor row fires `CursorChanged`. Code that treats a cursor move as a user action must ignore changes raised during `SetRows`.
+- `TableStyle.RowColorGetter` colors a whole row, but a column's own `ColorGetter` wins for that column.
+- A `Label` clips overflowing text without an ellipsis; fit it with `CellText.Fit` first.
+- `tools/TuiHarness` steps can assert on their frame and the harness exits 1 on any failed check, so run it after every TUI change.
