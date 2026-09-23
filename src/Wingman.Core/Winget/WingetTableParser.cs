@@ -8,14 +8,17 @@ namespace Wingman.Core.Winget;
 /// <c>upgrade</c>) into <see cref="PackageRow"/> values.
 /// </summary>
 /// <remarks>
-/// Known limitation: winget pads columns by display width, so rows containing East Asian wide
-/// characters can shift columns relative to the header. This will be revisited once real fixtures
-/// (<see cref="WingetCliClient"/>, captured via <c>tools/Capture-WingetFixtures.ps1</c>) show how
-/// often that actually happens.
+/// Column boundaries come from the header line. winget pads every column by display width, so
+/// each data row is cut at those boundaries measured in terminal cells (see
+/// <see cref="DisplayWidth"/>) rather than in chars; rows holding East Asian wide characters then
+/// line up with the header even though they are shorter in chars. The <c>Match</c> column of
+/// <c>search</c> output is recognized only as a boundary and its value is not kept. winget
+/// truncates long values with an ellipsis only when stdout is a terminal, so redirected output,
+/// which is all this parser sees, always carries full values.
 /// </remarks>
 public static partial class WingetTableParser
 {
-    private static readonly string[] KnownColumns = ["Name", "Id", "Version", "Available", "Source"];
+    private static readonly string[] KnownColumns = ["Name", "Id", "Version", "Match", "Available", "Source"];
 
     public static IReadOnlyList<PackageRow> Parse(string output)
     {
@@ -60,6 +63,10 @@ public static partial class WingetTableParser
         return trimmed.Contains(" upgrades available") || trimmed.Contains(" package(s)");
     }
 
+    /// <summary>
+    /// Returns each known column with the display column it starts at. Header words are ASCII,
+    /// so their char offsets are also their display columns.
+    /// </summary>
     private static List<(string Name, int Start)> ExtractColumns(string headerLine)
     {
         var columns = new List<(string Name, int Start)>();
@@ -80,8 +87,9 @@ public static partial class WingetTableParser
         for (var i = 0; i < columns.Count; i++)
         {
             var (name, start) = columns[i];
-            var end = i + 1 < columns.Count ? columns[i + 1].Start : line.Length;
-            values[name] = Slice(line, start, end);
+            var startIndex = CharIndexAtDisplayColumn(line, start);
+            var endIndex = i + 1 < columns.Count ? CharIndexAtDisplayColumn(line, columns[i + 1].Start) : line.Length;
+            values[name] = line[startIndex..endIndex].Trim();
         }
 
         var availableVersion = values.GetValueOrDefault("Available", "");
@@ -94,17 +102,28 @@ public static partial class WingetTableParser
             Source: values.GetValueOrDefault("Source", ""));
     }
 
-    private static string Slice(string line, int start, int end)
+    /// <summary>
+    /// Returns the char index at which <paramref name="displayColumn"/> begins in
+    /// <paramref name="line"/>, or the line's length when the line is narrower than that.
+    /// </summary>
+    private static int CharIndexAtDisplayColumn(string line, int displayColumn)
     {
-        if (start >= line.Length)
+        var width = 0;
+        var index = 0;
+        foreach (var rune in line.EnumerateRunes())
         {
-            return string.Empty;
+            if (width >= displayColumn)
+            {
+                break;
+            }
+
+            width += DisplayWidth.Of(rune);
+            index += rune.Utf16SequenceLength;
         }
 
-        var length = Math.Min(end, line.Length) - start;
-        return line.Substring(start, length).Trim();
+        return index;
     }
 
-    [GeneratedRegex(@"\b(Name|Id|Version|Available|Source)\b")]
+    [GeneratedRegex(@"\b(Name|Id|Version|Match|Available|Source)\b")]
     private static partial Regex HeaderWordRegex();
 }

@@ -19,16 +19,6 @@ public class FixtureSmokeTests
         "exit-codes.txt",
     ];
 
-    /// <summary>
-    /// Reads a captured winget fixture from the test output's Fixtures folder, where the
-    /// csproj copies <c>Fixtures/**</c> with <c>PreserveNewest</c>.
-    /// </summary>
-    private static string LoadFixture(string fileName)
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", fileName);
-        return File.ReadAllText(path);
-    }
-
     [Theory]
     [InlineData("list.txt", true)]
     [InlineData("upgrade.txt", true)]
@@ -38,7 +28,7 @@ public class FixtureSmokeTests
     [InlineData("search-nomatch.txt", false)]
     public void Parse_TableFixture_MatchesExpectedRowPresence(string fileName, bool expectRows)
     {
-        var output = LoadFixture(fileName);
+        var output = Fixtures.Load(fileName);
 
         var rows = WingetTableParser.Parse(output);
 
@@ -55,11 +45,9 @@ public class FixtureSmokeTests
     [Fact]
     public void AllReadmeFixtures_ExistAndHaveNoUtf8Bom()
     {
-        var fixturesDir = Path.Combine(AppContext.BaseDirectory, "Fixtures");
-
         foreach (var fileName in AllReadmeFixtures)
         {
-            var path = Path.Combine(fixturesDir, fileName);
+            var path = Path.Combine(Fixtures.DirectoryPath, fileName);
             Assert.True(File.Exists(path), $"Expected fixture file missing: {fileName}");
 
             var firstBytes = new byte[3];
