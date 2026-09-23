@@ -28,6 +28,8 @@ internal sealed class UpdatePolicyDialog : FormView, IThemedView
     private readonly FormTextField _note;
     private readonly View[] _fields;
     private readonly KeyHint[] _hints;
+    private readonly UpdatePolicyKind _openedWith;
+    private readonly string _openedNote;
     private string? _suggestion;
 
     public UpdatePolicyDialog(Shell shell, PackageRow row)
@@ -49,6 +51,8 @@ internal sealed class UpdatePolicyDialog : FormView, IThemedView
         _note.Y = NoteRow;
         _note.Width = Dim.Fill(3);
         _note.Text = shell.PolicyNotes.GetValueOrDefault(row.Id) ?? "";
+        _openedWith = _choices.Selected;
+        _openedNote = _note.Text;
 
         _fields = [_choices, _note];
         _hints =
@@ -72,6 +76,8 @@ internal sealed class UpdatePolicyDialog : FormView, IThemedView
         new("Esc", "cancel"),
         new("Tab", "note"),
     ]);
+
+    public override bool HasUnsavedChanges => _choices.Selected != _openedWith || _note.Text != _openedNote;
 
     protected override IReadOnlyList<View> Fields => _fields;
 

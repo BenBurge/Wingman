@@ -16,7 +16,7 @@ namespace Wingman.Tui.Tabs;
 /// entries a <see cref="QueuePane"/> takes the details pane's place, and a tab can add a pane of its
 /// own that takes it while toggled on. A batch started from the tab puts its
 /// <see cref="BatchRunnerScreen"/> in place of both panes until it is over and dismissed, and the
-/// install options editor and update policy dialog do the same until they close.
+/// install options editor, the update policy dialog, and the bundle screens do the same until they close.
 /// </summary>
 internal abstract class PackageListTab : ScreenHostTab, IThemedView
 {
@@ -33,6 +33,9 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
     // Only the load this points at may touch the UI; an older one finishing late is ignored.
     private CancellationTokenSource? _loadCancellation;
     private int _leftPaneWidth = WideLeftPaneWidth;
+
+    // Where the last context menu opened, so a version picker chosen from it opens in the same place.
+    private Point _menuPosition;
 
     // The tab's own right pane, if it has one, and whether it is toggled on.
     private View? _extraPane;
@@ -90,6 +93,7 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
         ClearHint = new(Key.C, "Clear", shell.ClearQueue);
         RunHint = new(Key.G, "Run", RunQueue);
         OptionsHint = new(Key.O, "Options", OpenOptionsForCursorRow, IsOnBar: false);
+        BundleHint = new(Key.B, "Bundle", ChooseBundle, IsOnBar: false);
 
         Table.CursorChanged += OnCursorChanged;
         Table.RowActivated += _ => OnRowActivated();
@@ -133,6 +137,9 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
 
     /// <summary><c>o Options</c>, which opens the cursor row's install options; off the bar, since no tab has room for it at 96 columns.</summary>
     protected KeyHint OptionsHint { get; }
+
+    /// <summary><c>b Bundle</c>, which asks whether to export or import a bundle; off the bar, like <see cref="OptionsHint"/>.</summary>
+    protected KeyHint BundleHint { get; }
 
     /// <summary>Whether the tab's own right pane is toggled on, whether or not the table is showing.</summary>
     protected bool IsExtraPaneShown => _showsExtraPane;
@@ -223,6 +230,32 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
 
         // Built when the question is answered, so the batch uses the package's options as they are then.
         Shell.AskConfirm(ConfirmQuestion(kind, row), () => Shell.RunOperation(Shell.BuildOperation(kind, row), this));
+    }
+
+    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/> at <paramref name="version"/>, then runs it as a batch of one.</summary>
+    private void RunOperation(OperationKind kind, PackageRow row, string version)
+    {
+        if (Shell.IsBatchRunning)
+        {
+            Shell.SetStatus(Shell.BatchRunningText);
+            return;
+        }
+
+        var question = kind == OperationKind.Install
+            ? $"Install {row.Id} {version}? (y/n)"
+            : $"Upgrade {row.Id} to {version}? (y/n)";
+        Shell.AskConfirm(question, () => Shell.RunOperation(Shell.BuildOperation(kind, row, version), this));
+    }
+
+    /// <summary>
+    /// <c>Upgrade to version…</c> or <c>Install version…</c>, which opens the version picker where the
+    /// menu was, then asks to confirm <paramref name="kind"/> on <paramref name="row"/> at the version
+    /// picked and runs it as a batch of one.
+    /// </summary>
+    protected MenuEntry VersionMenuEntry(OperationKind kind, PackageRow row)
+    {
+        var label = kind == OperationKind.Install ? "Install version…" : "Upgrade to version…";
+        return new(label, () => Shell.ShowVersionPicker(row, _menuPosition, version => RunOperation(kind, row, version)));
     }
 
     /// <summary>Opens the update policy dialog for <paramref name="row"/> in place of the table and the right pane.</summary>
@@ -506,8 +539,11 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
         }
     }
 
-    private void OpenContextMenu(PackageRow row, Point screenPosition) =>
+    private void OpenContextMenu(PackageRow row, Point screenPosition)
+    {
+        _menuPosition = screenPosition;
         Shell.ShowContextMenu(row.Name, MenuEntries(row), screenPosition);
+    }
 
     private void OnCursorChanged(PackageRow? row) => Details.Show(row);
 

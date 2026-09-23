@@ -38,6 +38,7 @@ internal sealed class UpdatesTab : PackageListTab
         new("p", "update policy"),
         new("e", "list excluded packages"),
         new("o", "install options"),
+        new("b", "export or import a bundle"),
         new("␣", "mark for batch"),
         new("a", "mark all but held"),
         new("c", "clear queue"),
@@ -114,6 +115,7 @@ internal sealed class UpdatesTab : PackageListTab
     protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row) =>
     [
         new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)),
+        VersionMenuEntry(OperationKind.Upgrade, row),
         MarkMenuEntry(row),
         PolicyMenuEntry(row),
         OptionsMenuEntry(row),
@@ -257,7 +259,7 @@ internal sealed class UpdatesTab : PackageListTab
 
     /// <remarks>
     /// <c>/ Filter</c> and <c>s Sort</c> stay off the bar so the batch keys fit at 96 columns, as do
-    /// <c>e Excluded</c>, which the footer names, <c>o Options</c>, and <c>Tab Pane</c> and
+    /// <c>e Excluded</c>, which the footer names, <c>o Options</c>, <c>b Bundle</c>, and <c>Tab Pane</c> and
     /// <c>m Menu</c>, which the tab and the shell handle by themselves.
     /// </remarks>
     private KeyHint[] BuildHints() =>
@@ -273,6 +275,7 @@ internal sealed class UpdatesTab : PackageListTab
         new(new Key('/'), "Filter", Table.FocusFilter, IsOnBar: false),
         new(Key.S, "Sort", Table.CycleSort, IsOnBar: false),
         OptionsHint,
+        BundleHint,
     ];
 
     private void Reload()

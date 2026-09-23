@@ -40,11 +40,16 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
     private const int UpdateArgumentsRow = 9;
     private const int UninstallArgumentsRow = 10;
     private const int LocationRow = 11;
-    private const int PreCommandRow = 13;
-    private const int PostCommandRow = 14;
-    private const int KillRow = 15;
-    private const int UpdatesRow = 17;
-    private const int FooterRow = 19;
+    private const int PreInstallRow = 13;
+    private const int PostInstallRow = 14;
+    private const int PreUpdateRow = 15;
+    private const int PostUpdateRow = 16;
+    private const int PreUninstallRow = 17;
+    private const int PostUninstallRow = 18;
+    private const int AbortRow = 19;
+    private const int KillRow = 20;
+    private const int UpdatesRow = 21;
+    private const int FooterRow = 22;
 
     private const string IgnoredVersionLabel = "Ignored version [ ";
     private const string Footer = " Stored in package-options.json · exported into bundles as InstallationOptions";
@@ -70,8 +75,13 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
     private readonly FormTextField _updateArguments;
     private readonly FormTextField _uninstallArguments;
     private readonly FormTextField _location;
-    private readonly FormTextField _preCommand;
-    private readonly FormTextField _postCommand;
+    private readonly FormTextField _preInstall;
+    private readonly FormTextField _postInstall;
+    private readonly FormTextField _preUpdate;
+    private readonly FormTextField _postUpdate;
+    private readonly FormTextField _preUninstall;
+    private readonly FormTextField _postUninstall;
+    private readonly CheckField _abortOnPreFail;
     private readonly FormTextField _kill;
     private readonly CheckField _autoUpdate;
     private readonly CheckField _ignoreAll;
@@ -106,8 +116,13 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
         _updateArguments = TextBox(UpdateArgumentsRow, FieldLeft, FieldWidth);
         _uninstallArguments = TextBox(UninstallArgumentsRow, FieldLeft, FieldWidth);
         _location = TextBox(LocationRow, FieldLeft, FieldWidth, "default");
-        _preCommand = TextBox(PreCommandRow, FieldLeft, FieldWidth);
-        _postCommand = TextBox(PostCommandRow, FieldLeft, FieldWidth);
+        _preInstall = TextBox(PreInstallRow, FieldLeft, FieldWidth);
+        _postInstall = TextBox(PostInstallRow, FieldLeft, FieldWidth);
+        _preUpdate = TextBox(PreUpdateRow, FieldLeft, FieldWidth);
+        _postUpdate = TextBox(PostUpdateRow, FieldLeft, FieldWidth);
+        _preUninstall = TextBox(PreUninstallRow, FieldLeft, FieldWidth);
+        _postUninstall = TextBox(PostUninstallRow, FieldLeft, FieldWidth);
+        _abortOnPreFail = Check("Abort on pre-command failure", FirstColumn, AbortRow);
         _kill = TextBox(KillRow, FieldLeft, FieldWidth);
         _autoUpdate = Check("Auto-update", FirstColumn, UpdatesRow);
         _ignoreAll = Check("Ignore all updates", FirstColumn + 18, UpdatesRow);
@@ -119,7 +134,8 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
             _scope, _architecture, _version,
             _interactive, _skipHashCheck, _preRelease, _runAsAdministrator, _removeData,
             _installArguments, _updateArguments, _uninstallArguments, _location,
-            _preCommand, _postCommand, _kill,
+            _preInstall, _postInstall, _preUpdate, _postUpdate, _preUninstall, _postUninstall,
+            _abortOnPreFail, _kill,
             _autoUpdate, _ignoreAll, _ignoredVersion,
         ];
         _textRows =
@@ -129,8 +145,12 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
             (UpdateArgumentsRow, "Update arguments", _updateArguments),
             (UninstallArgumentsRow, "Uninstall arguments", _uninstallArguments),
             (LocationRow, "Install location", _location),
-            (PreCommandRow, "Pre-install command", _preCommand),
-            (PostCommandRow, "Post-install command", _postCommand),
+            (PreInstallRow, "Pre-install command", _preInstall),
+            (PostInstallRow, "Post-install command", _postInstall),
+            (PreUpdateRow, "Pre-update command", _preUpdate),
+            (PostUpdateRow, "Post-update command", _postUpdate),
+            (PreUninstallRow, "Pre-uninstall command", _preUninstall),
+            (PostUninstallRow, "Post-uninstall command", _postUninstall),
             (KillRow, "Kill before operation", _kill),
         ];
 
@@ -160,6 +180,8 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
         new("␣", "toggle or pick"),
         new("Ctrl+R", "reset to defaults"),
     ]);
+
+    public override bool HasUnsavedChanges => HasChanges();
 
     protected override IReadOnlyList<View> Fields => _fields;
 
@@ -309,6 +331,9 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
     private static InstallOptions Clone(InstallOptions options) =>
         JsonSerializer.Deserialize<InstallOptions>(JsonSerializer.Serialize(options))!;
 
+    private static bool AbortsOnAnyPreFail(InstallOptions options) =>
+        options.AbortOnPreInstallFail || options.AbortOnPreUpdateFail || options.AbortOnPreUninstallFail;
+
     private static string ValueOf(OptionRow row, string[] values, string current) =>
         row.SelectedIndex >= 0 ? values[row.SelectedIndex] : current;
 
@@ -373,8 +398,13 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
         _updateArguments.Text = FormatArguments(install.CustomParameters_Update);
         _uninstallArguments.Text = FormatArguments(install.CustomParameters_Uninstall);
         _location.Text = install.CustomInstallLocation;
-        _preCommand.Text = install.PreInstallCommand;
-        _postCommand.Text = install.PostInstallCommand;
+        _preInstall.Text = install.PreInstallCommand;
+        _postInstall.Text = install.PostInstallCommand;
+        _preUpdate.Text = install.PreUpdateCommand;
+        _postUpdate.Text = install.PostUpdateCommand;
+        _preUninstall.Text = install.PreUninstallCommand;
+        _postUninstall.Text = install.PostUninstallCommand;
+        _abortOnPreFail.IsChecked = AbortsOnAnyPreFail(install);
         _kill.Text = string.Join(", ", install.KillBeforeOperation);
         _autoUpdate.IsChecked = install.AutoUpdatePackage;
         _ignoreAll.IsChecked = updates.UpdatesIgnored;
@@ -400,8 +430,21 @@ internal sealed class InstallOptionsEditor : FormView, IThemedView
         install.CustomParameters_Uninstall = ListFrom(
             _uninstallArguments, _base.CustomParameters_Uninstall, FormatArguments(_base.CustomParameters_Uninstall), ParseArguments);
         install.CustomInstallLocation = _location.Text.Trim();
-        install.PreInstallCommand = _preCommand.Text.Trim();
-        install.PostInstallCommand = _postCommand.Text.Trim();
+        install.PreInstallCommand = _preInstall.Text.Trim();
+        install.PostInstallCommand = _postInstall.Text.Trim();
+        install.PreUpdateCommand = _preUpdate.Text.Trim();
+        install.PostUpdateCommand = _postUpdate.Text.Trim();
+        install.PreUninstallCommand = _preUninstall.Text.Trim();
+        install.PostUninstallCommand = _postUninstall.Text.Trim();
+
+        // One box stands for all three flags; left as shown, it keeps them as stored even when they differ.
+        if (_abortOnPreFail.IsChecked != AbortsOnAnyPreFail(_base))
+        {
+            install.AbortOnPreInstallFail = _abortOnPreFail.IsChecked;
+            install.AbortOnPreUpdateFail = _abortOnPreFail.IsChecked;
+            install.AbortOnPreUninstallFail = _abortOnPreFail.IsChecked;
+        }
+
         install.KillBeforeOperation = ListFrom(
             _kill, _base.KillBeforeOperation, string.Join(", ", _base.KillBeforeOperation), ParseProcessNames);
         install.AutoUpdatePackage = _autoUpdate.IsChecked;

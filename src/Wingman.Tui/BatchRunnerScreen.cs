@@ -916,7 +916,7 @@ internal sealed class BatchRunnerScreen : View, IThemedView
         switch (operation.Kind)
         {
             case OperationKind.Upgrade:
-                var target = FirstNonEmpty(row.AvailableVersion, requested, "latest");
+                var target = FirstNonEmpty(requested, row.AvailableVersion, "latest");
                 return $"upgrade  {row.Version} → {target}";
 
             case OperationKind.Install:

@@ -29,6 +29,7 @@ internal sealed class InstalledTab : PackageListTab
         new("x", "uninstall"),
         new("p", "update policy"),
         new("o", "install options"),
+        new("b", "export or import a bundle"),
         new("␣", "mark for batch"),
         new("c", "clear queue"),
         new("g", "run queue"),
@@ -98,6 +99,8 @@ internal sealed class InstalledTab : PackageListTab
             entries.Add(new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)));
         }
 
+        entries.Add(VersionMenuEntry(OperationKind.Upgrade, row));
+
         if (hasUpgrade || Shell.Queue.Contains(row.Id))
         {
             entries.Add(MarkMenuEntry(row));
@@ -113,7 +116,7 @@ internal sealed class InstalledTab : PackageListTab
 
     /// <remarks>
     /// <c>s Sort</c> and <c>r Reload</c> stay off the bar so the batch keys fit at 96 columns, but
-    /// still work, as does <c>o Options</c>; <c>m Menu</c> and <c>Tab Pane</c> are left out too, since
+    /// still work, as do <c>o Options</c> and <c>b Bundle</c>; <c>m Menu</c> and <c>Tab Pane</c> are left out too, since
     /// the shell handles <c>m</c> and the tab handles Tab by themselves.
     /// </remarks>
     private KeyHint[] BuildHints() =>
@@ -128,6 +131,7 @@ internal sealed class InstalledTab : PackageListTab
         new(Key.S, "Sort", Table.CycleSort, IsOnBar: false),
         new(Key.R, "Reload", Reload, IsOnBar: false),
         OptionsHint,
+        BundleHint,
     ];
 
     private string Marker(PackageRow row)

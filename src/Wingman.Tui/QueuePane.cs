@@ -235,10 +235,11 @@ internal sealed class QueuePane : View, IThemedView
             return verb;
         }
 
-        var target = item.Row.AvailableVersion;
+        // A version picked for the operation wins over the newest one winget offers.
+        var target = item.Plan.Request.Version;
         if (string.IsNullOrEmpty(target))
         {
-            target = item.Plan.Request.Version;
+            target = item.Row.AvailableVersion;
         }
 
         if (string.IsNullOrEmpty(target))

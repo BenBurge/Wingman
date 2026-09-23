@@ -48,6 +48,15 @@ internal abstract class ScreenHostTab : ShellTab
         HideContent();
     }
 
+    /// <summary>Whether a form has the tab's content area with edits that closing it would lose.</summary>
+    public bool HasUnsavedForm => _form?.HasUnsavedChanges ?? false;
+
+    /// <summary>Opens the bundle export screen in place of the tab's own views.</summary>
+    public void OpenBundleExport() => ShowForm(new BundleExportScreen(Shell));
+
+    /// <summary>Opens the bundle import screen in place of the tab's own views; its plan runs as a batch on this tab.</summary>
+    public void OpenBundleImport() => ShowForm(new BundleImportScreen(Shell, this));
+
     /// <summary>Takes the batch screen down and disposes it, putting the tab's own views back.</summary>
     public void HideBatchScreen()
     {
@@ -71,8 +80,23 @@ internal abstract class ScreenHostTab : ShellTab
     /// <summary>Whether a batch screen has the tab's content area.</summary>
     protected bool IsBatchShown => _batchScreen is not null;
 
-    /// <summary>Whether the install options editor or the update policy dialog has the tab's content area.</summary>
+    /// <summary>Whether a form, such as the install options editor or a bundle screen, has the tab's content area.</summary>
     protected bool IsFormShown => _form is not null;
+
+    /// <summary>Asks on the message line whether to export or import a bundle, for <c>b</c>.</summary>
+    protected void ChooseBundle()
+    {
+        if (IsBatchShown || IsFormShown)
+        {
+            return;
+        }
+
+        Shell.AskChoice("Bundle: e export, i import, Esc cancel",
+        [
+            new Shell.PromptChoice('e', "Export", OpenBundleExport),
+            new Shell.PromptChoice('i', "Import", OpenBundleImport),
+        ]);
+    }
 
     /// <summary>Opens the install options editor for <paramref name="row"/> in place of the tab's own views.</summary>
     protected void OpenOptions(PackageRow row) => ShowForm(new InstallOptionsEditor(Shell, row));

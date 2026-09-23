@@ -20,8 +20,9 @@ namespace Wingman.Tui;
 
 /// <summary>
 /// The window chrome every tab shares: title bar, tab strip, message line, and key bar, plus the
-/// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n prompt on
-/// the message line, the row context menu and the help overlay, which take every key while open,
+/// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n and choice
+/// prompts on the message line, the row context menu, the version picker, and the help overlay,
+/// which take every key while open,
 /// the one batch allowed to run at a time, the batch <see cref="Queue"/>, the pins every tab marks,
 /// the update policy and install option changes every tab follows, and the settings and theme. Every
 /// member must be called on the UI thread; background work marshals back with <c>App.Invoke</c>.
@@ -32,6 +33,8 @@ internal sealed class Shell
     public const string PolicyChangingText = "A policy change is already running";
     public const string QueueClearedText = "Queue cleared";
     public const string QueueEmptyText = "The queue is empty; press Space to mark rows";
+    public const string NothingToRunText = "Nothing to run";
+    public const string DiscardAndQuitText = "Discard changes and quit? (y/n)";
 
     private const string AppTitle = "Wingman";
     private static readonly TimeSpan StatusLifetime = TimeSpan.FromSeconds(5);
@@ -59,10 +62,11 @@ internal sealed class Shell
     private readonly KeyBar _keyBar;
     private readonly KeyHint _quitHint;
     private readonly KeyHint[] _globalHints;
-    private readonly KeyHint[] _promptHints;
     private readonly Dictionary<string, PackageRow> _installed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<PackageRow> _installedRows = [];
     private readonly ContextMenu _menu;
     private readonly HelpOverlay _help;
+    private readonly VersionPicker _versionPicker;
 
     private List<ShellTab> _tabs = [];
     private TabStrip? _tabStrip;
@@ -76,10 +80,15 @@ internal sealed class Shell
     // The running batch, or the finished one whose screen is still up; null once that is dismissed.
     private ActiveBatch? _batch;
 
-    // Set while the y/n prompt is up: what y runs.
-    private Action? _onPromptYes;
+    // Set while a prompt is up: the answers it takes, and the one Enter gives, if any.
+    private IReadOnlyList<PromptChoice>? _prompt;
+    private PromptChoice? _promptEnterChoice;
+    private KeyHint[] _promptHints = [];
 
-    // A message posted while the prompt is up, shown once it is answered.
+    // Only the version list this numbers may fill the picker; an older one arriving late is ignored.
+    private int _versionRequest;
+
+    // A message posted while a prompt is up, shown once it is answered.
     private (string Text, MessageTone Tone, bool IsTransient)? _heldMessage;
 
     // The message line's color, kept so a theme switch can recolor the message showing.
@@ -171,16 +180,12 @@ internal sealed class Shell
             new(new Key('?'), "Help", ShowHelp),
             _quitHint,
         ];
-        _promptHints =
-        [
-            new(Key.Y, "Yes", () => AnswerPrompt(true)),
-            new(Key.N, "No", () => AnswerPrompt(false)),
-        ];
 
         _menu = new ContextMenu(theme);
         _help = new HelpOverlay(theme);
+        _versionPicker = new VersionPicker(theme);
 
-        Window.Add(_tabSeparator, _content, _footerSeparator, _message, _keyBar, _menu, _help);
+        Window.Add(_tabSeparator, _content, _footerSeparator, _message, _keyBar, _menu, _help, _versionPicker);
     }
 
     public IApplication App { get; }
@@ -291,13 +296,27 @@ internal sealed class Shell
     public void SetInstalled(IReadOnlyList<PackageRow> rows)
     {
         _installed.Clear();
+        _installedRows.Clear();
         foreach (var row in rows)
         {
-            _installed.TryAdd(row.Id, row);
+            if (_installed.TryAdd(row.Id, row))
+            {
+                _installedRows.Add(row);
+            }
         }
 
+        HasLoadedInstalled = true;
         InstalledChanged?.Invoke();
     }
+
+    /// <summary>The installed set in winget's order, one row per Id, as of the Installed tab's last load; empty before it.</summary>
+    public IReadOnlyList<PackageRow> InstalledRows => _installedRows;
+
+    /// <summary>Whether the Installed tab has finished a load, so <see cref="InstalledRows"/> is winget's list rather than empty for want of one.</summary>
+    public bool HasLoadedInstalled { get; private set; }
+
+    /// <summary>The bundle file last exported or read this session, which the import screen offers first; null before any.</summary>
+    public string? LastBundlePath { get; set; }
 
     /// <summary>Whether the Installed tab's last load listed <paramref name="id"/>, ignoring case; false before it.</summary>
     public bool IsInstalled(string id) => _installed.ContainsKey(id);
@@ -313,6 +332,14 @@ internal sealed class Shell
     {
         var plan = OperationRequestFactory.Create(kind, row, Settings, Options.GetInstallOptions(row.Id));
         return new QueuedOperation(kind, row, plan);
+    }
+
+    /// <summary><see cref="BuildOperation(OperationKind, PackageRow)"/> pinned to <paramref name="version"/>, which winget gets as <c>--version</c>.</summary>
+    public QueuedOperation BuildOperation(OperationKind kind, PackageRow row, string version)
+    {
+        var operation = BuildOperation(kind, row);
+        var request = operation.Plan.Request with { Version = version };
+        return operation with { Plan = operation.Plan with { Request = request } };
     }
 
     public void ClearQueue()
@@ -340,7 +367,10 @@ internal sealed class Shell
     }
 
     /// <summary>Runs <paramref name="operation"/> as a batch of one, with its screen in place of <paramref name="origin"/>'s content, leaving the queue alone.</summary>
-    public void RunOperation(QueuedOperation operation, ScreenHostTab origin)
+    public void RunOperation(QueuedOperation operation, ScreenHostTab origin) => RunOperations([operation], origin);
+
+    /// <summary>Runs <paramref name="operations"/> in order as one batch, with its screen in place of <paramref name="origin"/>'s content, leaving the queue alone.</summary>
+    public void RunOperations(IReadOnlyList<QueuedOperation> operations, ScreenHostTab origin)
     {
         if (IsBatchRunning)
         {
@@ -348,7 +378,13 @@ internal sealed class Shell
             return;
         }
 
-        StartBatch([operation], origin, isFromQueue: false);
+        if (operations.Count == 0)
+        {
+            SetStatus(NothingToRunText);
+            return;
+        }
+
+        StartBatch(operations, origin, isFromQueue: false);
     }
 
     /// <summary>Starts the Installed tab's first load, for a tab that needs the installed set before Installed was shown.</summary>
@@ -434,6 +470,37 @@ internal sealed class Shell
 
         OptionsChanged?.Invoke();
         SetStatus($"Saved options for {id}");
+        return true;
+    }
+
+    /// <summary>
+    /// Stores the option sets a bundle carries, a null set leaving that package's stored one alone,
+    /// and raises <see cref="OptionsChanged"/> once; false, with the error shown, when the file could not be written.
+    /// </summary>
+    public bool ImportOptions(IReadOnlyList<BundlePackage> packages)
+    {
+        try
+        {
+            foreach (var package in packages)
+            {
+                if (package.InstallationOptions is { } install)
+                {
+                    Options.SetInstallOptions(package.Id, install);
+                }
+
+                if (package.Updates is { } updates)
+                {
+                    Options.SetUpdatesOptions(package.Id, updates);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetError($"Could not save the bundle's options: {ex.Message}");
+            return false;
+        }
+
+        OptionsChanged?.Invoke();
         return true;
     }
 
@@ -556,10 +623,59 @@ internal sealed class Shell
     /// </summary>
     public void AskConfirm(string question, Action onYes)
     {
-        _onPromptYes = onYes;
-        _heldMessage = null;
-        ShowMessage(question, MessageTone.Normal, isTransient: false);
-        ApplyHints();
+        var yes = new PromptChoice('y', "Yes", onYes);
+        OpenPrompt(question, [yes, new PromptChoice('n', "No", null)], enterChoice: yes, cancelHint: null);
+    }
+
+    /// <summary>
+    /// Shows <paramref name="question"/> on the message line and each choice's letter and label,
+    /// then <c>Esc Cancel</c>, on the key bar, and takes every key until one is picked or Esc
+    /// dismisses it; any other key is ignored.
+    /// </summary>
+    public void AskChoice(string question, IReadOnlyList<PromptChoice> choices)
+    {
+        var cancelHint = new KeyHint(Key.Esc, "Cancel", () => AnswerPrompt(null));
+        OpenPrompt(question, choices, enterChoice: null, cancelHint);
+    }
+
+    /// <summary>Opens the version picker for <paramref name="row"/> at <paramref name="screenPosition"/> and loads winget's versions for it on a background task.</summary>
+    public void ShowVersionPicker(PackageRow row, Point screenPosition, Action<string> onPicked)
+    {
+        if (_prompt is not null || OpenOverlay is not null)
+        {
+            return;
+        }
+
+        var request = ++_versionRequest;
+        var installedVersion = FindInstalled(row.Id)?.Version;
+        Window.MoveSubViewToEnd(_versionPicker);
+        _versionPicker.Open(row.Name, installedVersion, Window.ScreenToViewport(screenPosition), _content.Frame, onPicked);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var versions = await _client.ListVersionsAsync(row.Id, CancellationToken.None);
+                App.Invoke(() =>
+                {
+                    if (request == _versionRequest && _versionPicker.Visible)
+                    {
+                        _versionPicker.ShowVersions(versions);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                App.Invoke(() =>
+                {
+                    if (request == _versionRequest && _versionPicker.Visible)
+                    {
+                        _versionPicker.Close();
+                        SetError($"winget: {ex.Message}");
+                    }
+                });
+            }
+        });
     }
 
     /// <summary>Puts the tab's current <see cref="ShellTab.Hints"/> on the key bar if it is the active tab.</summary>
@@ -586,7 +702,7 @@ internal sealed class Shell
     /// </summary>
     public void ShowContextMenu(string title, IReadOnlyList<MenuEntry> entries, Point screenPosition)
     {
-        if (_onPromptYes is not null || OpenOverlay is not null)
+        if (_prompt is not null || OpenOverlay is not null)
         {
             return;
         }
@@ -599,7 +715,7 @@ internal sealed class Shell
     /// <summary>Opens the key list for the active tab over the content.</summary>
     public void ShowHelp()
     {
-        if (_onPromptYes is not null || OpenOverlay is not null)
+        if (_prompt is not null || OpenOverlay is not null)
         {
             return;
         }
@@ -666,7 +782,7 @@ internal sealed class Shell
 
     private void PostMessage(string text, MessageTone tone, bool isTransient)
     {
-        if (_onPromptYes is not null)
+        if (_prompt is not null)
         {
             _heldMessage = (text, tone, isTransient);
             return;
@@ -698,14 +814,37 @@ internal sealed class Shell
         }
     }
 
-    private void AnswerPrompt(bool isYes)
+    private void OpenPrompt(string question, IReadOnlyList<PromptChoice> choices, PromptChoice? enterChoice, KeyHint? cancelHint)
     {
-        if (_onPromptYes is not { } onYes)
+        _prompt = choices;
+        _promptEnterChoice = enterChoice;
+        var hints = new List<KeyHint>();
+        foreach (var choice in choices)
+        {
+            hints.Add(new KeyHint(new Key(choice.Letter), choice.Label, () => AnswerPrompt(choice), choice.Letter.ToString()));
+        }
+
+        if (cancelHint is not null)
+        {
+            hints.Add(cancelHint);
+        }
+
+        _promptHints = [.. hints];
+        _heldMessage = null;
+        ShowMessage(question, MessageTone.Normal, isTransient: false);
+        ApplyHints();
+    }
+
+    /// <summary>Takes the prompt down and runs <paramref name="choice"/>'s action; null, or a choice without one, dismisses it.</summary>
+    private void AnswerPrompt(PromptChoice? choice)
+    {
+        if (_prompt is null)
         {
             return;
         }
 
-        _onPromptYes = null;
+        _prompt = null;
+        _promptEnterChoice = null;
         if (_heldMessage is { } held)
         {
             _heldMessage = null;
@@ -717,13 +856,10 @@ internal sealed class Shell
         }
 
         ApplyHints();
-        if (isYes)
-        {
-            onYes();
-        }
+        choice?.Action?.Invoke();
     }
 
-    /// <summary>The context menu or help overlay while one is open, or null.</summary>
+    /// <summary>The context menu, version picker, or help overlay while one is open, or null.</summary>
     private View? OpenOverlay
     {
         get
@@ -731,6 +867,11 @@ internal sealed class Shell
             if (_menu.Visible)
             {
                 return _menu;
+            }
+
+            if (_versionPicker.Visible)
+            {
+                return _versionPicker;
             }
 
             if (_help.Visible)
@@ -786,6 +927,13 @@ internal sealed class Shell
             return;
         }
 
+        if (_versionPicker.Visible)
+        {
+            key.Handled = true;
+            _versionPicker.HandleKey(key);
+            return;
+        }
+
         if (_help.Visible)
         {
             key.Handled = true;
@@ -817,19 +965,35 @@ internal sealed class Shell
 
     private void OnPromptKeyDown(Key key)
     {
-        if (_onPromptYes is null)
+        if (_prompt is not { } choices)
         {
             return;
         }
 
         key.Handled = true;
-        if (key == Key.Enter || IsPlainLetter(key, 'y'))
+        if (key == Key.Enter)
         {
-            AnswerPrompt(true);
+            if (_promptEnterChoice is { } enterChoice)
+            {
+                AnswerPrompt(enterChoice);
+            }
+
+            return;
         }
-        else if (key == Key.Esc || IsPlainLetter(key, 'n'))
+
+        if (key == Key.Esc)
         {
-            AnswerPrompt(false);
+            AnswerPrompt(null);
+            return;
+        }
+
+        foreach (var choice in choices)
+        {
+            if (IsPlainLetter(key, choice.Letter))
+            {
+                AnswerPrompt(choice);
+                return;
+            }
         }
     }
 
@@ -843,7 +1007,7 @@ internal sealed class Shell
 
     private void ApplyHints()
     {
-        if (_onPromptYes is not null)
+        if (_prompt is not null)
         {
             _keyBar.Hints = _promptHints;
             return;
@@ -858,17 +1022,25 @@ internal sealed class Shell
 
     private void Quit()
     {
-        if (_batch is not { IsRunning: true } batch)
+        if (_batch is { IsRunning: true } batch)
         {
-            App.RequestStop();
+            AskConfirm("Quit and cancel the batch? (y/n)", () =>
+            {
+                batch.Cancellation.Cancel();
+                App.RequestStop();
+            });
             return;
         }
 
-        AskConfirm("Quit and cancel the batch? (y/n)", () =>
+        // Any tab, not only the active one: a form left open on another tab still holds its edits.
+        var hasUnsavedForm = _tabs.OfType<ScreenHostTab>().Any(tab => tab.HasUnsavedForm);
+        if (hasUnsavedForm)
         {
-            batch.Cancellation.Cancel();
-            App.RequestStop();
-        });
+            AskConfirm(DiscardAndQuitText, App.RequestStop);
+            return;
+        }
+
+        App.RequestStop();
     }
 
     /// <summary>
@@ -1066,7 +1238,7 @@ internal sealed class Shell
     private void ShowTab(int index)
     {
         // Only a click on the strip gets here while a prompt is up, and the question was about the tab being left.
-        AnswerPrompt(false);
+        AnswerPrompt(null);
 
         _activeTab = _tabs[index];
         foreach (var tab in _tabs)
@@ -1098,17 +1270,10 @@ internal sealed class Shell
                 return;
             }
 
-            // Help and the menu work on every tab and while a log shows, whether or not the key bar lists them.
+            // Help works on every tab and while a log shows, whether or not the key bar lists it.
             if (rune.Value == '?')
             {
                 ShowHelp();
-                key.Handled = true;
-                return;
-            }
-
-            if (rune.Value == 'm')
-            {
-                _activeTab?.ShowContextMenu();
                 key.Handled = true;
                 return;
             }
@@ -1122,6 +1287,14 @@ internal sealed class Shell
                 key.Handled = true;
                 return;
             }
+        }
+
+        // The menu works on every tab whether or not the key bar lists it, but after the hints, so a
+        // form's own m, such as the export screen's Marked only, wins.
+        if (isPlainKey && key.TryGetPrintableRune(out var letter) && letter.Value == 'm')
+        {
+            _activeTab?.ShowContextMenu();
+            key.Handled = true;
         }
     }
 
@@ -1137,6 +1310,10 @@ internal sealed class Shell
         if (_menu.Visible)
         {
             _menu.Paint();
+        }
+        else if (_versionPicker.Visible)
+        {
+            _versionPicker.Paint();
         }
         else
         {
@@ -1188,6 +1365,9 @@ internal sealed class Shell
 
         Window.SetClip(savedClip);
     }
+
+    /// <summary>One answer to a prompt on the message line: the letter that picks it, its key bar label, and what it runs; null runs nothing.</summary>
+    public sealed record PromptChoice(char Letter, string Label, Action? Action);
 
     private enum MessageTone
     {

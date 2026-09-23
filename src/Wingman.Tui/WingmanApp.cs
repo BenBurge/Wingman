@@ -85,7 +85,8 @@ public static class WingmanApp
         return shell;
     }
 
-    private static string? DataDirectoryOverride()
+    /// <summary>The folder <see cref="DataDirectoryVariable"/> names, or null when it is unset.</summary>
+    internal static string? DataDirectoryOverride()
     {
         var directory = Environment.GetEnvironmentVariable(DataDirectoryVariable);
         return string.IsNullOrWhiteSpace(directory) ? null : directory;

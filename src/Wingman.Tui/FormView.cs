@@ -29,11 +29,14 @@ internal abstract class FormView : View
     /// <summary>The form's keys in the help overlay.</summary>
     public abstract HelpGroup Help { get; }
 
+    /// <summary>Whether closing the form now would lose edits, which makes <c>q</c> ask before quitting.</summary>
+    public virtual bool HasUnsavedChanges => false;
+
     /// <summary>The focusable fields in Tab order.</summary>
     protected abstract IReadOnlyList<View> Fields { get; }
 
     /// <summary>Focuses the first field, for when the form opens.</summary>
-    public void FocusFirstField()
+    public virtual void FocusFirstField()
     {
         if (Fields.Count > 0)
         {

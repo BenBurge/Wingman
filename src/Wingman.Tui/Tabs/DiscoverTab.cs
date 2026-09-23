@@ -31,6 +31,7 @@ internal sealed class DiscoverTab : PackageListTab
         new("c", "clear queue"),
         new("g", "run queue"),
         new("o", "install options"),
+        new("b", "export or import a bundle"),
         new("⏎", "on a row: details"),
     ]);
 
@@ -61,6 +62,7 @@ internal sealed class DiscoverTab : PackageListTab
             new(new Key('/'), "Search box", Table.FocusFilter),
             new(Key.M, "Menu", ShowContextMenu),
             OptionsHint,
+            BundleHint,
         ];
     }
 
@@ -114,6 +116,7 @@ internal sealed class DiscoverTab : PackageListTab
         {
             new("Install", () => RunOperation(OperationKind.Install, row)),
             MarkMenuEntry(row),
+            VersionMenuEntry(OperationKind.Install, row),
         };
         if (Shell.IsInstalled(row.Id))
         {

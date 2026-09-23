@@ -9,37 +9,47 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// <see cref="Shell.Settings"/> as a form, laid out as the mockup's settings screen: every change is
 /// saved at once, and a theme change recolors the app at once. The groups that belong to phase 3
-/// are drawn dim, with no fields.
+/// are drawn dim, with no fields. The Tools row opens the bundle screens, which take the tab's
+/// content area as they do on the list tabs, as does the batch an import runs.
 /// </summary>
-internal sealed class SettingsTab : ShellTab
+internal sealed class SettingsTab : ScreenHostTab
 {
     private readonly SettingsForm _form;
     private bool _hasBeenShown;
 
     public SettingsTab(Shell shell)
-        : base("Settings")
+        : base(shell, "Settings")
     {
-        CanFocus = true;
-        _form = new SettingsForm(shell);
+        _form = new SettingsForm(shell, OpenBundleImport, OpenBundleExport);
         Add(_form);
     }
 
-    public override IReadOnlyList<KeyHint> Hints => _form.Hints;
+    protected override IReadOnlyList<KeyHint> TableHints => _form.Hints;
 
-    public override IReadOnlyList<HelpGroup> HelpGroups => [_form.Help];
+    protected override HelpGroup TabHelp => _form.Help;
 
     /// <summary>Focuses the first field the first time, and after that the one that had focus when the tab was left, which Terminal.Gui restores.</summary>
     public override void OnShown()
     {
         if (_hasBeenShown)
         {
-            _form.SetFocus();
+            FocusContent();
             return;
         }
 
         _hasBeenShown = true;
         _form.FocusFirstField();
     }
+
+    protected override void HideContent() => _form.Visible = false;
+
+    protected override void ShowContent()
+    {
+        _form.Visible = true;
+        _form.SetFocus();
+    }
+
+    protected override void FocusTable() => _form.SetFocus();
 
     private sealed class SettingsForm : FormView, IThemedView
     {
@@ -73,7 +83,6 @@ internal sealed class SettingsTab : ShellTab
         private const string ImportLabel = "Import bundle…";
         private const string ExportLabel = "Export bundle…";
         private const string SetupText = "⏎ Register scheduled tasks (wingman setup)";
-        private const string BundlesLaterText = "Bundles arrive in #47/#48";
 
         private static readonly string[] ScopeValues = ["", "user", "machine"];
         private static readonly string[] SourceValues = ["winget", "msstore", "all"];
@@ -102,7 +111,7 @@ internal sealed class SettingsTab : ShellTab
 
         private Theme _theme;
 
-        public SettingsForm(Shell shell)
+        public SettingsForm(Shell shell, Action openImport, Action openExport)
         {
             _shell = shell;
             _theme = shell.Theme;
@@ -133,9 +142,9 @@ internal sealed class SettingsTab : ShellTab
             _themeOption.Picked += PickTheme;
 
             _import = new ActionField(_theme, ImportLabel) { X = LabelLeft, Y = ToolItemsRow };
-            _import.Pressed += () => _shell.SetStatus(BundlesLaterText);
+            _import.Pressed += openImport;
             _export = new ActionField(_theme, ExportLabel) { X = LabelLeft + ActionField.WidthFor(ImportLabel) + CheckGap.Length, Y = ToolItemsRow };
-            _export.Pressed += () => _shell.SetStatus(BundlesLaterText);
+            _export.Pressed += openExport;
 
             _fields =
             [

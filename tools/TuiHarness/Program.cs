@@ -48,6 +48,19 @@ var shell = WingmanApp.CreateShell(app, theme, client, settingsStore, settings, 
 var historyDirectory = Path.Combine(dataDirectory, "history");
 string Focused() => shell.Window.MostFocused?.GetType().Name ?? "none";
 
+// The export screen writes into the data directory, since WINGMAN_DATA_DIR is set; the import steps
+// read the captured UniGetUI bundle from a copy there, which the run deletes with the rest.
+var exportPath = Path.Combine(dataDirectory, $"{Environment.MachineName}-{DateTime.Now:yyyy-MM-dd}.ubundle");
+var bundleCopy = Path.Combine(dataDirectory, "bundle-unigetui.ubundle");
+var harnessDirectory = Path.GetDirectoryName(screen.OutputPath)!;
+File.Copy(Path.Combine(harnessDirectory, "..", "..", "tests", "Wingman.Core.Tests", "Fixtures", "bundle-unigetui.ubundle"), bundleCopy);
+int InstalledCount() => shell.InstalledRows.Count;
+int CompatibleCount() => shell.InstalledRows.Count(BundleExporter.IsCompatible);
+int CompatibleIndex(int nth) => shell.InstalledRows.Select((row, index) => (row, index)).Where(item => BundleExporter.IsCompatible(item.row)).ElementAt(nth).index;
+
+// The install options editor's rows: a label padded to its column, then the box's opening bracket.
+string EditorLabel(string label) => " " + label.PadRight(22);
+
 // Stand-ins so a run never overwrites the real clipboard or starts a browser.
 app.Driver!.Clipboard = new FakeClipboard(false, false);
 var openedUrls = new List<string>();
@@ -81,6 +94,7 @@ void CheckSameText(string what, string incremental, string full)
 }
 
 bool ScreenHas(string text) => screen.Rows().Any(row => row.Contains(text, StringComparison.Ordinal));
+string RowWith(string text) => screen.Rows().FirstOrDefault(row => row.Contains(text, StringComparison.Ordinal)) ?? "";
 
 // The table's side of the split: the rows between the tab separator and the footer separator, left
 // of the divider, found where it meets the tab separator as ┬.
@@ -172,6 +186,89 @@ Step[] steps =
     new(50, "Tab back, clear the filter", () => { screen.Press(Key.Tab); screen.Press(new Key('/')); screen.Press(Key.Esc); }),
     new(50, "Filter zzzz, Enter: empty list still takes tab keys", () => { screen.Press(new Key('/')); screen.Type("zzzz"); screen.Press(Key.Enter); }),
     new(50, "clear the filter", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); }),
+
+    new(50, "b: the bundle chooser on the message line", () => screen.Press(Key.B), Verify: () =>
+    {
+        Check("chooser question", ScreenHas("Bundle: e export, i import, Esc cancel"));
+        Check("chooser keys", ScreenHas(" e Export   i Import   Esc Cancel "));
+    }),
+    new(50, "e: the export screen", () => screen.Press(Key.E), WithColors: true, Verify: () =>
+    {
+        Check("title", ScreenHas(" Export bundle  UniGetUI-compatible .ubundle · export_version 3"));
+        Check("include options", ScreenHas(" [x] Include per-package install options   [x] Include holds and ignored versions"));
+        Check("marked only", ScreenHas(" [ ] Only marked rows"));
+        Check("header", ScreenHas("     " + "Name".PadRight(21) + "Id".PadRight(27) + "Version".PadRight(10) + "Notes"));
+        Check("a row winget cannot reinstall", ScreenHas(" ⊘   ActiveBatch V14") && ScreenHas("skipped · not from winget"));
+        Check("a checked winget row", ScreenHas("[x]  Adobe Acrobat Reader"));
+        Check("more below", ScreenHas(" more"));
+        Check("count", ScreenHas($" {CompatibleCount()} of {InstalledCount()} selected · {InstalledCount() - CompatibleCount()} skipped: winget cannot reinstall them"));
+        Check("file row", ScreenHas(" File  [ "));
+        Check("export key bar", ScreenHas(" ⏎ Export   ␣ Toggle   a All   n None   m Marked only   Esc Cancel   ? Help   q Quit "));
+        Check("the list has focus", Focused() == nameof(CheckTable));
+    }),
+    new(50, "n, then Space on two winget rows", () =>
+    {
+        screen.Press(Key.N);
+        screen.Press(Key.CursorDown, CompatibleIndex(0));
+        screen.Press(Key.Space);
+        screen.Press(Key.CursorDown, CompatibleIndex(1) - CompatibleIndex(0));
+        screen.Press(Key.Space);
+    }, Verify: () =>
+        Check("two selected", ScreenHas($" 2 of {InstalledCount()} selected"))),
+    new(50, "Enter: exported", () => screen.Press(Key.Enter), Verify: () =>
+    {
+        Check("exported status ending in the file name", ScreenHas("Exported 2 packages to ") && ScreenHas(Path.GetFileName(exportPath) + " "));
+        Check("table back", ScreenHas("Filter:"));
+        var exported = BundleSerializer.Read(File.ReadAllText(exportPath));
+        Check("the file parses with two packages", exported.Packages.Count == 2 && exported.Packages.All(package => package.ManagerName == "WinGet"));
+        Check("the rest listed as incompatible", exported.IncompatiblePackages.Count == InstalledCount() - CompatibleCount());
+        Check("no byte order mark", File.ReadAllBytes(exportPath)[0] == (byte)'{');
+    }),
+    new(50, "b, i: the import screen asks for the file", () => { screen.Press(Key.B); screen.Press(Key.I); }, Verify: () =>
+    {
+        Check("title", ScreenHas(" Import bundle  choose a .ubundle file"));
+        Check("the export offered first", shell.LastBundlePath == exportPath && ScreenHas(" File  [ "));
+        Check("file key bar", ScreenHas(" ⏎ Read   Esc Cancel   ? Help   q Quit "));
+    }),
+    new(50, "type the fixture's path, Enter: the plan", () =>
+    {
+        screen.Press(Key.End);
+        screen.Press(Key.Backspace, exportPath.Length);
+        screen.Type(bundleCopy);
+        screen.Press(Key.Enter);
+    }, WithColors: true, Verify: () =>
+    {
+        Check("title", ScreenHas(" Import bundle  bundle-unigetui.ubundle · 6 packages"));
+        Check("header", ScreenHas("     " + "Name".PadRight(20) + "Id".PadRight(25) + "Bundle".PadRight(9) + "Installed".PadRight(10) + "Plan"));
+        Check("install with options", RowWith(" 7zip.7zip ").Contains("—") && RowWith(" 7zip.7zip ").Contains("install  ⚙ options"));
+        Check("upgrade", RowWith(" AutoHotkey.AutoHotkey ").Contains(" 2.0.26 ") && RowWith(" AutoHotkey.AutoHotkey ").Contains("upgrade"));
+        Check("keep", RowWith(" Obsidian.Obsidian ").Contains("keep") && RowWith(" Git.Git ").Contains("keep"));
+        Check("⊘ Scoop package", RowWith(" ripgrep ").Contains(" ⊘ ") && ScreenHas("⊘ Scoop package"));
+        Check("⊘ incompatible", ScreenHas("⊘ incompatible"));
+        Check("summary", ScreenHas(" Plan  1 install · 1 upgrade · 2 already installed · 2 skipped"));
+        Check("apply options", ScreenHas("       [x] Apply the bundle's install options to package-options.json"));
+        Check("holds, dim", ScreenHas("       [x] Apply holds as winget pins"));
+        Check("elevation", ScreenHas("       1 of 2 operations need elevation. One UAC prompt will be shown."));
+        Check("plan key bar", ScreenHas(" ⏎ Run plan   ␣ Toggle   o View options   a All   n None   Esc Cancel   ? Help   q Quit "));
+    }),
+    new(50, "Down x2, o: 7-Zip's options from the bundle", () => { screen.Press(Key.CursorDown, 2); screen.Press(Key.O); }, Verify: () =>
+        Check("options on the message line", ScreenHas("7zip.7zip: scope=machine, skipHash"))),
+    new(50, "Up, Space: AutoHotkey left out, so only 7-Zip runs", () => { screen.Press(Key.CursorUp); screen.Press(Key.Space); }, Verify: () =>
+        Check("elevation for one", ScreenHas("       1 of 1 operations need elevation."))),
+    new(50, "Enter: the run question", () => screen.Press(Key.Enter), Verify: () =>
+        Check("question", ScreenHas("Run 1 operation from bundle-unigetui.ubundle? (y/n)"))),
+    new(50, "y: the plan runs as a batch on Installed", () => screen.Press(Key.Y), Verify: () =>
+    {
+        Check("running title", ScreenHas(" Running batch  1 of 1"));
+        Check("install row", BatchRow("7zip.7zip").Contains("install  → latest"));
+        Check("the bundle's scope needs elevation", ScreenHas("elevated helper: not available "));
+        Check("options stored", shell.Options.GetInstallOptions("7zip.7zip") is { InstallationScope: "machine", SkipHashCheck: true });
+    }),
+    new(1000, "the import batch finished", () => { }, Verify: () =>
+        Check("finished title", ScreenHas(" Batch finished  1 of 1") && !ScreenHas("failed"))),
+    new(50, "Enter: Installed is back", () => screen.Press(Key.Enter), Verify: () =>
+        Check("table back", ScreenHas("Filter:"))),
+
     new(50, "2: Discover before any search", () => screen.Press(new Key('2'))),
     new(50, "Search git", () => { screen.Type("git"); screen.Press(Key.Enter); }),
     new(800, "Discover after searching git", () => { }, WithColors: true),
@@ -286,9 +383,9 @@ Step[] steps =
         Check("details pane back", ScreenHas(" Policy     update"));
         Check("seeded options for Azd", ScreenHas(" Options    custom (o to edit)"));
         var entries = new HistoryStore(historyDirectory).List();
-        Check("three operation entries and two batch entries", Directory.GetFiles(historyDirectory, "*.json").Length == 5
-            && entries.Count(entry => entry.Operation == "batch") == 2
-            && entries.Count(entry => entry.Operation != "batch") == 3);
+        Check("four operation entries and three batch entries, the import's included", Directory.GetFiles(historyDirectory, "*.json").Length == 7
+            && entries.Count(entry => entry.Operation == "batch") == 3
+            && entries.Count(entry => entry.Operation != "batch") == 4);
     }),
 
     new(50, "Space on Microsoft.Azd, Down, Space, g", () => { screen.Press(Key.Space); screen.Press(Key.CursorDown); screen.Press(Key.Space); screen.Press(Key.G); }, Verify: () =>
@@ -636,12 +733,13 @@ Step[] steps =
     }, Verify: () =>
     {
         Check("editor title", ScreenHas(" Install options  AutoHotkey.AutoHotkey · saved per package, used on every upgrade"));
-        Check("scope default", ScreenHas(" Scope                 (•) default  ( ) machine  ( ) user"));
-        Check("architecture default", ScreenHas(" Architecture          (•) default  ( ) x64  ( ) arm64"));
-        Check("version placeholder", ScreenHas(" Version to install    [ latest"));
+        Check("scope default", ScreenHas(EditorLabel("Scope") + "(•) default  ( ) machine  ( ) user"));
+        Check("architecture default", ScreenHas(EditorLabel("Architecture") + "(•) default  ( ) x64  ( ) arm64"));
+        Check("version placeholder", ScreenHas(EditorLabel("Version to install") + "[ latest"));
         Check("flag rows", ScreenHas("[ ] Interactive install   [ ] Skip hash check   [ ] Pre-release")
             && ScreenHas("[ ] Run as administrator  [ ] Remove data on uninstall"));
-        Check("updates row", ScreenHas(" Updates               [ ] Auto-update   [ ] Ignore all updates   Ignored version [ "));
+        Check("command rows", ScreenHas(EditorLabel("Pre-install command") + "[ ") && ScreenHas(EditorLabel("Post-uninstall command") + "[ "));
+        Check("updates row", ScreenHas(EditorLabel("Updates") + "[ ] Auto-update   [ ] Ignore all updates   Ignored version [ "));
         Check("footer", ScreenHas(" Stored in package-options.json · exported into bundles as InstallationOptions"));
         Check("editor key bar", ScreenHas(" ⏎ Save   Esc Cancel   Tab Next field   ␣ Toggle   Ctrl+R Reset   ? Help   q Quit "));
         Check("table hidden", !ScreenHas("Filter:"));
@@ -849,8 +947,14 @@ Step[] steps =
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"continueOnFailure\": false", StringComparison.Ordinal));
         Check("in effect", !shell.Settings.ContinueOnFailure);
     }),
-    new(50, "Tab x2, Enter on Import bundle…", () => { screen.Press(Key.Tab, 2); screen.Press(Key.Enter); }, Verify: () =>
-        Check("bundles later", ScreenHas("Bundles arrive in #47/#48"))),
+    new(50, "Tab x2, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Tab, 2); screen.Press(Key.Enter); }, Verify: () =>
+    {
+        Check("import title", ScreenHas(" Import bundle  choose a .ubundle file"));
+        Check("settings hidden", !ScreenHas(" Defaults"));
+        Check("the last bundle offered", shell.LastBundlePath == bundleCopy);
+    }),
+    new(50, "Esc: the settings are back", () => screen.Press(Key.Esc), Verify: () =>
+        Check("settings back", ScreenHas(" Defaults") && ScreenHas(" Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "))),
     new(50, "click Daylight: the theme switches live", () => ClickText("( ) Daylight"), WithColors: true, Verify: () =>
     {
         Check("Daylight picked", ScreenHas("(•) Daylight"));
@@ -880,6 +984,83 @@ Step[] steps =
         Check("Midnight picked", ScreenHas("(•) Midnight"));
         Check("Midnight ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Midnight.Background);
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"theme\": \"Midnight\"", StringComparison.Ordinal));
+    }),
+
+    new(50, "3, clear the filter, Ctrl+Home, m: Upgrade to version… in the menu", () =>
+    {
+        screen.Press(new Key('3'));
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(Key.Home.WithCtrl);
+        screen.Press(Key.M);
+    }, Verify: () =>
+    {
+        var rows = screen.Rows().ToList();
+        var upgradeY = rows.FindIndex(row => row.Contains("│ Upgrade to ", StringComparison.Ordinal));
+        Check("version entry right after the upgrade", upgradeY >= 0 && rows[upgradeY + 1].Contains("│ Upgrade to version… ", StringComparison.Ordinal));
+        Check("options and policy entries", ScreenHas("│ Install options… ") && ScreenHas("│ Update policy… "));
+    }),
+    new(50, "Down, Enter: the version picker", () => { screen.Press(Key.CursorDown); screen.Press(Key.Enter); }, Verify: () =>
+        Check("the menu gave way to the picker", !IsMenuOpen() && (ScreenHas("│ loading… ") || ScreenHas(" 1 version ")))),
+    new(200, "the picker lists the one version the fake knows", () => { }, WithColors: true, Verify: () =>
+        Check("one version", ScreenHas(" 1 version "))),
+    new(50, "Esc: the picker closed", () => screen.Press(Key.Esc), Verify: () =>
+    {
+        Check("picker closed", !ScreenHas(" 1 version "));
+        Check("no question", !ScreenHas("(y/n)"));
+    }),
+    new(50, "2, search Git.Git", () => { screen.Press(new Key('2')); screen.Press(new Key('/')); screen.Press(Key.Backspace, 20); screen.Type("Git.Git"); screen.Press(Key.Enter); }),
+    new(600, "m, Down x2, Enter on Install version…", () => { screen.Press(Key.M); screen.Press(Key.CursorDown, 2); screen.Press(Key.Enter); }),
+    new(200, "the picker lists Git's versions, newest first", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("installed version first and marked", ScreenHas("│ 2.55.0.3  installed"));
+        Check("second entry", ScreenHas("│ 2.55.0.2 "));
+        Check("ten shown, the count on the border", screen.Rows().Count(row => row.Contains("│ 2.", StringComparison.Ordinal)) == 10 && ScreenHas(" versions "));
+    }),
+    new(50, "Down, Enter: the install question for the second version", () => { screen.Press(Key.CursorDown); screen.Press(Key.Enter); }, Verify: () =>
+        Check("question", ScreenHas("Install Git.Git 2.55.0.2? (y/n)"))),
+    new(50, "y: a batch of one pinned to that version", () => screen.Press(Key.Y), Verify: () =>
+    {
+        Check("running title", ScreenHas(" Running batch  1 of 1"));
+        Check("pinned version", BatchRow("Git.Git").Contains("install  → 2.55.0.2"));
+    }),
+    new(1000, "the install finished at that version", () => { }, Verify: () =>
+    {
+        Check("finished title", ScreenHas(" Batch finished  1 of 1"));
+        Check("the log names the version", ScreenHas("Found Git [Git.Git] Version 2.55.0.2"));
+        var install = new HistoryStore(historyDirectory).List().First(entry => entry.Operation == "install" && entry.PackageId == "Git.Git");
+        Check("winget got --version", install.Arguments.Contains("--version") && install.Arguments.Contains("2.55.0.2"));
+    }),
+    new(50, "Enter: the results are back", () => screen.Press(Key.Enter), Verify: () =>
+        Check("results back", ScreenHas("Search:"))),
+
+    new(50, "1, o: the editor has every command field", () => { screen.Press(new Key('1')); screen.Press(Key.O); }, WithColors: true, Verify: () =>
+    {
+        Check("editor title", ScreenHas(" Install options  " + PolicyId));
+        Check("pre-update", ScreenHas(EditorLabel("Pre-update command") + "[ "));
+        Check("post-update", ScreenHas(EditorLabel("Post-update command") + "[ "));
+        Check("pre-uninstall", ScreenHas(EditorLabel("Pre-uninstall command") + "[ "));
+        Check("post-uninstall", ScreenHas(EditorLabel("Post-uninstall command") + "[ "));
+        Check("abort checkbox", ScreenHas(EditorLabel("") + "[ ] Abort on pre-command failure"));
+        Check("kill and updates rows still fit", ScreenHas(EditorLabel("Kill before operation") + "[ ")
+            && ScreenHas(EditorLabel("Updates") + "[ ] Auto-update") && ScreenHas("Ignored version [ " + new string(' ', 8) + " ]"));
+        Check("footer still fits", ScreenHas(" Stored in package-options.json · exported into bundles as InstallationOptions"));
+    }),
+    new(50, "Right, Space: machine scope, then q: the discard question", () => { screen.Press(Key.CursorRight); screen.Press(Key.Space); screen.Press(Key.Q); }, Verify: () =>
+    {
+        Check("discard question", ScreenHas(Shell.DiscardAndQuitText));
+        Check("still running", shell.Window.IsRunning);
+    }),
+    new(50, "n: the editor stays open", () => screen.Press(Key.N), Verify: () =>
+    {
+        Check("still open", ScreenHas(" Install options  " + PolicyId));
+        Check("machine still picked", ScreenHas("( ) default  (•) machine  ( ) user"));
+        Check("still running", shell.Window.IsRunning);
+    }),
+    new(50, "Esc, y: discarded", () => { screen.Press(Key.Esc); screen.Press(Key.Y); }, Verify: () =>
+    {
+        Check("table back", ScreenHas("Filter:"));
+        Check("nothing saved", shell.Options.GetInstallOptions(PolicyId).IsDefault());
     }),
 
     new(50, "q quits", () => screen.Press(Key.Q)),
