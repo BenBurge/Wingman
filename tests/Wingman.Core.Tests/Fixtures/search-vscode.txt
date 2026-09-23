@@ -1,0 +1,8 @@
+Name                                      Id                                      Version Source
+--------------------------------------------------------------------------------------------------
+Visual Studio Code                        XP9KHM4BK9FZ7Q                          Unknown msstore
+Visual Studio Code - Insiders             XP8LFCZM790F6B                          Unknown msstore
+Microsoft Visual Studio Code              Microsoft.VisualStudioCode              1.138.0 winget
+Microsoft Visual Studio Code CLI          Microsoft.VisualStudioCode.CLI          1.126.0 winget
+Microsoft Visual Studio Code Insiders     Microsoft.VisualStudioCode.Insiders     1.127.0 winget
+Microsoft Visual Studio Code Insiders CLI Microsoft.VisualStudioCode.Insiders.CLI 1.127.0 winget

@@ -1,0 +1,20 @@
+Name                                      Id                                       Version      Available    Source
+-------------------------------------------------------------------------------------------------------------------
+AutoHotkey                                AutoHotkey.AutoHotkey                    2.0.26       2.0.28       winget
+Azure Developer CLI                       Microsoft.Azd                            1.31.300     1.34.200     winget
+Claude Code                               Anthropic.ClaudeCode                     2.1.240      2.1.268      winget
+Docker CLI                                Docker.DockerCLI                         29.7.2       29.8.1       winget
+draw.io 31.1.8                            JGraph.Draw                              31.1.8       31.4.5       winget
+GitHub CLI                                GitHub.cli                               2.98.0       2.101.0      winget
+Microsoft Azure CLI (64-bit)              Microsoft.AzureCLI                       2.89.1       2.90.0       winget
+Microsoft Azure PowerShell - August 2026  Microsoft.Azure.Az                       16.2.0.41027 16.3.0.41101 winget
+Microsoft OLE DB Driver 19 for SQL Server Microsoft.SQLServer.OLEDBDriver          19.4.1.0     19.4.2       winget
+Oh My Posh                                JanDeDobbeleer.OhMyPosh                  30.7.0.0     31.3.0       winget
+Python Launcher                           Python.Launcher                          3.12.10      3.14.7       winget
+SQL Server Management Studio 22           Microsoft.SQLServerManagementStudio.22   22.9.1       22.10.1      winget
+T3 Code (Alpha) 0.0.34                    T3Tools.T3Code                           0.0.34       0.0.42       winget
+TeamViewer Host                           TeamViewer.TeamViewer.Host               15.76.6.0    15.81.6      winget
+Visual Studio Professional 2022           Microsoft.VisualStudio.2022.Professional < 17.14.41   17.14.41     winget
+Visual Studio Professional 2026           Microsoft.VisualStudio.Professional      18.9.1       18.10.1      winget
+Windows Subsystem for Linux               Microsoft.WSL                            2.7.12.0     2.7.13       winget
+17 upgrades available.

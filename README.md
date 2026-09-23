@@ -25,3 +25,7 @@ captured on a real Windows machine (`tools/Capture-WingetFixtures.ps1`).
 - `docs/DESIGN.md`: decisions, architecture, phases.
 - `docs/mockups/wingman-screens.html`: every screen, the toasts, the tray icon, and the themes. Open it in a browser.
 - Work is tracked in GitHub Issues, one issue per reviewable change, grouped by phase milestones.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
