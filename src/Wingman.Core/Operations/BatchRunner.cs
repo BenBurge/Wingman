@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using Wingman.Core.Elevation;
 using Wingman.Core.History;
 using Wingman.Core.Models;
 using Wingman.Core.Winget;
@@ -11,6 +12,11 @@ namespace Wingman.Core.Operations;
 /// writing one history entry per operation and a closing <c>batch</c> entry. Reports every step
 /// to the caller's <see cref="IProgress{T}"/> and leaves marshaling to a UI thread to the caller.
 /// </summary>
+/// <remarks>
+/// Operations whose plan requires elevation run through one elevated channel opened for the whole
+/// batch, when a channel factory is given and <see cref="BatchOptions.AutoElevate"/> is on. Their
+/// pre- and post-commands still run in this process.
+/// </remarks>
 public sealed class BatchRunner
 {
     private const int FailedExitCode = -1;
@@ -18,12 +24,20 @@ public sealed class BatchRunner
     private readonly IWingetClient _client;
     private readonly PrePostCommandRunner _commands;
     private readonly HistoryStore _history;
+    private readonly Func<CancellationToken, Task<IElevatedOperationChannel>>? _elevatedChannelFactory;
 
-    public BatchRunner(IWingetClient client, PrePostCommandRunner commands, HistoryStore history)
+    /// <param name="elevatedChannelFactory">Opens the elevated helper, prompting for UAC; null runs
+    /// every operation in-process, as on non-Windows systems and with the fake client.</param>
+    public BatchRunner(
+        IWingetClient client,
+        PrePostCommandRunner commands,
+        HistoryStore history,
+        Func<CancellationToken, Task<IElevatedOperationChannel>>? elevatedChannelFactory = null)
     {
         _client = client;
         _commands = commands;
         _history = history;
+        _elevatedChannelFactory = elevatedChannelFactory;
     }
 
     /// <summary>
@@ -46,18 +60,26 @@ public sealed class BatchRunner
         var canceled = 0;
         var stopping = false;
 
+        var elevation = await OpenElevatedChannelAsync(operations, options, progress, ct);
+
         for (var index = 0; index < operations.Count; index++)
         {
             var operation = operations[index];
-            if (stopping || ct.IsCancellationRequested)
+            var elevationUnavailableReason = operation.Plan.RequiresElevation ? elevation.UnavailableReason : null;
+            if (stopping || ct.IsCancellationRequested || elevationUnavailableReason is not null)
             {
+                if (elevationUnavailableReason is not null)
+                {
+                    progress.Report(new OperationLine(index, elevationUnavailableReason));
+                }
+
                 progress.Report(new OperationCanceled(index, operation));
                 summaryLines.Add($"· {operation.Row.Id} canceled");
                 canceled++;
                 continue;
             }
 
-            var outcome = await RunOperationAsync(index, operation, progress, ct);
+            var outcome = await RunOperationAsync(index, operation, elevation.Channel, progress, ct);
             progress.Report(new OperationFinished(index, operation, outcome.Result, outcome.Skipped));
 
             var plan = operation.Plan;
@@ -84,6 +106,12 @@ public sealed class BatchRunner
             stopping = outcome.WasCanceled || abortAfterFailure;
         }
 
+        if (elevation.Channel is not null)
+        {
+            await CloseElevatedChannelAsync(elevation.Channel);
+            progress.Report(new ElevationState("closed"));
+        }
+
         var duration = stopwatch.Elapsed;
         var summary = new BatchSummary(batchId, operations.Count, succeeded, failed, canceled, duration);
 
@@ -96,8 +124,65 @@ public sealed class BatchRunner
         return summary;
     }
 
+    /// <summary>
+    /// Opens the elevated channel when this batch needs one. A declined UAC prompt or a helper
+    /// that fails to start does not end the batch: the result carries the line to show on each
+    /// elevated operation, which is then canceled while the others still run.
+    /// </summary>
+    private async Task<ElevationOutcome> OpenElevatedChannelAsync(
+        IReadOnlyList<QueuedOperation> operations,
+        BatchOptions options,
+        IProgress<BatchProgress> progress,
+        CancellationToken ct)
+    {
+        var needsHelper = ElevationPolicy.NeedsHelper(operations, options.AutoElevate);
+        if (_elevatedChannelFactory is null || !needsHelper)
+        {
+            return new ElevationOutcome(null, null);
+        }
+
+        progress.Report(new ElevationState("requesting"));
+        try
+        {
+            var channel = await _elevatedChannelFactory(ct);
+            progress.Report(new ElevationState("connected"));
+            return new ElevationOutcome(channel, null);
+        }
+        catch (ElevationDeclinedException ex)
+        {
+            progress.Report(new ElevationState("declined"));
+            return new ElevationOutcome(null, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            progress.Report(new ElevationState($"failed: {ex.Message}"));
+            return new ElevationOutcome(null, $"Canceled: elevated helper failed: {ex.Message}");
+        }
+    }
+
+    // Not canceled by the batch token: a canceled batch still has to tell the helper to exit.
+    // A helper that already disconnected needs no shutdown message.
+    private static async Task CloseElevatedChannelAsync(IElevatedOperationChannel channel)
+    {
+        try
+        {
+            await channel.ShutdownAsync(CancellationToken.None);
+        }
+        catch (IOException)
+        {
+        }
+        finally
+        {
+            await channel.DisposeAsync();
+        }
+    }
+
     private async Task<OperationOutcome> RunOperationAsync(
-        int index, QueuedOperation operation, IProgress<BatchProgress> progress, CancellationToken ct)
+        int index,
+        QueuedOperation operation,
+        IElevatedOperationChannel? elevatedChannel,
+        IProgress<BatchProgress> progress,
+        CancellationToken ct)
     {
         progress.Report(new OperationStarted(index, operation));
 
@@ -113,7 +198,7 @@ public sealed class BatchRunner
                 return new OperationOutcome(skipped, Skipped: true, WasCanceled: false);
             }
 
-            var result = await RunWingetAsync(plan, lines, ct);
+            var result = await RunWingetAsync(plan, elevatedChannel, lines, ct);
             await _commands.RunPostAsync(plan, lines, ct);
 
             // The client's log holds only winget's lines; history keeps the pre- and
@@ -134,14 +219,22 @@ public sealed class BatchRunner
         }
     }
 
-    private Task<OperationResult> RunWingetAsync(OperationPlan plan, IProgress<string> output, CancellationToken ct) =>
-        plan.Kind switch
+    private Task<OperationResult> RunWingetAsync(
+        OperationPlan plan, IElevatedOperationChannel? elevatedChannel, IProgress<string> output, CancellationToken ct)
+    {
+        if (plan.RequiresElevation && elevatedChannel is not null)
+        {
+            return elevatedChannel.RunAsync(plan.Kind, plan.Request, output, ct);
+        }
+
+        return plan.Kind switch
         {
             OperationKind.Install => _client.InstallAsync(plan.Request, output, ct),
             OperationKind.Upgrade => _client.UpgradeAsync(plan.Request, output, ct),
             OperationKind.Uninstall => _client.UninstallAsync(plan.Request, output, ct),
             _ => throw new ArgumentOutOfRangeException(nameof(plan), plan.Kind, null),
         };
+    }
 
     private static string[] Arguments(OperationPlan plan) => plan.Kind switch
     {
@@ -187,6 +280,11 @@ public sealed class BatchRunner
     }
 
     private readonly record struct OperationOutcome(OperationResult Result, bool Skipped, bool WasCanceled);
+
+    /// <param name="Channel">The open elevated channel, or null when the batch runs in-process.</param>
+    /// <param name="UnavailableReason">Set when elevation was needed but could not be had; the
+    /// line reported on each elevated operation before it is canceled.</param>
+    private readonly record struct ElevationOutcome(IElevatedOperationChannel? Channel, string? UnavailableReason);
 
     /// <summary>
     /// Forwards each line as an <see cref="OperationLine"/> and keeps it for the history log.

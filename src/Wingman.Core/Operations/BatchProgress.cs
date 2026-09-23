@@ -20,9 +20,17 @@ public sealed record OperationFinished(int Index, QueuedOperation Operation, Ope
     : BatchProgress;
 
 /// <summary>
-/// An operation that was never started, because the batch was canceled or an earlier operation
-/// failed with <see cref="BatchOptions.ContinueOnFailure"/> off.
+/// An operation that was never started, because the batch was canceled, an earlier operation
+/// failed with <see cref="BatchOptions.ContinueOnFailure"/> off, or it needed the elevated helper
+/// and the helper could not be started; in the last case an <see cref="OperationLine"/> with the
+/// reason comes first.
 /// </summary>
 public sealed record OperationCanceled(int Index, QueuedOperation Operation) : BatchProgress;
+
+/// <summary>
+/// A step in the elevated helper's life for this batch: <c>requesting</c>, <c>connected</c>,
+/// <c>declined</c>, <c>failed: &lt;reason&gt;</c>, or <c>closed</c>.
+/// </summary>
+public sealed record ElevationState(string State) : BatchProgress;
 
 public sealed record BatchFinished(BatchSummary Summary) : BatchProgress;

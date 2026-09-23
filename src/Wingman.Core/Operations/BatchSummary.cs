@@ -5,8 +5,9 @@ namespace Wingman.Core.Operations;
 /// </summary>
 /// <param name="Failed">Operations that ran and did not succeed, including those skipped because
 /// their pre-command failed.</param>
-/// <param name="Canceled">Operations that never ran, because of a cancel or an earlier failure
-/// with <see cref="BatchOptions.ContinueOnFailure"/> off.</param>
+/// <param name="Canceled">Operations that never ran, because of a cancel, an earlier failure
+/// with <see cref="BatchOptions.ContinueOnFailure"/> off, or an elevated helper that could not be
+/// started.</param>
 public sealed record BatchSummary(
     string BatchId,
     int Total,
