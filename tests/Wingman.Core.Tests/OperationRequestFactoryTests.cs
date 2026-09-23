@@ -26,6 +26,7 @@ public class OperationRequestFactoryTests
         string[] expected =
         [
             "install", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
         ];
 
@@ -41,6 +42,7 @@ public class OperationRequestFactoryTests
         string[] expected =
         [
             "upgrade", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
         ];
 

@@ -36,6 +36,17 @@ public class FakeWingetClientTests
     }
 
     [Fact]
+    public async Task SearchAsync_VisualStudioCode_DropsMsstoreRowsButKeepsWinget()
+    {
+        var client = CreateClient();
+
+        var results = await client.SearchAsync("visual studio code", CancellationToken.None);
+
+        Assert.DoesNotContain(results, row => string.Equals(row.Source, "msstore", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(results, row => row.Id == "Microsoft.VisualStudioCode");
+    }
+
+    [Fact]
     public async Task SearchAsync_EmptyQuery_ReturnsEmpty()
     {
         var client = CreateClient();

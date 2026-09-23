@@ -1024,7 +1024,6 @@ Step[] mainSteps =
     new(50, "5: Settings", () => screen.Press(new Key('5')), WithColors: true, Verify: () =>
     {
         Check("defaults", ScreenHas(" Defaults") && ScreenHas("   Install scope             (•) default  ( ) user  ( ) machine"));
-        Check("source", ScreenHas("   Source                    (•) winget  ( ) msstore  ( ) all"));
         Check("default flags", ScreenHas("[x] Accept package agreements   [x] Include unknown versions"));
         Check("elevation radio and continue on failure", ScreenHas("   " + "Elevation".PadRight(26) + "(•) Auto  ( ) Always  ( ) Never   [x] Continue on failure"));
         Check("restart action", ScreenHas("   ⏎ Restart as administrator") && !ScreenHas("Windows only") && !ScreenHas("already administrator"));
@@ -1035,7 +1034,7 @@ Step[] mainSteps =
         Check("settings key bar", ScreenHas(" Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "));
         Check("scope has focus", Focused() == nameof(OptionRow));
     }),
-    new(50, "Tab x5, Space: Continue on failure off", () => { screen.Press(Key.Tab, 5); screen.Press(Key.Space); }, Verify: () =>
+    new(50, "Tab x4, Space: Continue on failure off", () => { screen.Press(Key.Tab, 4); screen.Press(Key.Space); }, Verify: () =>
     {
         Check("unchecked", ScreenHas("[ ] Continue on failure"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"continueOnFailure\": false", StringComparison.Ordinal));

@@ -68,6 +68,7 @@ public sealed class FakeWingetClient : IWingetClient
         }
 
         var matches = _catalog
+            .Where(row => string.Equals(row.Source, FakeSource, StringComparison.OrdinalIgnoreCase))
             .Where(row => row.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
                 || row.Id.Contains(query, StringComparison.OrdinalIgnoreCase))
             .ToList();
