@@ -30,8 +30,9 @@ public sealed class BatchRunnerElevationTests : IDisposable
         }
     }
 
-    private BatchRunner CreateRunner(Func<CancellationToken, Task<IElevatedOperationChannel>>? factory) =>
-        new(_client, new PrePostCommandRunner(new FakeProcessRunner()), new HistoryStore(_directoryPath), factory);
+    private BatchRunner CreateRunner(
+        Func<CancellationToken, Task<IElevatedOperationChannel>>? factory, TimeSpan? waitingInterval = null) =>
+        new(_client, new PrePostCommandRunner(new FakeProcessRunner()), new HistoryStore(_directoryPath), factory, waitingInterval);
 
     private Task<IElevatedOperationChannel> OpenFakeChannel(CancellationToken ct)
     {
@@ -59,6 +60,9 @@ public sealed class BatchRunnerElevationTests : IDisposable
 
     private static List<string> ElevationStates(RecordingBatchProgress progress) =>
         progress.Events.OfType<ElevationState>().Select(e => e.State).ToList();
+
+    private static List<string> LinesOf(RecordingBatchProgress progress, int index) =>
+        progress.Events.OfType<OperationLine>().Where(e => e.Index == index).Select(e => e.Text).ToList();
 
     private async Task<bool> IsInstalledAsync(string id)
     {
@@ -124,10 +128,102 @@ public sealed class BatchRunnerElevationTests : IDisposable
 
         var canceled = Assert.Single(progress.Events.OfType<OperationCanceled>());
         Assert.Equal(0, canceled.Index);
+        Assert.Equal("Canceled by UAC", canceled.ElevationReason);
         Assert.Contains(new OperationLine(0, "Canceled by UAC"), progress.Events);
         Assert.DoesNotContain(progress.Events.OfType<OperationStarted>(), e => e.Index == 0);
         Assert.False(await IsInstalledAsync(ElevatedId));
         Assert.True(await IsInstalledAsync(UnelevatedId));
+    }
+
+    [Fact]
+    public async Task RunAsync_HelperExitedBeforeConnecting_IsDeclinedWithTheUacLine()
+    {
+        var declined = new ElevationDeclinedException(ElevatedHelperConnection.ExitedBeforeConnectingMessage);
+        var runner = CreateRunner(_ => FailWith(declined));
+        var progress = new RecordingBatchProgress();
+
+        var summary = await runner.RunAsync(ElevatedThenUnelevated(), new BatchOptions(), progress, CancellationToken.None);
+
+        Assert.Equal(["requesting", "declined"], ElevationStates(progress));
+        Assert.Equal(1, summary.Succeeded);
+        Assert.Equal(1, summary.Canceled);
+        Assert.Equal(["Canceled by UAC"], LinesOf(progress, 0));
+        Assert.True(await IsInstalledAsync(UnelevatedId));
+    }
+
+    [Fact]
+    public async Task RunAsync_HelperTimedOut_ReportsTheTimeoutAndCancelsElevatedOperation()
+    {
+        var runner = CreateRunner(_ => FailWith(new ElevationTimedOutException(TimeSpan.FromSeconds(120))));
+        var progress = new RecordingBatchProgress();
+
+        var summary = await runner.RunAsync(ElevatedThenUnelevated(), new BatchOptions(), progress, CancellationToken.None);
+
+        Assert.Equal(["requesting", "timed out after 120 s"], ElevationStates(progress));
+        Assert.Equal(1, summary.Succeeded);
+        Assert.Equal(1, summary.Canceled);
+        Assert.Equal(0, summary.Failed);
+        Assert.Equal(["Canceled: elevation request timed out"], LinesOf(progress, 0));
+        Assert.True(await IsInstalledAsync(UnelevatedId));
+    }
+
+    [Fact]
+    public async Task RunAsync_CanceledWhileWaitingForTheHelper_ReportsCanceledAndRunsNothing()
+    {
+        var neverAnswered = new TaskCompletionSource<IElevatedOperationChannel>();
+        var runner = CreateRunner(ct =>
+        {
+            _factoryCalls++;
+            return neverAnswered.Task.WaitAsync(ct);
+        });
+        var progress = new RecordingBatchProgress();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        var summary = await runner.RunAsync(ElevatedThenUnelevated(), new BatchOptions(), progress, cancellation.Token);
+
+        Assert.Equal(1, _factoryCalls);
+        Assert.Equal(["requesting", "canceled"], ElevationStates(progress));
+        Assert.Equal(0, summary.Succeeded);
+        Assert.Equal(2, summary.Canceled);
+        Assert.Equal(["Canceled"], LinesOf(progress, 0));
+        Assert.Empty(LinesOf(progress, 1));
+        Assert.False(await IsInstalledAsync(UnelevatedId));
+    }
+
+    [Fact]
+    public async Task RunAsync_SlowFactory_ReportsWaitingTicksBeforeConnected()
+    {
+        var runner = CreateRunner(
+            async ct =>
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+                return await OpenFakeChannel(ct);
+            },
+            waitingInterval: TimeSpan.FromMilliseconds(50));
+        var progress = new RecordingBatchProgress();
+
+        await runner.RunAsync(ElevatedThenUnelevated(), new BatchOptions(), progress, CancellationToken.None);
+
+        var events = progress.Events;
+        var requested = events.IndexOf(new ElevationState("requesting"));
+        var connected = events.IndexOf(new ElevationState("connected"));
+        var ticks = events.Select((e, index) => (e, index)).Where(item => item.e is ElevationWaiting).ToList();
+        Assert.True(ticks.Count >= 2, $"expected at least two waiting ticks, got {ticks.Count}");
+        Assert.All(ticks, tick => Assert.InRange(tick.index, requested + 1, connected - 1));
+
+        var elapsed = ticks.Select(tick => ((ElevationWaiting)tick.e).Elapsed).ToList();
+        Assert.Equal(elapsed.Order(), elapsed);
+    }
+
+    [Fact]
+    public async Task RunAsync_FastFactory_ReportsNoWaitingTicks()
+    {
+        var runner = CreateRunner(OpenFakeChannel, waitingInterval: TimeSpan.FromSeconds(10));
+        var progress = new RecordingBatchProgress();
+
+        await runner.RunAsync(ElevatedThenUnelevated(), new BatchOptions(), progress, CancellationToken.None);
+
+        Assert.Empty(progress.Events.OfType<ElevationWaiting>());
     }
 
     [Fact]
@@ -281,10 +377,29 @@ public sealed class BatchRunnerElevationTests : IDisposable
         }
     }
 
+    /// <summary>Locked because the waiting ticker reports from a timer thread.</summary>
     private sealed class RecordingBatchProgress : IProgress<BatchProgress>
     {
-        public List<BatchProgress> Events { get; } = [];
+        private readonly Lock _lock = new();
+        private readonly List<BatchProgress> _events = [];
 
-        public void Report(BatchProgress value) => Events.Add(value);
+        public List<BatchProgress> Events
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return [.. _events];
+                }
+            }
+        }
+
+        public void Report(BatchProgress value)
+        {
+            lock (_lock)
+            {
+                _events.Add(value);
+            }
+        }
     }
 }

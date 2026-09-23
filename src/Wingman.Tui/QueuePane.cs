@@ -215,15 +215,16 @@ internal sealed class QueuePane : View, IThemedView
             var numberColumn = number.PadRight(Math.Max(Indent.Length, number.Length + 1));
             lines.Add([(CellText.Fit(numberColumn + item.Row.Id, textWidth), normal)]);
 
-            var action = Indent + ActionText(item);
             if (NeedsElevation(item))
             {
-                var fitted = CellText.Fit(action, Math.Max(0, textWidth - AdminSuffixWidth));
-                lines.Add([(fitted + AdminGap, normal), (AdminText, accent)]);
+                var actionLine = ActionSegments(item, Math.Max(0, textWidth - AdminSuffixWidth), normal);
+                actionLine.Add((AdminGap, normal));
+                actionLine.Add((AdminText, accent));
+                lines.Add(actionLine);
             }
             else
             {
-                lines.Add([(CellText.Fit(action, textWidth), normal)]);
+                lines.Add(ActionSegments(item, textWidth, normal));
             }
 
             if (item.Plan.PostCommand.Length > 0)
@@ -235,13 +236,35 @@ internal sealed class QueuePane : View, IThemedView
         return lines;
     }
 
-    /// <summary><c>upgrade → 2.52.0</c>, <c>install → latest</c>, or plain <c>uninstall</c>.</summary>
+    /// <summary>
+    /// <c>    upgrade → 2.52.0</c> fitted into <paramref name="width"/> cells, with a
+    /// <c>downgrade</c> label in the info color so an install that goes back a version stands out.
+    /// </summary>
+    private List<(string Text, Attribute Color)> ActionSegments(QueuedOperation item, int width, Attribute normal)
+    {
+        var fitted = CellText.Fit(Indent + ActionText(item), width);
+        var labelEnd = Indent.Length + item.Plan.Label.Length;
+        var isDowngrade = item.Plan.Label == OperationPlan.DowngradeLabel;
+        if (!isDowngrade || fitted.Length < labelEnd)
+        {
+            return [(fitted, normal)];
+        }
+
+        return
+        [
+            (fitted[..Indent.Length], normal),
+            (fitted[Indent.Length..labelEnd], _theme.On(_theme.Info)),
+            (fitted[labelEnd..], normal),
+        ];
+    }
+
+    /// <summary><c>upgrade → 2.52.0</c>, <c>install → latest</c>, <c>downgrade → 2.51.0</c>, or plain <c>uninstall</c>.</summary>
     private static string ActionText(QueuedOperation item)
     {
-        var verb = item.Kind.ToString().ToLowerInvariant();
+        var label = item.Plan.Label;
         if (item.Kind == OperationKind.Uninstall)
         {
-            return verb;
+            return label;
         }
 
         // A version picked for the operation wins over the newest one winget offers.
@@ -256,7 +279,7 @@ internal sealed class QueuePane : View, IThemedView
             target = "latest";
         }
 
-        return $"{verb} → {target}";
+        return $"{label} → {target}";
     }
 
     /// <summary>

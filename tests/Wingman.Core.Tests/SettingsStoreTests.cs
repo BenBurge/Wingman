@@ -24,7 +24,6 @@ public class SettingsStoreTests : IDisposable
         var settings = store.Load();
 
         Assert.Equal("", settings.DefaultScope);
-        Assert.Equal("winget", settings.DefaultSource);
         Assert.True(settings.AcceptAgreements);
         Assert.True(settings.IncludeUnknown);
         Assert.Equal(ElevationMode.Auto, settings.ElevationMode);
@@ -40,7 +39,6 @@ public class SettingsStoreTests : IDisposable
         var settings = new WingmanSettings
         {
             DefaultScope = "machine",
-            DefaultSource = "msstore",
             AcceptAgreements = false,
             IncludeUnknown = false,
             ElevationMode = ElevationMode.Always,
@@ -52,7 +50,6 @@ public class SettingsStoreTests : IDisposable
         var loaded = store.Load();
 
         Assert.Equal("machine", loaded.DefaultScope);
-        Assert.Equal("msstore", loaded.DefaultSource);
         Assert.False(loaded.AcceptAgreements);
         Assert.False(loaded.IncludeUnknown);
         Assert.Equal(ElevationMode.Always, loaded.ElevationMode);
@@ -77,9 +74,29 @@ public class SettingsStoreTests : IDisposable
 
         Assert.Equal("Daylight", settings.Theme);
         Assert.Equal("", settings.DefaultScope);
-        Assert.Equal("winget", settings.DefaultSource);
         Assert.True(settings.AcceptAgreements);
         Assert.True(settings.IncludeUnknown);
+    }
+
+    [Fact]
+    public void Load_WithLeftoverDefaultSourceKey_IgnoresItAndLoadsDefaults()
+    {
+        var store = new SettingsStore(_directoryPath);
+        Directory.CreateDirectory(_directoryPath);
+        File.WriteAllText(store.FilePath, """
+            {
+              "defaultSource": "all"
+            }
+            """);
+
+        var settings = store.Load();
+
+        Assert.Equal("", settings.DefaultScope);
+        Assert.True(settings.AcceptAgreements);
+        Assert.True(settings.IncludeUnknown);
+        Assert.Equal(ElevationMode.Auto, settings.ElevationMode);
+        Assert.True(settings.ContinueOnFailure);
+        Assert.Equal("Midnight", settings.Theme);
     }
 
     [Theory]
@@ -126,7 +143,6 @@ public class SettingsStoreTests : IDisposable
         var settings = store.Load();
 
         Assert.Equal("", settings.DefaultScope);
-        Assert.Equal("winget", settings.DefaultSource);
         Assert.True(settings.AcceptAgreements);
         Assert.True(settings.IncludeUnknown);
         Assert.Equal("Midnight", settings.Theme);
@@ -144,7 +160,6 @@ public class SettingsStoreTests : IDisposable
 
         var text = Encoding.UTF8.GetString(bytes);
         Assert.Contains("\"defaultScope\"", text);
-        Assert.Contains("\"defaultSource\"", text);
         Assert.Contains("\"acceptAgreements\"", text);
         Assert.Contains("\"includeUnknown\"", text);
         Assert.Contains("\"elevationMode\": \"auto\"", text);

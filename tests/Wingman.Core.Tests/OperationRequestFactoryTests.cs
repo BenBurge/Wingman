@@ -26,6 +26,7 @@ public class OperationRequestFactoryTests
         string[] expected =
         [
             "install", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
         ];
 
@@ -41,6 +42,7 @@ public class OperationRequestFactoryTests
         string[] expected =
         [
             "upgrade", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
         ];
 
@@ -375,5 +377,109 @@ public class OperationRequestFactoryTests
         Assert.Equal("", plan.PreCommand);
         Assert.Equal("", plan.PostCommand);
         Assert.False(plan.AbortOnPreFail);
+    }
+
+    private static readonly PackageRow InstalledCli = new("GitHub CLI", "GitHub.cli", "2.98.0", "2.101.0", "winget");
+
+    [Fact]
+    public void CreateForVersion_OlderThanInstalled_IsAForcedInstallLabeledDowngrade()
+    {
+        string[] expected =
+        [
+            "install", "--id", "GitHub.cli", "--exact",
+            "--source", "winget",
+            "--version", "2.97.0",
+            "--force",
+            "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
+        ];
+
+        var plan = OperationRequestFactory.CreateForVersion(InstalledCli, "2.97.0", DefaultSettings(), new InstallOptions(), isInstalled: true);
+
+        Assert.NotNull(plan);
+        Assert.Equal(OperationKind.Install, plan.Kind);
+        Assert.Equal(OperationPlan.DowngradeLabel, plan.Label);
+        Assert.Equal(expected, WingetArguments.Install(plan.Request));
+    }
+
+    [Fact]
+    public void CreateForVersion_NewerThanInstalled_IsAnUpgradeToThatVersion()
+    {
+        string[] expected =
+        [
+            "upgrade", "--id", "GitHub.cli", "--exact",
+            "--source", "winget",
+            "--version", "2.99.0",
+            "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
+        ];
+
+        var plan = OperationRequestFactory.CreateForVersion(InstalledCli, "2.99.0", DefaultSettings(), new InstallOptions(), isInstalled: true);
+
+        Assert.NotNull(plan);
+        Assert.Equal(OperationKind.Upgrade, plan.Kind);
+        Assert.Equal("upgrade", plan.Label);
+        Assert.Equal(expected, WingetArguments.Upgrade(plan.Request));
+    }
+
+    [Fact]
+    public void CreateForVersion_NotInstalled_IsAnInstallOfThatVersion()
+    {
+        string[] expected =
+        [
+            "install", "--id", "GitHub.cli", "--exact",
+            "--source", "winget",
+            "--version", "2.97.0",
+            "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
+        ];
+
+        var plan = OperationRequestFactory.CreateForVersion(InstalledCli, "2.97.0", DefaultSettings(), new InstallOptions(), isInstalled: false);
+
+        Assert.NotNull(plan);
+        Assert.Equal(OperationKind.Install, plan.Kind);
+        Assert.Equal("install", plan.Label);
+        Assert.Equal(expected, WingetArguments.Install(plan.Request));
+    }
+
+    [Fact]
+    public void CreateForVersion_InstalledVersion_ReturnsNull()
+    {
+        var plan = OperationRequestFactory.CreateForVersion(InstalledCli, "2.98.0", DefaultSettings(), new InstallOptions(), isInstalled: true);
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void CreateForVersion_FewerSegmentsThanInstalled_CountsAsOlder()
+    {
+        var git = new PackageRow("Git", "Git.Git", "2.55.0.3", null, "winget");
+
+        var plan = OperationRequestFactory.CreateForVersion(git, "2.55.0", DefaultSettings(), new InstallOptions(), isInstalled: true);
+
+        Assert.NotNull(plan);
+        Assert.Equal(OperationPlan.DowngradeLabel, plan.Label);
+        Assert.True(plan.Request.Force);
+    }
+
+    [Fact]
+    public void CreateForVersion_OlderVersion_KeepsTheInstallOptions()
+    {
+        var options = new InstallOptions { InstallationScope = "machine", PreInstallCommand = "pre.cmd" };
+
+        var plan = OperationRequestFactory.CreateForVersion(InstalledCli, "2.97.0", DefaultSettings(), options, isInstalled: true);
+
+        Assert.NotNull(plan);
+        Assert.Equal("machine", plan.Request.Scope);
+        Assert.True(plan.RequiresElevation);
+        Assert.Equal("pre.cmd", plan.PreCommand);
+    }
+
+    [Theory]
+    [InlineData(OperationKind.Install, "install")]
+    [InlineData(OperationKind.Upgrade, "upgrade")]
+    [InlineData(OperationKind.Uninstall, "uninstall")]
+    public void Create_LabelNamesTheKind(OperationKind kind, string expected)
+    {
+        var plan = OperationRequestFactory.Create(kind, Row, DefaultSettings(), new InstallOptions());
+
+        Assert.Equal(expected, plan.Label);
     }
 }

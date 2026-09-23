@@ -20,4 +20,22 @@ public sealed record OperationPlan(
     string PreCommand,
     string PostCommand,
     bool AbortOnPreFail,
-    bool ForceElevation = false);
+    bool ForceElevation = false)
+{
+    public const string DowngradeLabel = "downgrade";
+
+    /// <summary>
+    /// What the queue and the batch screen call the operation: <c>install</c>, <c>upgrade</c>, or
+    /// <c>uninstall</c> after <see cref="Kind"/>, or <c>downgrade</c> for an install that goes back
+    /// to an older version. History records the winget command, which <see cref="Kind"/> names.
+    /// </summary>
+    public string Label { get; init; } = DefaultLabel(Kind);
+
+    private static string DefaultLabel(OperationKind kind) => kind switch
+    {
+        OperationKind.Install => "install",
+        OperationKind.Upgrade => "upgrade",
+        OperationKind.Uninstall => "uninstall",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
+}

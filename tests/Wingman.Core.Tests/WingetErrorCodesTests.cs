@@ -184,4 +184,14 @@ public class WingetErrorCodesTests
         Assert.Equal("ERROR_SUCCESS_REBOOT_REQUIRED", explanation.Name);
         Assert.Contains("reboot", explanation.UsuallyMeans, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Explain_UpdateNotApplicable_PointsAtTheDowngradePath()
+    {
+        var explanation = WingetErrorCodes.Explain(-1978335189);
+
+        Assert.Equal(
+            "Retry with the exact version, or exclude it. To install an older version, pick it from Upgrade to version…; Wingman then runs install --force.",
+            explanation.Suggestion);
+    }
 }

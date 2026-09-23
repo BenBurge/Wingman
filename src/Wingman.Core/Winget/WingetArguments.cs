@@ -9,13 +9,17 @@ public static class WingetArguments
 {
     private static readonly string[] CommonFlags = ["--disable-interactivity", "--accept-source-agreements"];
 
+    // Wingman only supports winget's own catalog; without this, a package that also lives in
+    // msstore leaves these commands to answer for both sources.
+    private static readonly string[] WingetSourceFlags = ["--source", "winget"];
+
     /// <summary>
     /// winget rejects the common flags alongside <c>--version</c>, so this is the one command
     /// without them.
     /// </summary>
     public static string[] Version() => ["--version"];
 
-    public static string[] Search(string query) => WithCommonFlags(["search", query]);
+    public static string[] Search(string query) => WithCommonFlags(["search", query, .. WingetSourceFlags]);
 
     public static string[] ListInstalled() => WithCommonFlags(["list"]);
 
@@ -25,9 +29,9 @@ public static class WingetArguments
     /// </summary>
     public static string[] ListUpgrades() => WithCommonFlags(["upgrade", "--include-unknown", "--include-pinned"]);
 
-    public static string[] Show(string id) => WithCommonFlags(["show", "--id", id, "--exact"]);
+    public static string[] Show(string id) => WithCommonFlags(["show", "--id", id, "--exact", .. WingetSourceFlags]);
 
-    public static string[] ShowVersions(string id) => WithCommonFlags(["show", "--id", id, "--exact", "--versions"]);
+    public static string[] ShowVersions(string id) => WithCommonFlags(["show", "--id", id, "--exact", .. WingetSourceFlags, "--versions"]);
 
     public static string[] ListPins() => WithCommonFlags(["pin", "list"]);
 
@@ -63,6 +67,7 @@ public static class WingetArguments
     private static string[] InstallOrUpgrade(string command, OperationRequest request)
     {
         var arguments = new List<string> { command, "--id", request.Id, "--exact" };
+        arguments.AddRange(WingetSourceFlags);
         AddOption(arguments, "--version", request.Version);
         AddOption(arguments, "--scope", request.Scope);
         AddOption(arguments, "--architecture", request.Architecture);

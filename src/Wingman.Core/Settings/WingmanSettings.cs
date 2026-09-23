@@ -13,8 +13,6 @@ public sealed class WingmanSettings
     /// </summary>
     public string DefaultScope { get; set; } = "";
 
-    public string DefaultSource { get; set; } = "winget";
-
     public bool AcceptAgreements { get; set; } = true;
 
     public bool IncludeUnknown { get; set; } = true;

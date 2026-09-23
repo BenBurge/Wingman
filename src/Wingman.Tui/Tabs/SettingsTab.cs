@@ -63,22 +63,21 @@ internal sealed class SettingsTab : ScreenHostTab
 
         private const int DefaultsRow = 0;
         private const int ScopeRow = 1;
-        private const int SourceRow = 2;
-        private const int DefaultFlagsRow = 3;
-        private const int BatchesRow = 4;
-        private const int BatchFlagsRow = 5;
-        private const int UpdatesRow = 6;
-        private const int CheckRow = 7;
-        private const int AutoInstallRow = 8;
-        private const int ToastRow = 9;
-        private const int AppearanceRow = 10;
-        private const int ThemeRow = 11;
-        private const int TrayRow = 12;
-        private const int TrayFlagsRow = 13;
-        private const int ToolsRow = 14;
-        private const int ToolItemsRow = 15;
-        private const int RestartRow = 16;
-        private const int FooterRow = 18;
+        private const int DefaultFlagsRow = 2;
+        private const int BatchesRow = 3;
+        private const int BatchFlagsRow = 4;
+        private const int UpdatesRow = 5;
+        private const int CheckRow = 6;
+        private const int AutoInstallRow = 7;
+        private const int ToastRow = 8;
+        private const int AppearanceRow = 9;
+        private const int ThemeRow = 10;
+        private const int TrayRow = 11;
+        private const int TrayFlagsRow = 12;
+        private const int ToolsRow = 13;
+        private const int ToolItemsRow = 14;
+        private const int RestartRow = 15;
+        private const int FooterRow = 17;
 
         private const string AcceptAgreementsLabel = "Accept package agreements";
         private const string RestartLabel = "Restart as administrator";
@@ -87,7 +86,6 @@ internal sealed class SettingsTab : ScreenHostTab
         private const string SetupText = "⏎ Register scheduled tasks (wingman setup)";
 
         private static readonly string[] ScopeValues = ["", "user", "machine"];
-        private static readonly string[] SourceValues = ["winget", "msstore", "all"];
         private static readonly ElevationMode[] ElevationValues = [ElevationMode.Auto, ElevationMode.Always, ElevationMode.Never];
         private static readonly string[] ElevationLabels = ["Auto", "Always", "Never"];
 
@@ -102,7 +100,6 @@ internal sealed class SettingsTab : ScreenHostTab
 
         private readonly Shell _shell;
         private readonly OptionRow _scope;
-        private readonly OptionRow _source;
         private readonly CheckField _acceptAgreements;
         private readonly CheckField _includeUnknown;
         private readonly OptionRow _elevation;
@@ -127,10 +124,6 @@ internal sealed class SettingsTab : ScreenHostTab
             _scope = new OptionRow(_theme, ["default", "user", "machine"]) { X = FieldLeft, Y = ScopeRow };
             _scope.SelectedIndex = Array.IndexOf(ScopeValues, settings.DefaultScope);
             _scope.Picked += () => Save(() => settings.DefaultScope = ScopeValues[_scope.SelectedIndex]);
-
-            _source = new OptionRow(_theme, SourceValues) { X = FieldLeft, Y = SourceRow };
-            _source.SelectedIndex = Array.IndexOf(SourceValues, settings.DefaultSource);
-            _source.Picked += () => Save(() => settings.DefaultSource = SourceValues[_source.SelectedIndex]);
 
             _acceptAgreements = Check(AcceptAgreementsLabel, FieldLeft, DefaultFlagsRow, settings.AcceptAgreements);
             _acceptAgreements.Toggled += () => Save(() => settings.AcceptAgreements = _acceptAgreements.IsChecked);
@@ -164,7 +157,7 @@ internal sealed class SettingsTab : ScreenHostTab
 
             List<View> fields =
             [
-                _scope, _source, _acceptAgreements, _includeUnknown,
+                _scope, _acceptAgreements, _includeUnknown,
                 _elevation, _continueOnFailure,
                 _themeOption,
                 _import, _export,
@@ -237,7 +230,6 @@ internal sealed class SettingsTab : ScreenHostTab
 
             DrawText(1, DefaultsRow, "Defaults", header, width);
             DrawText(LabelLeft, ScopeRow, "Install scope", normal, width);
-            DrawText(LabelLeft, SourceRow, "Source", normal, width);
             DrawText(1, BatchesRow, "Batches", header, width);
             DrawText(LabelLeft, BatchFlagsRow, "Elevation", normal, width);
             DrawText(1, AppearanceRow, "Appearance", header, width);

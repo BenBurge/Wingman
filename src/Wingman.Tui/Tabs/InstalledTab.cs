@@ -56,11 +56,10 @@ internal sealed class InstalledTab : PackageListTab
     public override void OnShown()
     {
         FocusContent();
-        EnsureLoaded();
+        LoadIfNeeded();
     }
 
-    /// <summary>Starts the first load unless one has already started.</summary>
-    public void EnsureLoaded()
+    public override void LoadIfNeeded()
     {
         if (!_hasStartedLoading)
         {

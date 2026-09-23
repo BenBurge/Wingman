@@ -3,6 +3,7 @@ using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
+using Wingman.Core.Elevation;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
 using Wingman.Core.Updates;
@@ -14,7 +15,8 @@ namespace Wingman.Tui;
 /// <summary>
 /// Takes a list tab's whole content area while a batch runs and after it ends: a title with the
 /// batch's progress and the elevated helper's state, one row per operation with its status, then
-/// the log of the running operation, or of the selected one once the batch is over. While running,
+/// the log of the running operation, or of the selected one once the batch is over. While the
+/// elevated helper is requested, the log area says so and counts the seconds instead. While running,
 /// the arrows scroll the log and Esc asks to cancel; afterwards the arrows select an operation,
 /// <c>l</c> gives the log the whole screen, and Enter or Esc go back. A selected operation that
 /// failed shows its decoded exit code in place of the log, with keys to retry it as it was,
@@ -43,6 +45,8 @@ internal sealed class BatchRunnerScreen : View, IThemedView
     private const int FailureValueLeft = 1 + FailureLabelWidth + 1;
     private const int FailureLogLines = 5;
 
+    private const string ElevationPromptText = "Waiting for the elevation prompt (UAC or Admin By Request)… Esc cancels.";
+
     private static readonly string[] SpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     private readonly IApplication _app;
@@ -56,6 +60,10 @@ internal sealed class BatchRunnerScreen : View, IThemedView
     private readonly KeyHint[] _elevationFailureHints;
 
     private string _elevation;
+
+    // How long the batch has waited for the elevation prompt, as the runner last reported it.
+    private TimeSpan _elevationWaited;
+
     private bool _isFinished;
     private bool _isCancelRequested;
     private bool _isFullLog;
@@ -77,13 +85,19 @@ internal sealed class BatchRunnerScreen : View, IThemedView
     private object? _spinnerTimer;
     private int _spinnerFrame;
 
+    /// <param name="options">The options the batch runs with, which say which operations go through the elevated helper.</param>
     /// <param name="elevation">What the title shows for the elevated helper until the batch reports on it.</param>
-    public BatchRunnerScreen(IApplication app, Theme theme, IReadOnlyList<QueuedOperation> operations, string elevation)
+    public BatchRunnerScreen(
+        IApplication app, Theme theme, IReadOnlyList<QueuedOperation> operations, BatchOptions options, string elevation)
     {
         _app = app;
         _theme = theme;
         _elevation = elevation;
-        _operations = [.. operations.Select(operation => new OperationView(operation))];
+        _operations =
+        [
+            .. operations.Select(operation => new OperationView(
+                operation, ElevationPolicy.UsesHelper(operation.Plan, options.ElevationMode, options.ProcessIsElevated))),
+        ];
         X = 0;
         Y = 0;
         Width = Dim.Fill();
@@ -204,10 +218,15 @@ internal sealed class BatchRunnerScreen : View, IThemedView
 
             case OperationCanceled canceled when IsKnown(canceled.Index):
                 Resolve(canceled.Index, OperationState.Canceled, null);
+                _operations[canceled.Index].ElevationReason = canceled.ElevationReason;
                 break;
 
             case ElevationState elevation:
                 _elevation = elevation.State;
+                break;
+
+            case ElevationWaiting waiting:
+                _elevationWaited = waiting.Elapsed;
                 break;
         }
 
@@ -308,6 +327,12 @@ internal sealed class BatchRunnerScreen : View, IThemedView
         {
             _logRowsShown = 0;
             DrawFailure(y, savedRow, width, failure);
+        }
+        else if (IsRequestingElevation)
+        {
+            DrawRule(y, width);
+            _logRowsShown = 0;
+            DrawElevationWait(y + 1, savedRow, width);
         }
         else
         {
@@ -444,9 +469,23 @@ internal sealed class BatchRunnerScreen : View, IThemedView
                 return _selected;
             }
 
-            return _runningIndex >= 0 ? _runningIndex : _lastStartedIndex;
+            if (_runningIndex >= 0)
+            {
+                return _runningIndex;
+            }
+
+            return RequestingIndex >= 0 ? RequestingIndex : _lastStartedIndex;
         }
     }
+
+    /// <summary>Whether the batch is waiting for the elevated helper, which it asks for before running anything.</summary>
+    private bool IsRequestingElevation => !_isFinished && _elevation == "requesting";
+
+    /// <summary>The first operation still waiting that needs the helper while it is being requested, or -1.</summary>
+    private int RequestingIndex =>
+        IsRequestingElevation
+            ? Array.FindIndex(_operations, operation => operation.UsesHelper && operation.State == OperationState.Waiting)
+            : -1;
 
     private bool IsKnown(int index) => index >= 0 && index < _operations.Length;
 
@@ -589,7 +628,10 @@ internal sealed class BatchRunnerScreen : View, IThemedView
             return _theme.Ok;
         }
 
-        if (_elevation == "declined" || _elevation.StartsWith("failed", StringComparison.Ordinal))
+        var isProblem = _elevation == "declined"
+            || _elevation.StartsWith("failed", StringComparison.Ordinal)
+            || _elevation.StartsWith("timed out", StringComparison.Ordinal);
+        if (isProblem)
         {
             return _theme.Error;
         }
@@ -625,13 +667,18 @@ internal sealed class BatchRunnerScreen : View, IThemedView
             _ => ("○", _theme.Dim),
         };
 
+        var action = Column(ActionText(operation.Operation), ActionWidth);
+        var label = operation.Operation.Plan.Label;
+        var labelColor = label == OperationPlan.DowngradeLabel ? _theme.Info : _theme.Foreground;
         List<(string Text, Attribute Color)> segments =
         [
             (" ", ColorOf(_theme.Foreground)),
             (glyph, ColorOf(glyphColor)),
-            (" " + Column(operation.Operation.Row.Id, IdWidth) + Column(ActionText(operation.Operation), ActionWidth), ColorOf(_theme.Foreground)),
+            (" " + Column(operation.Operation.Row.Id, IdWidth), ColorOf(_theme.Foreground)),
+            (action[..label.Length], ColorOf(labelColor)),
+            (action[label.Length..], ColorOf(_theme.Foreground)),
         ];
-        foreach (var (text, color) in StatusSegments(operation))
+        foreach (var (text, color) in StatusSegments(index, operation))
         {
             segments.Add((text, ColorOf(color)));
         }
@@ -640,7 +687,7 @@ internal sealed class BatchRunnerScreen : View, IThemedView
         DrawSegments(segments);
     }
 
-    private List<(string Text, Color Color)> StatusSegments(OperationView operation)
+    private List<(string Text, Color Color)> StatusSegments(int index, OperationView operation)
     {
         switch (operation.State)
         {
@@ -660,6 +707,9 @@ internal sealed class BatchRunnerScreen : View, IThemedView
             case OperationState.Running:
                 return [(SpinnerFrames[_spinnerFrame], _theme.Accent)];
 
+            case OperationState.Waiting when index == RequestingIndex:
+                return [("requesting elevation", _theme.Accent)];
+
             case OperationState.Waiting:
                 return [("waiting", _theme.Dim)];
 
@@ -670,8 +720,34 @@ internal sealed class BatchRunnerScreen : View, IThemedView
             case OperationState.Skipped:
                 return [("skipped", _theme.Dim)];
 
+            case OperationState.Canceled when operation.ElevationReason is not null && _elevation == "declined":
+                return [("canceled by UAC", _theme.Dim)];
+
             default:
                 return [("canceled", _theme.Dim)];
+        }
+    }
+
+    /// <summary>
+    /// What the log area shows while the elevated helper is requested: where the prompt comes from,
+    /// how to give up on it, and how long it has been up.
+    /// </summary>
+    private void DrawElevationWait(int top, int bottom, int width)
+    {
+        var textWidth = Math.Max(0, width - 2);
+        if (top < bottom)
+        {
+            Move(1, top);
+            SetAttribute(_theme.On(_theme.Foreground));
+            AddStr(CellText.Fit(ElevationPromptText, textWidth));
+        }
+
+        if (top + 1 < bottom)
+        {
+            var seconds = ((long)_elevationWaited.TotalSeconds).ToString(CultureInfo.InvariantCulture);
+            Move(1, top + 1);
+            SetAttribute(_theme.On(_theme.Dim));
+            AddStr(CellText.Fit($"Waiting {seconds} s", textWidth));
         }
     }
 
@@ -937,22 +1013,30 @@ internal sealed class BatchRunnerScreen : View, IThemedView
         return fitted + new string(' ', width - DisplayWidth.Of(fitted));
     }
 
-    /// <summary><c>upgrade  2.51.0 → 2.52.0</c>, <c>install  → latest</c>, or <c>uninstall  2.51.0</c>.</summary>
+    /// <summary>
+    /// <c>upgrade  2.51.0 → 2.52.0</c>, <c>install  → latest</c>, <c>downgrade  2.52.0 → 2.51.0</c>,
+    /// or <c>uninstall  2.51.0</c>; always starting with the plan's label.
+    /// </summary>
     private static string ActionText(QueuedOperation operation)
     {
         var row = operation.Row;
+        var label = operation.Plan.Label;
         var requested = operation.Plan.Request.Version;
+        var isDowngrade = label == OperationPlan.DowngradeLabel;
         switch (operation.Kind)
         {
             case OperationKind.Upgrade:
                 var target = FirstNonEmpty(requested, row.AvailableVersion, "latest");
-                return $"upgrade  {row.Version} → {target}";
+                return $"{label}  {row.Version} → {target}";
+
+            case OperationKind.Install when isDowngrade:
+                return $"{label}  {row.Version} → {FirstNonEmpty(requested, "latest")}";
 
             case OperationKind.Install:
-                return $"install  → {FirstNonEmpty(requested, "latest")}";
+                return $"{label}  → {FirstNonEmpty(requested, "latest")}";
 
             default:
-                return $"uninstall  {row.Version}";
+                return $"{label}  {row.Version}";
         }
     }
 
@@ -992,9 +1076,15 @@ internal sealed class BatchRunnerScreen : View, IThemedView
     }
 
     /// <summary>One operation as the screen shows it: its state, its log so far, and its last known progress.</summary>
-    private sealed class OperationView(QueuedOperation operation)
+    private sealed class OperationView(QueuedOperation operation, bool usesHelper)
     {
         public QueuedOperation Operation { get; } = operation;
+
+        /// <summary>Whether the operation runs through the elevated helper.</summary>
+        public bool UsesHelper { get; } = usesHelper;
+
+        /// <summary>Why the operation was canceled when the elevated helper could not be had; null otherwise.</summary>
+        public string? ElevationReason { get; set; }
 
         public OperationState State { get; set; } = OperationState.Waiting;
 

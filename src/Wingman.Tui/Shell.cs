@@ -365,22 +365,21 @@ internal sealed class Shell
     public QueuedOperation BuildOperation(OperationKind kind, PackageRow row)
     {
         var plan = OperationRequestFactory.Create(kind, row, Settings, Options.GetInstallOptions(row.Id));
-        var hasDetails = DetailsCache.TryGetValue(row.Id, out var details);
-        if (!hasDetails && !plan.RequiresElevation)
-        {
-            FetchDetailsForElevation(row.Id);
-        }
-
-        var requiresElevation = ElevationHeuristic.Resolve(plan, details, ElevationMode.Auto, processIsElevated: false);
-        return new QueuedOperation(kind, row, plan with { RequiresElevation = requiresElevation });
+        return WithInstallerElevation(row, plan);
     }
 
-    /// <summary><see cref="BuildOperation(OperationKind, PackageRow)"/> pinned to <paramref name="version"/>, which winget gets as <c>--version</c>.</summary>
-    public QueuedOperation BuildOperation(OperationKind kind, PackageRow row, string version)
+    /// <summary>
+    /// A queue entry that takes <paramref name="row"/>'s package to <paramref name="version"/>, from
+    /// <see cref="OperationRequestFactory.CreateForVersion"/>: an upgrade, an install, or a
+    /// downgrade, which is an install with <c>--force</c>. Null when the package is already on that
+    /// version. Elevation is worked out as for <see cref="BuildOperation(OperationKind, PackageRow)"/>.
+    /// </summary>
+    /// <param name="row">The installed row when <paramref name="isInstalled"/>.</param>
+    public QueuedOperation? BuildOperationForVersion(PackageRow row, string version, bool isInstalled)
     {
-        var operation = BuildOperation(kind, row);
-        var request = operation.Plan.Request with { Version = version };
-        return operation with { Plan = operation.Plan with { Request = request } };
+        var options = Options.GetInstallOptions(row.Id);
+        var plan = OperationRequestFactory.CreateForVersion(row, version, Settings, options, isInstalled);
+        return plan is null ? null : WithInstallerElevation(row, plan);
     }
 
     public void ClearQueue()
@@ -435,7 +434,7 @@ internal sealed class Shell
         {
             if (tab is InstalledTab installed)
             {
-                installed.EnsureLoaded();
+                installed.LoadIfNeeded();
             }
         }
     }
@@ -968,6 +967,22 @@ internal sealed class Shell
     }
 
     /// <summary>
+    /// <paramref name="plan"/> as a queue entry, its elevation also covering an installer type that
+    /// usually needs administrator rights; see <see cref="BuildOperation(OperationKind, PackageRow)"/>.
+    /// </summary>
+    private QueuedOperation WithInstallerElevation(PackageRow row, OperationPlan plan)
+    {
+        var hasDetails = DetailsCache.TryGetValue(row.Id, out var details);
+        if (!hasDetails && !plan.RequiresElevation)
+        {
+            FetchDetailsForElevation(row.Id);
+        }
+
+        var requiresElevation = ElevationHeuristic.Resolve(plan, details, ElevationMode.Auto, processIsElevated: false);
+        return new QueuedOperation(plan.Kind, row, plan with { RequiresElevation = requiresElevation });
+    }
+
+    /// <summary>
     /// Reads <paramref name="id"/>'s <c>winget show</c> on a background task into
     /// <see cref="DetailsCache"/>, then folds its installer type into the package's queue entry. A
     /// failed show leaves the entry as its options made it; the details pane reports the error
@@ -1205,7 +1220,7 @@ internal sealed class Shell
         CloseBatch();
 
         var options = new BatchOptions(Settings.ContinueOnFailure, Settings.ElevationMode, ProcessIsElevated);
-        var screen = new BatchRunnerScreen(App, Theme, operations, InitialElevationState(operations));
+        var screen = new BatchRunnerScreen(App, Theme, operations, options, InitialElevationState(operations));
         var batch = new ActiveBatch(screen, origin, operations, isFromQueue);
         _batch = batch;
         screen.CancelRequested += () => AskCancelBatch(batch);
@@ -1400,6 +1415,24 @@ internal sealed class Shell
         if (isRunning && _activeTab is null && _tabs.Count > 0)
         {
             ShowTab(0);
+            StartBackgroundLoads();
+        }
+    }
+
+    /// <summary>
+    /// Starts every list tab's first load once the window is running, not only the one just shown,
+    /// so a tab not yet visited, such as Updates, has its tab strip count ready by the time the user
+    /// gets to it. Pins load as soon as the shell is built, ahead of this. Each tab's own
+    /// <see cref="PackageListTab.LoadIfNeeded"/> guards against loading twice.
+    /// </summary>
+    private void StartBackgroundLoads()
+    {
+        foreach (var tab in _tabs)
+        {
+            if (tab is PackageListTab listTab)
+            {
+                listTab.LoadIfNeeded();
+            }
         }
     }
 

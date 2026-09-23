@@ -21,6 +21,7 @@ public class WingetArgumentsTests
         string[] expected =
         [
             "install", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
         ];
 
@@ -33,6 +34,7 @@ public class WingetArgumentsTests
         string[] expected =
         [
             "install", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             "--version", "2.46.2",
             "--scope", "machine",
             "--architecture", "x64",
@@ -62,6 +64,7 @@ public class WingetArgumentsTests
         string[] expected =
         [
             "install", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             .. flagArguments,
             "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
             .. customArguments,
@@ -76,6 +79,7 @@ public class WingetArgumentsTests
         string[] expected =
         [
             "upgrade", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
         ];
 
@@ -88,6 +92,7 @@ public class WingetArgumentsTests
         string[] expected =
         [
             "upgrade", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             "--version", "2.46.2",
             "--scope", "machine",
             "--architecture", "x64",
@@ -117,6 +122,7 @@ public class WingetArgumentsTests
         string[] expected =
         [
             "upgrade", "--id", "Git.Git", "--exact",
+            "--source", "winget",
             .. flagArguments,
             "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements",
             .. customArguments,
@@ -197,6 +203,50 @@ public class WingetArgumentsTests
     }
 
     [Fact]
+    public void Uninstall_DoesNotIncludeSource() =>
+        Assert.DoesNotContain("--source", WingetArguments.Uninstall(EveryOption));
+
+    [Fact]
+    public void Search_EmitsSourceRightAfterTheQuery()
+    {
+        string[] expected =
+        [
+            "search", "Git.Git", "--source", "winget",
+            "--disable-interactivity", "--accept-source-agreements",
+        ];
+
+        Assert.Equal(expected, WingetArguments.Search("Git.Git"));
+    }
+
+    [Fact]
+    public void Show_EmitsSourceRightAfterExact()
+    {
+        string[] expected =
+        [
+            "show", "--id", "Git.Git", "--exact", "--source", "winget",
+            "--disable-interactivity", "--accept-source-agreements",
+        ];
+
+        Assert.Equal(expected, WingetArguments.Show("Git.Git"));
+    }
+
+    [Fact]
+    public void ShowVersions_EmitsSourceRightAfterExact()
+    {
+        string[] expected =
+        [
+            "show", "--id", "Git.Git", "--exact", "--source", "winget", "--versions",
+            "--disable-interactivity", "--accept-source-agreements",
+        ];
+
+        Assert.Equal(expected, WingetArguments.ShowVersions("Git.Git"));
+    }
+
+    [Fact]
+    public void ListInstalled_DoesNotIncludeSource() =>
+        Assert.DoesNotContain("--source", WingetArguments.ListInstalled());
+
+    [Fact]
     public void ListUpgrades_IncludesUnknownAndPinnedPackages()
     {
         string[] expected =
@@ -207,6 +257,10 @@ public class WingetArgumentsTests
 
         Assert.Equal(expected, WingetArguments.ListUpgrades());
     }
+
+    [Fact]
+    public void ListUpgrades_DoesNotIncludeSource() =>
+        Assert.DoesNotContain("--source", WingetArguments.ListUpgrades());
 
     [Fact]
     public void PinAdd_IdOnly_EmitsRequiredFlags()
@@ -267,6 +321,14 @@ public class WingetArgumentsTests
 
         Assert.Equal(expected, WingetArguments.PinRemove("Git.Git"));
     }
+
+    [Fact]
+    public void PinAdd_DoesNotIncludeSource() =>
+        Assert.DoesNotContain("--source", WingetArguments.PinAdd("Git.Git", blocking: true, version: "2.46.2"));
+
+    [Fact]
+    public void PinRemove_DoesNotIncludeSource() =>
+        Assert.DoesNotContain("--source", WingetArguments.PinRemove("Git.Git"));
 
     private static (OperationRequest Request, string[] Arguments) SingleOption(string option) => option switch
     {

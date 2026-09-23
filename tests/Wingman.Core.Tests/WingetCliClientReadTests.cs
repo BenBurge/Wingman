@@ -39,7 +39,7 @@ public class WingetCliClientReadTests
         var rows = await client.SearchAsync("visual studio code", CancellationToken.None);
 
         Assert.Equal(6, rows.Count);
-        AssertSingleCall(runner, ["search", "visual studio code", .. CommonFlags]);
+        AssertSingleCall(runner, ["search", "visual studio code", "--source", "winget", .. CommonFlags]);
     }
 
     [Fact]
@@ -51,6 +51,7 @@ public class WingetCliClientReadTests
 
         Assert.Equal(212, rows.Count);
         AssertSingleCall(runner, ["list", .. CommonFlags]);
+        Assert.DoesNotContain("--source", runner.Calls[0].Arguments);
     }
 
     [Fact]
@@ -73,7 +74,7 @@ public class WingetCliClientReadTests
 
         Assert.NotNull(details);
         Assert.Equal("Microsoft.VisualStudioCode", details.Id);
-        AssertSingleCall(runner, ["show", "--id", "Microsoft.VisualStudioCode", "--exact", .. CommonFlags]);
+        AssertSingleCall(runner, ["show", "--id", "Microsoft.VisualStudioCode", "--exact", "--source", "winget", .. CommonFlags]);
     }
 
     [Fact]
@@ -95,7 +96,7 @@ public class WingetCliClientReadTests
         var versions = await client.ListVersionsAsync("Git.Git", CancellationToken.None);
 
         Assert.Equal("2.55.0.3", versions[0]);
-        AssertSingleCall(runner, ["show", "--id", "Git.Git", "--exact", "--versions", .. CommonFlags]);
+        AssertSingleCall(runner, ["show", "--id", "Git.Git", "--exact", "--source", "winget", "--versions", .. CommonFlags]);
     }
 
     [Fact]
@@ -107,5 +108,6 @@ public class WingetCliClientReadTests
 
         Assert.Empty(pins);
         AssertSingleCall(runner, ["pin", "list", .. CommonFlags]);
+        Assert.DoesNotContain("--source", runner.Calls[0].Arguments);
     }
 }
