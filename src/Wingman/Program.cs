@@ -1,5 +1,7 @@
+using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Wingman.Tui;
+using Wingman.Windows;
 using Wingman.Windows.Elevation;
 
 // The elevated helper is this same executable relaunched by ElevatedHelperLauncher, so its
@@ -28,5 +30,8 @@ IWingetClient client = isFake ? new FakeWingetClient() : new WingetCliClient(new
 
 // The fake never needs the elevated helper, and starting it would show a real UAC prompt.
 var elevation = isFake ? null : ElevationSupport.Factory;
-WingmanApp.Run(client, elevation);
+
+// The fake leaves Auto on the dark theme, so its screens never depend on the machine's mode.
+IThemeDetector? themeDetector = !isFake && OperatingSystem.IsWindows() ? new WindowsThemeDetector() : null;
+WingmanApp.Run(client, elevation, themeDetector);
 return 0;

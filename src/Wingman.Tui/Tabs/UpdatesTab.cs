@@ -55,10 +55,9 @@ internal sealed class UpdatesTab : PackageListTab
     public UpdatesTab(Shell shell, IWingetClient client)
         : base(shell, client, "Updates", Columns)
     {
-        var heldScheme = shell.Theme.CellScheme(shell.Theme.Dim);
         Table.Marker = Marker;
-        Table.MarkerScheme = shell.Theme.CellScheme(shell.Theme.Accent);
-        Table.RowScheme = row => shell.IsPinned(row.Id) ? heldScheme : null;
+        Table.MarkerColor = theme => theme.Accent;
+        Table.RowColor = (row, theme) => shell.IsPinned(row.Id) ? theme.Dim : null;
         Table.Footer = "";
         Table.CountFormat = CountText;
 

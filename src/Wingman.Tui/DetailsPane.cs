@@ -14,7 +14,7 @@ namespace Wingman.Tui;
 /// for a moment and keeps in a cache shared for the session. With focus, the arrow and paging keys
 /// scroll the release notes or description; the mouse wheel scrolls them whenever it is over the pane.
 /// </summary>
-internal sealed class DetailsPane : View
+internal sealed class DetailsPane : View, IThemedView
 {
     private const int LabelWidth = 11;
     private const int WheelStep = 3;
@@ -24,7 +24,7 @@ internal sealed class DetailsPane : View
     // Long enough that holding an arrow key down never starts a winget process per row.
     private static readonly TimeSpan FetchDelay = TimeSpan.FromMilliseconds(150);
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private readonly IApplication _app;
     private readonly IWingetClient _client;
     private readonly Dictionary<string, PackageDetails?> _cache;
@@ -78,6 +78,8 @@ internal sealed class DetailsPane : View
         SetNeedsDraw();
         RestartFetchTimer();
     }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {

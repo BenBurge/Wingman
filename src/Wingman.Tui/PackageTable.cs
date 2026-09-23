@@ -5,6 +5,7 @@ using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Wingman.Core.Models;
 using Wingman.Core.Winget;
+using Color = Terminal.Gui.Drawing.Color;
 
 namespace Wingman.Tui;
 
@@ -14,7 +15,7 @@ namespace Wingman.Tui;
 /// line. Every list tab uses it; Discover turns the filter box into a search box. The marker
 /// column holds <c>●</c> for a row marked for the batch, then the tab's own marker.
 /// </summary>
-internal sealed class PackageTable : View
+internal sealed class PackageTable : View, IThemedView
 {
     private const string MarkedGlyph = "●";
 
@@ -25,9 +26,6 @@ internal sealed class PackageTable : View
     private const int MinCountWidth = 14;
     private const int WheelStep = 3;
 
-    // The header is a single row because the header overline and underline are turned off.
-    private const int HeaderRows = 1;
-
     // A blank row and the footer line itself.
     private const int FooterRows = 2;
 
@@ -37,7 +35,7 @@ internal sealed class PackageTable : View
     private readonly Label _promptLabel;
     private readonly TextField _filterField;
     private readonly Label _countLabel;
-    private readonly TableView _tableView;
+    private readonly KeyPassingTableView _tableView;
     private readonly Label _emptyLabel;
     private readonly Label _footerLabel;
 
@@ -59,9 +57,11 @@ internal sealed class PackageTable : View
     private bool _isLoading;
     private object? _spinnerTimer;
     private int _spinnerFrame;
+    private Theme _theme;
 
     public PackageTable(Theme theme, IReadOnlyList<PackageColumn> columns)
     {
+        _theme = theme;
         _columns = columns;
         CanFocus = true;
 
@@ -73,7 +73,6 @@ internal sealed class PackageTable : View
             Y = 0,
             Width = Dim.Fill(MinCountWidth + 1),
         };
-        _filterField.SetScheme(theme.InputScheme);
         _filterField.TextChanged += (_, _) => OnFilterTextChanged();
         _filterField.KeyDown += OnFilterKeyDown;
 
@@ -87,44 +86,28 @@ internal sealed class PackageTable : View
 
         _textWidths = new int[columns.Count + 1];
         _source = new PackageTableSource(columns, [], MarkerText, null, false, _textWidths);
-        _tableView = new KeyPassingTableView(_source)
+        _tableView = new KeyPassingTableView(theme, _source)
         {
             X = 0,
             Y = 2,
             Width = Dim.Fill(),
             Height = Dim.Fill(),
-            FullRowSelect = true,
-            MultiSelect = false,
-
-            // Type-to-search would swallow the letter keys the key bar dispatches.
-            CollectionNavigator = null,
         };
         var style = _tableView.Style;
-        style.ShowHorizontalHeaderOverline = false;
-        style.ShowHorizontalHeaderUnderline = false;
-        style.ShowHorizontalBottomLine = false;
-        style.ShowVerticalCellLines = false;
-        style.ShowVerticalHeaderLines = false;
-        style.InvertSelectedCellFirstCharacter = false;
-        style.ExpandLastColumn = true;
-        style.AlwaysShowHeaders = true;
-        style.HeaderScheme = theme.HeaderScheme;
         style.GetOrCreateColumnStyle(0).ColorGetter = args => MarkerSchemeAt(args.RowIndex);
         style.RowColorGetter = args => RowSchemeAt(args.RowIndex);
 
         _tableView.ValueChanged += (_, _) => RaiseCursorChangedIfMoved();
         _tableView.Accepting += OnTableAccepting;
         _tableView.MouseEvent += OnTableMouse;
-        _tableView.KeyDownNotHandled += OnTableKeyDownNotHandled;
 
         // Added after the table so it draws over the table's empty rows.
         _emptyLabel = new Label { X = Pos.Center(), Y = Pos.Center(), Visible = false };
-        _emptyLabel.SetScheme(theme.DimScheme);
 
         _footerLabel = new Label { X = 1, Y = Pos.AnchorEnd(1), Width = Dim.Fill(1), Visible = false };
-        _footerLabel.SetScheme(theme.DimScheme);
 
         Add(_promptLabel, _filterField, _countLabel, _tableView, _emptyLabel, _footerLabel);
+        ApplyTheme(theme);
         UpdateCountLabel();
     }
 
@@ -143,17 +126,17 @@ internal sealed class PackageTable : View
     /// <summary>The tab's own marker, such as <c>✓</c>, drawn after the marked glyph's cell; none when null.</summary>
     public Func<PackageRow, string>? Marker { get; set; }
 
-    /// <summary>Colors of the marker column; the row's own colors when null.</summary>
-    public Scheme? MarkerScheme { get; set; }
+    /// <summary>The marker column's text color in a theme; the row's own colors when null.</summary>
+    public Func<Theme, Color>? MarkerColor { get; set; }
 
     /// <summary>Whether a row is marked for the batch, which puts <c>●</c> first in its marker column; no row is when null.</summary>
     public Func<PackageRow, bool>? IsMarked { get; set; }
 
-    /// <summary>Colors of a marked row's marker column, over <see cref="RowScheme"/> and <see cref="MarkerScheme"/>.</summary>
-    public Scheme? MarkedScheme { get; set; }
+    /// <summary>A marked row's marker column text color in a theme, over <see cref="RowColor"/> and <see cref="MarkerColor"/>.</summary>
+    public Func<Theme, Color>? MarkedColor { get; set; }
 
-    /// <summary>Colors for a whole row, marker included, such as dim for a held package; the usual colors when it returns null.</summary>
-    public Func<PackageRow, Scheme?>? RowScheme { get; set; }
+    /// <summary>A whole row's text color in a theme, marker included, such as dim for a held package; the usual colors when it returns null.</summary>
+    public Func<PackageRow, Theme, Color?>? RowColor { get; set; }
 
     /// <summary>The label before the text box, such as <c>Filter:</c> or <c>Search:</c>.</summary>
     public string Prompt
@@ -292,8 +275,16 @@ internal sealed class PackageTable : View
 
         _tableView.EnsureCursorIsVisible();
         var origin = _tableView.ViewportToScreen(Point.Empty);
-        var rowOnScreen = HeaderRows + selection.SelectedCell.Y - _tableView.RowOffset;
+        var rowOnScreen = KeyPassingTableView.HeaderRows + selection.SelectedCell.Y - _tableView.RowOffset;
         return new Point(origin.X + column, origin.Y + rowOnScreen);
+    }
+
+    public void ApplyTheme(Theme theme)
+    {
+        _theme = theme;
+        _filterField.SetScheme(theme.InputScheme);
+        _emptyLabel.SetScheme(theme.DimScheme);
+        _footerLabel.SetScheme(theme.DimScheme);
     }
 
     /// <summary>Sorts by the next column, ascending, wrapping from the last column back to the first.</summary>
@@ -328,19 +319,29 @@ internal sealed class PackageTable : View
     private Scheme? RowSchemeAt(int index)
     {
         var isOnRow = index >= 0 && index < _source.Packages.Count;
-        return RowScheme is { } rowScheme && isOnRow ? rowScheme(_source.Packages[index]) : null;
+        if (!isOnRow || RowColor?.Invoke(_source.Packages[index], _theme) is not { } color)
+        {
+            return null;
+        }
+
+        return _theme.CellScheme(color);
     }
 
     private Scheme? MarkerSchemeAt(int index)
     {
         var isOnRow = index >= 0 && index < _source.Packages.Count;
         var isMarked = isOnRow && IsMarked is { } isMarkedFor && isMarkedFor(_source.Packages[index]);
-        if (isMarked && MarkedScheme is { } markedScheme)
+        if (isMarked && MarkedColor is { } markedColor)
         {
-            return markedScheme;
+            return _theme.CellScheme(markedColor(_theme));
         }
 
-        return RowSchemeAt(index) ?? MarkerScheme;
+        if (RowSchemeAt(index) is { } rowScheme)
+        {
+            return rowScheme;
+        }
+
+        return MarkerColor is { } markerColor ? _theme.CellScheme(markerColor(_theme)) : null;
     }
 
     /// <summary>
@@ -440,16 +441,8 @@ internal sealed class PackageTable : View
         _tableView.Update();
     }
 
-    private void SetColumnWidth(int tableColumn, int width)
-    {
-        // TableView draws a one-cell gap after each column's text, and the configured widths include it.
-        var textWidth = Math.Max(1, width - 1);
-        var style = _tableView.Style.GetOrCreateColumnStyle(tableColumn);
-        style.MinWidth = textWidth;
-        style.MaxWidth = textWidth;
-        _textWidths[tableColumn] = textWidth;
-        style.RepresentationGetter = value => CellText.Fit(value?.ToString() ?? "", textWidth);
-    }
+    private void SetColumnWidth(int tableColumn, int width) =>
+        _textWidths[tableColumn] = _tableView.SetColumnWidth(tableColumn, width);
 
     private void OnFilterKeyDown(object? sender, Key key)
     {
@@ -481,22 +474,6 @@ internal sealed class PackageTable : View
         }
     }
 
-    /// <summary>
-    /// Keeps the arrow and paging keys the table could not use, at the first or last row, from
-    /// bubbling up to the window, where Terminal.Gui would move focus out of the list.
-    /// </summary>
-    private void OnTableKeyDownNotHandled(object? sender, Key key)
-    {
-        var isNavigationKey = key == Key.CursorUp || key == Key.CursorDown
-            || key == Key.CursorLeft || key == Key.CursorRight
-            || key == Key.PageUp || key == Key.PageDown
-            || key == Key.Home || key == Key.End;
-        if (isNavigationKey)
-        {
-            key.Handled = true;
-        }
-    }
-
     private void OnTableAccepting(object? sender, CommandEventArgs args)
     {
         if (CurrentRow is { } row)
@@ -519,11 +496,11 @@ internal sealed class PackageTable : View
         {
             if (mouse.Flags.HasFlag(MouseFlags.WheeledDown))
             {
-                ScrollRows(WheelStep);
+                _tableView.ScrollRows(WheelStep);
             }
             else if (mouse.Flags.HasFlag(MouseFlags.WheeledUp))
             {
-                ScrollRows(-WheelStep);
+                _tableView.ScrollRows(-WheelStep);
             }
 
             mouse.Handled = true;
@@ -554,14 +531,6 @@ internal sealed class PackageTable : View
         {
             SortByTableColumn(tableColumn);
         }
-    }
-
-    private void ScrollRows(int step)
-    {
-        var visibleRows = Math.Max(1, _tableView.Viewport.Height - HeaderRows);
-        var maxOffset = Math.Max(0, _source.Rows - visibleRows);
-        _tableView.RowOffset = Math.Clamp(_tableView.RowOffset + step, 0, maxOffset);
-        _tableView.SetNeedsDraw();
     }
 
     private void SortByTableColumn(int tableColumn)
@@ -647,25 +616,5 @@ internal sealed class PackageTable : View
 
         _lastCursorRow = current;
         CursorChanged?.Invoke(current);
-    }
-
-    /// <summary>
-    /// A <see cref="TableView"/> that lets printable keys go up to the window while it has no rows.
-    /// TableView swallows them then, as type-to-search with nothing to search, which would leave the
-    /// tab keys, the key bar, and <c>q</c> dead on an empty list.
-    /// </summary>
-    /// <remarks>
-    /// Space is unbound too: TableView toggles a cell into its multi-selection on it, which this
-    /// table never uses, and the tabs mark the cursor row for the batch with it instead.
-    /// </remarks>
-    private sealed class KeyPassingTableView : TableView
-    {
-        public KeyPassingTableView(ITableSource source)
-            : base(source)
-        {
-            KeyBindings.Remove(Key.Space);
-        }
-
-        protected override bool OnKeyDownNotHandled(Key key) => Table is { Rows: > 0 } && base.OnKeyDownNotHandled(key);
     }
 }

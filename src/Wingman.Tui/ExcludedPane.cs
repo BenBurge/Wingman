@@ -11,7 +11,7 @@ namespace Wingman.Tui;
 /// the <c>p</c> hint. With focus the arrows select an entry, drawn background-on-accent, and
 /// <c>p</c> opens the update policy for it; a click selects one too.
 /// </summary>
-internal sealed class ExcludedPane : View
+internal sealed class ExcludedPane : View, IThemedView
 {
     private const string Marker = "⟳";
 
@@ -19,7 +19,7 @@ internal sealed class ExcludedPane : View
     private const int EntriesTop = 2;
     private const int RowsPerEntry = 2;
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private IReadOnlyList<PackageRow> _rows = [];
     private int _selected;
 
@@ -38,6 +38,8 @@ internal sealed class ExcludedPane : View
         _selected = Math.Clamp(_selected, 0, Math.Max(0, rows.Count - 1));
         SetNeedsDraw();
     }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {

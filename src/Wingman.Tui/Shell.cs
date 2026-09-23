@@ -22,8 +22,8 @@ namespace Wingman.Tui;
 /// The window chrome every tab shares: title bar, tab strip, message line, and key bar, plus the
 /// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n prompt on
 /// the message line, the row context menu and the help overlay, which take every key while open,
-/// the one batch allowed to run at a time, the batch <see cref="Queue"/>, the pins every tab marks, and
-/// the update policy and install option changes every tab follows. Every
+/// the one batch allowed to run at a time, the batch <see cref="Queue"/>, the pins every tab marks,
+/// the update policy and install option changes every tab follows, and the settings and theme. Every
 /// member must be called on the UI thread; background work marshals back with <c>App.Invoke</c>.
 /// </summary>
 internal sealed class Shell
@@ -35,7 +35,6 @@ internal sealed class Shell
 
     private const string AppTitle = "Wingman";
     private static readonly TimeSpan StatusLifetime = TimeSpan.FromSeconds(5);
-    private static readonly BatchOptions BatchOptions = new(ContinueOnFailure: true, AutoElevate: true);
 
     private static readonly HelpGroup GlobalHelp = new("Global",
     [
@@ -53,6 +52,8 @@ internal sealed class Shell
     private readonly BatchRunner _batchRunner;
     private readonly HistoryStore _history;
     private readonly bool _canElevate;
+    private readonly Line _tabSeparator;
+    private readonly Line _footerSeparator;
     private readonly View _content;
     private readonly Label _message;
     private readonly KeyBar _keyBar;
@@ -79,21 +80,29 @@ internal sealed class Shell
     private Action? _onPromptYes;
 
     // A message posted while the prompt is up, shown once it is answered.
-    private (string Text, Scheme Scheme, bool IsTransient)? _heldMessage;
+    private (string Text, MessageTone Tone, bool IsTransient)? _heldMessage;
 
+    // The message line's color, kept so a theme switch can recolor the message showing.
+    private MessageTone _messageTone;
+
+    /// <param name="settingsStore">Where <paramref name="settings"/> came from and where changes to them are saved.</param>
     /// <param name="canElevate">Whether <paramref name="batchRunner"/> has an elevated helper to start.</param>
     public Shell(
         IApplication app,
         Theme theme,
         IWingetClient client,
+        SettingsStore settingsStore,
         WingmanSettings settings,
+        IThemeDetector themeDetector,
         BatchRunner batchRunner,
         HistoryStore history,
         bool canElevate)
     {
         App = app;
         Theme = theme;
+        SettingsStore = settingsStore;
         Settings = settings;
+        ThemeDetector = themeDetector;
         _client = client;
         _batchRunner = batchRunner;
         _history = history;
@@ -125,7 +134,7 @@ internal sealed class Shell
         var borderAttribute = theme.On(theme.Border);
 
         // X = -1 and Dim.Fill(-1) overlap the window border so the lines join it as ├ and ┤.
-        var tabSeparator = new Line
+        _tabSeparator = new Line
         {
             X = -1,
             Y = 1,
@@ -133,7 +142,7 @@ internal sealed class Shell
             SuperViewRendersLineCanvas = true,
             LineAttribute = borderAttribute,
         };
-        var footerSeparator = new Line
+        _footerSeparator = new Line
         {
             X = -1,
             Y = Pos.AnchorEnd(3),
@@ -171,15 +180,27 @@ internal sealed class Shell
         _menu = new ContextMenu(theme);
         _help = new HelpOverlay(theme);
 
-        Window.Add(tabSeparator, _content, footerSeparator, _message, _keyBar, _menu, _help);
+        Window.Add(_tabSeparator, _content, _footerSeparator, _message, _keyBar, _menu, _help);
     }
 
     public IApplication App { get; }
 
-    public Theme Theme { get; }
+    /// <summary>The theme every view draws with; <see cref="ApplyTheme"/> switches it.</summary>
+    public Theme Theme { get; private set; }
 
-    /// <summary>The settings the app started with; the theme came from these.</summary>
+    /// <summary>
+    /// The settings in effect, shared with the Settings tab, which changes them in place and saves
+    /// them with <see cref="SaveSettings"/>; each operation and batch reads them when it starts.
+    /// </summary>
     public WingmanSettings Settings { get; }
+
+    public SettingsStore SettingsStore { get; }
+
+    /// <summary>What the <c>Auto</c> theme asks for the system's light or dark mode.</summary>
+    public IThemeDetector ThemeDetector { get; }
+
+    /// <summary>Every operation and batch the batch runner has recorded.</summary>
+    public HistoryStore History => _history;
 
     /// <summary>Per-package install options, which shape every queued operation.</summary>
     public PackageOptionsStore Options { get; }
@@ -192,6 +213,9 @@ internal sealed class Shell
 
     /// <summary>Raised after the installed set changes.</summary>
     public event Action? InstalledChanged;
+
+    /// <summary>Raised after a batch ends, once its history entries are written.</summary>
+    public event Action? BatchFinished;
 
     /// <summary>Raised after <see cref="Pins"/> changes.</summary>
     public event Action? PinsChanged;
@@ -315,8 +339,8 @@ internal sealed class Shell
         StartBatch([.. Queue.Items], origin, isFromQueue: true);
     }
 
-    /// <summary>Runs <paramref name="operation"/> as a batch of one, leaving the queue alone.</summary>
-    public void RunOperation(QueuedOperation operation, PackageListTab origin)
+    /// <summary>Runs <paramref name="operation"/> as a batch of one, with its screen in place of <paramref name="origin"/>'s content, leaving the queue alone.</summary>
+    public void RunOperation(QueuedOperation operation, ScreenHostTab origin)
     {
         if (IsBatchRunning)
         {
@@ -495,6 +519,36 @@ internal sealed class Shell
         });
     }
 
+    /// <summary>Writes <see cref="Settings"/> to <see cref="SettingsStore"/>; false, with the error shown, when the file could not be written.</summary>
+    public bool SaveSettings()
+    {
+        try
+        {
+            SettingsStore.Save(Settings);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetError($"Could not save settings: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Recolors the whole window with <paramref name="theme"/> without a restart: the window's own
+    /// schemes and lines, then every <see cref="IThemedView"/> in it, hidden tabs and open forms included.
+    /// </summary>
+    public void ApplyTheme(Theme theme)
+    {
+        Theme = theme;
+        Window.SetScheme(theme.Normal);
+        Window.Border.GetOrCreateView().SetScheme(theme.BorderScheme);
+        _tabSeparator.LineAttribute = theme.On(theme.Border);
+        _footerSeparator.LineAttribute = theme.On(theme.Border);
+        _message.SetScheme(SchemeFor(_messageTone));
+        ApplyThemeTo(Window, theme);
+    }
+
     /// <summary>
     /// Shows <paramref name="question"/> on the message line and <c>y Yes   n No</c> on the key bar,
     /// and takes every key until it is answered: <c>y</c> or Enter runs <paramref name="onYes"/>,
@@ -504,7 +558,7 @@ internal sealed class Shell
     {
         _onPromptYes = onYes;
         _heldMessage = null;
-        ShowMessage(question, Theme.Normal, isTransient: false);
+        ShowMessage(question, MessageTone.Normal, isTransient: false);
         ApplyHints();
     }
 
@@ -518,13 +572,13 @@ internal sealed class Shell
     }
 
     /// <summary>Shows <paramref name="text"/> on the message line for a few seconds.</summary>
-    public void SetStatus(string text) => PostMessage(text, Theme.Normal, isTransient: true);
+    public void SetStatus(string text) => PostMessage(text, MessageTone.Normal, isTransient: true);
 
     /// <summary>Shows <paramref name="text"/> on the message line in the success color for a few seconds.</summary>
-    public void SetSuccess(string text) => PostMessage(text, Theme.OkScheme, isTransient: true);
+    public void SetSuccess(string text) => PostMessage(text, MessageTone.Ok, isTransient: true);
 
     /// <summary>Shows <paramref name="text"/> on the message line in the error color until the next message.</summary>
-    public void SetError(string text) => PostMessage(text, Theme.ErrorScheme, isTransient: false);
+    public void SetError(string text) => PostMessage(text, MessageTone.Error, isTransient: false);
 
     /// <summary>
     /// Opens the context menu titled <paramref name="title"/> with its corner at <paramref name="screenPosition"/>,
@@ -589,18 +643,39 @@ internal sealed class Shell
         });
     }
 
-    private void PostMessage(string text, Scheme scheme, bool isTransient)
+    private static void ApplyThemeTo(View view, Theme theme)
+    {
+        if (view is IThemedView themed)
+        {
+            themed.ApplyTheme(theme);
+        }
+
+        view.SetNeedsDraw();
+        foreach (var subView in view.SubViews)
+        {
+            ApplyThemeTo(subView, theme);
+        }
+    }
+
+    private Scheme SchemeFor(MessageTone tone) => tone switch
+    {
+        MessageTone.Ok => Theme.OkScheme,
+        MessageTone.Error => Theme.ErrorScheme,
+        _ => Theme.Normal,
+    };
+
+    private void PostMessage(string text, MessageTone tone, bool isTransient)
     {
         if (_onPromptYes is not null)
         {
-            _heldMessage = (text, scheme, isTransient);
+            _heldMessage = (text, tone, isTransient);
             return;
         }
 
-        ShowMessage(text, scheme, isTransient);
+        ShowMessage(text, tone, isTransient);
     }
 
-    private void ShowMessage(string text, Scheme scheme, bool isTransient)
+    private void ShowMessage(string text, MessageTone tone, bool isTransient)
     {
         if (_statusTimer is not null)
         {
@@ -608,7 +683,8 @@ internal sealed class Shell
             _statusTimer = null;
         }
 
-        _message.SetScheme(scheme);
+        _messageTone = tone;
+        _message.SetScheme(SchemeFor(tone));
         _message.Text = text;
 
         if (isTransient)
@@ -633,11 +709,11 @@ internal sealed class Shell
         if (_heldMessage is { } held)
         {
             _heldMessage = null;
-            ShowMessage(held.Text, held.Scheme, held.IsTransient);
+            ShowMessage(held.Text, held.Tone, held.IsTransient);
         }
         else
         {
-            ShowMessage("", Theme.Normal, isTransient: false);
+            ShowMessage("", MessageTone.Normal, isTransient: false);
         }
 
         ApplyHints();
@@ -800,11 +876,12 @@ internal sealed class Shell
     /// finished one still up on any tab, and runs <paramref name="operations"/> on a background
     /// task that reports back through <c>App.Invoke</c>.
     /// </summary>
-    private void StartBatch(IReadOnlyList<QueuedOperation> operations, PackageListTab origin, bool isFromQueue)
+    private void StartBatch(IReadOnlyList<QueuedOperation> operations, ScreenHostTab origin, bool isFromQueue)
     {
         CloseBatch();
 
-        var screen = new BatchRunnerScreen(App, Theme, operations, InitialElevationState(operations));
+        var options = new BatchOptions(Settings.ContinueOnFailure, Settings.AutoElevate);
+        var screen = new BatchRunnerScreen(App, Theme, operations, InitialElevationState(operations, options));
         var batch = new ActiveBatch(screen, origin, operations, isFromQueue);
         _batch = batch;
         screen.CancelRequested += () => AskCancelBatch(batch);
@@ -823,7 +900,7 @@ internal sealed class Shell
             IReadOnlyList<string?> logFiles = [];
             try
             {
-                var summary = await _batchRunner.RunAsync(operations, BatchOptions, progress, token);
+                var summary = await _batchRunner.RunAsync(operations, options, progress, token);
                 logFiles = LogFilesFor(summary.BatchId, operations);
             }
             catch (Exception ex)
@@ -836,12 +913,18 @@ internal sealed class Shell
     }
 
     /// <summary>What the batch screen shows for the elevated helper before the runner reports on it.</summary>
-    private string InitialElevationState(IReadOnlyList<QueuedOperation> operations)
+    private string InitialElevationState(IReadOnlyList<QueuedOperation> operations, BatchOptions options)
     {
         var needsElevation = operations.Any(operation => operation.Plan.RequiresElevation);
         if (!needsElevation)
         {
             return "not needed";
+        }
+
+        // Auto-elevate off runs elevated operations in-process too, each installer prompting for itself.
+        if (!options.AutoElevate)
+        {
+            return "off";
         }
 
         // Without a helper to start, the runner runs elevated operations in-process and says nothing.
@@ -909,6 +992,7 @@ internal sealed class Shell
 
         RefreshHints(batch.Origin);
         RefreshAfterOperation(batch.Origin);
+        BatchFinished?.Invoke();
     }
 
     private void AskCancelBatch(ActiveBatch batch)
@@ -1105,16 +1189,23 @@ internal sealed class Shell
         Window.SetClip(savedClip);
     }
 
+    private enum MessageTone
+    {
+        Normal,
+        Ok,
+        Error,
+    }
+
     /// <summary>A batch the shell started: its screen, the tab showing it, and what it runs.</summary>
     private sealed class ActiveBatch(
         BatchRunnerScreen screen,
-        PackageListTab origin,
+        ScreenHostTab origin,
         IReadOnlyList<QueuedOperation> operations,
         bool isFromQueue)
     {
         public BatchRunnerScreen Screen { get; } = screen;
 
-        public PackageListTab Origin { get; } = origin;
+        public ScreenHostTab Origin { get; } = origin;
 
         public IReadOnlyList<QueuedOperation> Operations { get; } = operations;
 

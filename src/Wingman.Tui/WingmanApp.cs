@@ -24,15 +24,22 @@ public static class WingmanApp
 
     /// <param name="elevation">Starts the elevated helper for a batch, prompting for UAC; null runs
     /// every operation in-process.</param>
-    public static void Run(IWingetClient client, Func<CancellationToken, Task<IElevatedOperationChannel>>? elevation)
+    /// <param name="themeDetector">What the <c>Auto</c> theme asks for the system's light or dark
+    /// mode; null leaves <c>Auto</c> on the dark theme.</param>
+    public static void Run(
+        IWingetClient client,
+        Func<CancellationToken, Task<IElevatedOperationChannel>>? elevation,
+        IThemeDetector? themeDetector = null)
     {
-        var settings = CreateSettingsStore().Load();
-        var theme = Theme.ByName(settings.Theme);
+        var settingsStore = CreateSettingsStore();
+        var settings = settingsStore.Load();
+        var detector = themeDetector ?? new DefaultThemeDetector();
+        var theme = Theme.ByName(settings.Theme, detector);
 
         using var app = Application.Create();
         app.Init();
 
-        var shell = CreateShell(app, theme, client, settings, elevation, new ProcessRunner());
+        var shell = CreateShell(app, theme, client, settingsStore, settings, detector, elevation, new ProcessRunner());
         app.Run(shell.Window);
         shell.Window.Dispose();
     }
@@ -55,20 +62,23 @@ public static class WingmanApp
         IApplication app,
         Theme theme,
         IWingetClient client,
+        SettingsStore settingsStore,
         WingmanSettings settings,
+        IThemeDetector themeDetector,
         Func<CancellationToken, Task<IElevatedOperationChannel>>? elevation,
         IProcessRunner commandRunner)
     {
         var history = CreateHistoryStore();
         var batchRunner = new BatchRunner(client, new PrePostCommandRunner(commandRunner), history, elevation);
-        var shell = new Shell(app, theme, client, settings, batchRunner, history, canElevate: elevation is not null);
+        var shell = new Shell(
+            app, theme, client, settingsStore, settings, themeDetector, batchRunner, history, canElevate: elevation is not null);
         shell.SetTabs(
         [
             new InstalledTab(shell, client),
             new DiscoverTab(shell, client),
             new UpdatesTab(shell, client),
-            new PlaceholderTab(theme, "History", "History: coming in phase 2"),
-            new PlaceholderTab(theme, "Settings", "Settings: coming in phase 2"),
+            new HistoryTab(shell),
+            new SettingsTab(shell),
         ]);
         LoadWingetVersion(shell, client);
         shell.ReloadPins();

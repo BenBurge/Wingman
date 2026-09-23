@@ -2,8 +2,10 @@ using System.Drawing;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Terminal.Gui.App;
+using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.Testing;
+using Color = Terminal.Gui.Drawing.Color;
 
 namespace TuiHarness;
 
@@ -103,6 +105,27 @@ internal sealed class Screen(IApplication app, int width, int height)
 
     /// <summary>The attribute of the cell at column <paramref name="x"/>, row <paramref name="y"/> as last drawn, in the dump legend's format.</summary>
     public string AttributeAt(int x, int y) => app.Driver!.Contents![y, x].Attribute?.ToString() ?? "null";
+
+    /// <summary>The background color of the cell at column <paramref name="x"/>, row <paramref name="y"/> as last drawn, or null when it has no attribute.</summary>
+    public Color? BackgroundAt(int x, int y) => app.Driver!.Contents![y, x].Attribute?.Background;
+
+    /// <summary>Whether any cell as last drawn has <paramref name="background"/>.</summary>
+    public bool AnyBackground(Color background)
+    {
+        var cells = app.Driver!.Contents!;
+        for (var y = 0; y < cells.GetLength(0); y++)
+        {
+            for (var x = 0; x < cells.GetLength(1); x++)
+            {
+                if (cells[y, x].Attribute?.Background == background)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 
     public void Click(int x, int y) => app.InjectSequence(InputInjectionExtensions.LeftButtonClick(new Point(x, y)));
 

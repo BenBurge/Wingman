@@ -18,7 +18,7 @@ namespace Wingman.Tui.Tabs;
 /// <see cref="BatchRunnerScreen"/> in place of both panes until it is over and dismissed, and the
 /// install options editor and update policy dialog do the same until they close.
 /// </summary>
-internal abstract class PackageListTab : ShellTab
+internal abstract class PackageListTab : ScreenHostTab, IThemedView
 {
     private const int WideLayoutWidth = 96;
     private const int WideLeftPaneWidth = 57;
@@ -34,19 +34,14 @@ internal abstract class PackageListTab : ShellTab
     private CancellationTokenSource? _loadCancellation;
     private int _leftPaneWidth = WideLeftPaneWidth;
 
-    private BatchRunnerScreen? _batchScreen;
-    private FormView? _form;
-
     // The tab's own right pane, if it has one, and whether it is toggled on.
     private View? _extraPane;
     private bool _showsExtraPane;
 
     protected PackageListTab(Shell shell, IWingetClient client, string title, IReadOnlyList<PackageColumn> columns)
-        : base(title)
+        : base(shell, title)
     {
-        Shell = shell;
         Client = client;
-        CanFocus = true;
 
         Table = new PackageTable(shell.Theme, columns)
         {
@@ -89,7 +84,7 @@ internal abstract class PackageListTab : ShellTab
         _queuePane.ClearRequested += shell.ClearQueue;
 
         Table.IsMarked = row => shell.Queue.Contains(row.Id);
-        Table.MarkedScheme = shell.Theme.CellScheme(shell.Theme.Accent);
+        Table.MarkedColor = theme => theme.Accent;
 
         MarkHint = new(Key.Space, "Mark", MarkCursorRow, "␣");
         ClearHint = new(Key.C, "Clear", shell.ClearQueue);
@@ -106,23 +101,6 @@ internal abstract class PackageListTab : ShellTab
         Add(Table, _divider, Details, _queuePane);
     }
 
-    public sealed override IReadOnlyList<KeyHint> Hints => _batchScreen?.Hints ?? _form?.Hints ?? TableHints;
-
-    public override bool ShowsHelpHint => !IsBatchShown;
-
-    public sealed override IReadOnlyList<HelpGroup> HelpGroups
-    {
-        get
-        {
-            if (IsBatchShown)
-            {
-                return [BatchRunnerScreen.Help];
-            }
-
-            return _form is { } form ? [form.Help] : [TabHelp];
-        }
-    }
-
     public override void ShowContextMenu()
     {
         if (IsBatchShown || IsFormShown)
@@ -136,30 +114,7 @@ internal abstract class PackageListTab : ShellTab
         }
     }
 
-    /// <summary>Puts <paramref name="screen"/> in place of the table and the right pane, and gives it focus.</summary>
-    public void ShowBatchScreen(BatchRunnerScreen screen)
-    {
-        _batchScreen = screen;
-        Add(screen);
-
-        // Focused first, so hiding the focused table does not leave focus to Terminal.Gui's choice.
-        screen.SetFocus();
-        HideList();
-    }
-
-    /// <summary>Takes the batch screen down and disposes it, putting the table and the right pane back.</summary>
-    public void HideBatchScreen()
-    {
-        if (_batchScreen is not { } screen)
-        {
-            return;
-        }
-
-        _batchScreen = null;
-        RestoreList(screen);
-    }
-
-    protected Shell Shell { get; }
+    public void ApplyTheme(Theme theme) => _divider.LineAttribute = theme.On(theme.Border);
 
     protected IWingetClient Client { get; }
 
@@ -178,18 +133,6 @@ internal abstract class PackageListTab : ShellTab
 
     /// <summary><c>o Options</c>, which opens the cursor row's install options; off the bar, since no tab has room for it at 96 columns.</summary>
     protected KeyHint OptionsHint { get; }
-
-    /// <summary>The tab's own keys, shown while the table is.</summary>
-    protected abstract IReadOnlyList<KeyHint> TableHints { get; }
-
-    /// <summary>The tab's own keys in the help overlay.</summary>
-    protected abstract HelpGroup TabHelp { get; }
-
-    /// <summary>Whether a batch screen has the tab's content area.</summary>
-    protected bool IsBatchShown => _batchScreen is not null;
-
-    /// <summary>Whether the install options editor or the update policy dialog has the tab's content area.</summary>
-    protected bool IsFormShown => _form is not null;
 
     /// <summary>Whether the tab's own right pane is toggled on, whether or not the table is showing.</summary>
     protected bool IsExtraPaneShown => _showsExtraPane;
@@ -282,9 +225,6 @@ internal abstract class PackageListTab : ShellTab
         Shell.AskConfirm(ConfirmQuestion(kind, row), () => Shell.RunOperation(Shell.BuildOperation(kind, row), this));
     }
 
-    /// <summary>Opens the install options editor for <paramref name="row"/> in place of the table and the right pane.</summary>
-    protected void OpenOptions(PackageRow row) => ShowForm(new InstallOptionsEditor(Shell, row));
-
     /// <summary>Opens the update policy dialog for <paramref name="row"/> in place of the table and the right pane.</summary>
     protected void OpenPolicy(PackageRow row) => ShowForm(new UpdatePolicyDialog(Shell, row));
 
@@ -365,26 +305,6 @@ internal abstract class PackageListTab : ShellTab
     /// <summary><c>Upgrade to 2.81.0</c>, or plain <c>Upgrade</c> when the row has no available version.</summary>
     protected static string UpgradeLabel(PackageRow row) =>
         string.IsNullOrEmpty(row.AvailableVersion) ? "Upgrade" : $"Upgrade to {row.AvailableVersion}";
-
-    /// <summary>
-    /// Focuses the batch screen or the form when one is showing, so coming back to the tab keeps the
-    /// keys on it, and the table otherwise.
-    /// </summary>
-    protected void FocusContent()
-    {
-        if (_batchScreen is { } screen)
-        {
-            screen.SetFocus();
-        }
-        else if (_form is { } form)
-        {
-            form.SetFocus();
-        }
-        else
-        {
-            Table.FocusTable();
-        }
-    }
 
     protected void SwitchPane()
     {
@@ -504,37 +424,9 @@ internal abstract class PackageListTab : ShellTab
         }
     }
 
-    /// <summary>Puts <paramref name="form"/> in place of the table and the right pane until it closes, focused on its first field.</summary>
-    private void ShowForm(FormView form)
-    {
-        if (IsBatchShown || IsFormShown)
-        {
-            return;
-        }
+    protected override void FocusTable() => Table.FocusTable();
 
-        _form = form;
-        form.Closed += () => HideForm(form);
-        Add(form);
-
-        // Focused first, so hiding the focused table does not leave focus to Terminal.Gui's choice.
-        form.FocusFirstField();
-        HideList();
-        Shell.RefreshHints(this);
-    }
-
-    private void HideForm(FormView form)
-    {
-        if (_form != form)
-        {
-            return;
-        }
-
-        _form = null;
-        RestoreList(form);
-        Shell.RefreshHints(this);
-    }
-
-    private void HideList()
+    protected override void HideContent()
     {
         Table.Visible = false;
         _divider.Visible = false;
@@ -546,14 +438,11 @@ internal abstract class PackageListTab : ShellTab
         }
     }
 
-    /// <summary>Puts the table and the right pane back in place of <paramref name="screen"/>, then removes and disposes it.</summary>
-    private void RestoreList(View screen)
+    protected override void ShowContent()
     {
         Table.Visible = true;
         _divider.Visible = true;
         Table.FocusTable();
-        Remove(screen);
-        screen.Dispose();
         ShowRightPane();
     }
 

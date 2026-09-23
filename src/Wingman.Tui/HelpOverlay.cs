@@ -20,7 +20,7 @@ internal sealed record HelpGroup(string Title, IReadOnlyList<HelpKey> Keys);
 /// the height. Like <see cref="ContextMenu"/> it never takes focus; the shell forwards every key to
 /// <see cref="HandleKey"/> while it is open.
 /// </summary>
-internal sealed class HelpOverlay : View
+internal sealed class HelpOverlay : View, IThemedView
 {
     private const string BoxTitle = "Keys";
     private const int PreferredWidth = 60;
@@ -29,7 +29,7 @@ internal sealed class HelpOverlay : View
     private const int FrameRows = 4;
     private const int KeyGap = 2;
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private List<List<HelpLine>> _columns = [];
     private int _keyWidth;
 
@@ -121,6 +121,8 @@ internal sealed class HelpOverlay : View
             DrawColumn(_columns[c], left, columnWidth, height - FrameRows);
         }
     }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     /// <summary>Draws nothing; see <see cref="Paint"/>.</summary>
     protected override bool OnDrawingContent(DrawContext? context) => true;

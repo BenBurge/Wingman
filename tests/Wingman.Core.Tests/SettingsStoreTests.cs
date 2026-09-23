@@ -27,6 +27,8 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal("winget", settings.DefaultSource);
         Assert.True(settings.AcceptAgreements);
         Assert.True(settings.IncludeUnknown);
+        Assert.True(settings.AutoElevate);
+        Assert.True(settings.ContinueOnFailure);
         Assert.Equal("Midnight", settings.Theme);
         Assert.False(File.Exists(store.FilePath));
     }
@@ -41,7 +43,9 @@ public class SettingsStoreTests : IDisposable
             DefaultSource = "msstore",
             AcceptAgreements = false,
             IncludeUnknown = false,
-            Theme = "Daylight",
+            AutoElevate = false,
+            ContinueOnFailure = false,
+            Theme = "Auto",
         };
 
         store.Save(settings);
@@ -51,7 +55,9 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal("msstore", loaded.DefaultSource);
         Assert.False(loaded.AcceptAgreements);
         Assert.False(loaded.IncludeUnknown);
-        Assert.Equal("Daylight", loaded.Theme);
+        Assert.False(loaded.AutoElevate);
+        Assert.False(loaded.ContinueOnFailure);
+        Assert.Equal("Auto", loaded.Theme);
     }
 
     [Fact]
@@ -107,6 +113,8 @@ public class SettingsStoreTests : IDisposable
         Assert.Contains("\"defaultSource\"", text);
         Assert.Contains("\"acceptAgreements\"", text);
         Assert.Contains("\"includeUnknown\"", text);
+        Assert.Contains("\"autoElevate\"", text);
+        Assert.Contains("\"continueOnFailure\"", text);
         Assert.Contains("\"theme\"", text);
     }
 }

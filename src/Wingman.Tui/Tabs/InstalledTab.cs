@@ -42,7 +42,7 @@ internal sealed class InstalledTab : PackageListTab
         : base(shell, client, "Installed", Columns)
     {
         Table.Marker = Marker;
-        Table.MarkerScheme = shell.Theme.CellScheme(shell.Theme.Dim);
+        Table.MarkerColor = theme => theme.Dim;
         Table.CountFormat = (visible, all) => $"{visible.Count} of {all.Count}" + MarkedSuffix(all);
 
         _hints = BuildHints();

@@ -5,16 +5,18 @@ using TuiHarness;
 using Wingman.Core.Bundles;
 using Wingman.Core.History;
 using Wingman.Core.Options;
+using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Wingman.Tui;
 
 if (args.Length < 2 || !int.TryParse(args[0], out var width) || !int.TryParse(args[1], out var height))
 {
-    Console.Error.WriteLine("usage: TuiHarness <width> <height> [Midnight|Daylight]");
+    Console.Error.WriteLine("usage: TuiHarness <width> <height> [Midnight|Daylight|Nord|Dracula]");
     return 2;
 }
 
-var theme = Theme.ByName(args.Length > 2 ? args[2] : null);
+var themeDetector = new DefaultThemeDetector();
+var theme = Theme.ByName(args.Length > 2 ? args[2] : null, themeDetector);
 
 // A throwaway data directory, so the run never reads or writes the real settings and package
 // options. Azd gets machine scope, which needs elevation, and a post-update command.
@@ -30,7 +32,8 @@ new PackageOptionsStore(dataDirectory).SetInstallOptions(ElevatedId, new Install
     InstallationScope = "machine",
     PostUpdateCommand = ElevatedPostCommand,
 });
-var settings = WingmanApp.CreateSettingsStore().Load();
+var settingsStore = WingmanApp.CreateSettingsStore();
+var settings = settingsStore.Load();
 
 using var app = Application.Create();
 app.Init(DriverRegistry.Names.ANSI);
@@ -41,7 +44,7 @@ screen.HoldSize();
 
 // A short step delay so an operation streams its nine lines in under half a second.
 var client = new SlowClient(new FakeWingetClient(TimeSpan.FromMilliseconds(40)));
-var shell = WingmanApp.CreateShell(app, theme, client, settings, elevation: null, new FakeCommandRunner());
+var shell = WingmanApp.CreateShell(app, theme, client, settingsStore, settings, themeDetector, elevation: null, new FakeCommandRunner());
 var historyDirectory = Path.Combine(dataDirectory, "history");
 string Focused() => shell.Window.MostFocused?.GetType().Name ?? "none";
 
@@ -95,6 +98,25 @@ int KeyBarX(string item) => screen.Rows()[height - 2].IndexOf(item, StringCompar
 int TabStripX(string title) => screen.Rows()[1].IndexOf(" " + title + " ", StringComparison.Ordinal) + 1;
 bool IsCursorRow(int y) => y >= 0 && screen.AttributeAt(10, y) == theme.Selected.ToString();
 bool IsMenuOpen() => ScreenHas("│ Copy id");
+
+// The History steps: the entry count before forgetting one, and the entry forgotten.
+var historyCount = 0;
+HistoryEntry? forgotten = null;
+
+// Clicks one cell into the first on-screen occurrence of text, such as "( ) Daylight".
+void ClickText(string text)
+{
+    var rows = screen.Rows();
+    for (var y = 0; y < rows.Count; y++)
+    {
+        var x = rows[y].IndexOf(text, StringComparison.Ordinal);
+        if (x >= 0)
+        {
+            screen.Click(x + 1, y);
+            return;
+        }
+    }
+}
 
 // Table rows whose marker column starts with the marked glyph; the Discover legend's ● is further right.
 int MarkedRowCount() => screen.Rows().Skip(FirstRowY).Take(height - FirstRowY - 4).Count(row => row[1] == '●');
@@ -738,6 +760,128 @@ Step[] steps =
         Check("row back", LeftPaneHas("Oh My Posh"));
         Check("nothing excluded", !ScreenHas("excluded"));
     }),
+
+    new(50, "2, search vendor", () => { screen.Press(new Key('2')); screen.Press(new Key('/')); screen.Press(Key.Backspace, 3); screen.Type("vendor"); screen.Press(Key.Enter); }),
+    new(600, "i, y: one more batch, which fails", () => { screen.Press(Key.I); screen.Press(Key.Y); }, Verify: () =>
+        Check("running title", ScreenHas(" Running batch  1 of 1"))),
+    new(1500, "the install failed", () => { }, Verify: () =>
+        Check("finished title", ScreenHas(" Batch finished  1 of 1 · 1 failed"))),
+    new(50, "Enter, 4: History", () => { screen.Press(Key.Enter); screen.Press(new Key('4')); }),
+    new(400, "History loaded", () => historyCount = new HistoryStore(historyDirectory).List().Count, WithColors: true, Verify: () =>
+    {
+        Check("count", ScreenHas($"{historyCount} operations"));
+        Check("header", ScreenHas("When             Operation  Package"));
+        Check("ok and failed rows", LeftPaneHas(" ok ") && LeftPaneHas(" failed "));
+        Check("the newest entry is the batch", LeftPaneHas(" batch      1 operations"));
+        Check("history key bar", ScreenHas(" ⏎ Open log   R Retry   o Options   / Filter   Del Forget   ? Help   q Quit "));
+    }),
+    new(50, "R on the batch entry: nothing to retry", () => screen.Press(new Key('R')), Verify: () =>
+        Check("refusal", ScreenHas("Nothing to retry for a batch entry"))),
+    new(50, "Down to the failed install", () =>
+    {
+        var entries = new HistoryStore(historyDirectory).List().ToList();
+        var index = entries.FindIndex(entry => entry.Operation == "install" && entry.ExitCode == 1603);
+        forgotten = entries[index];
+        screen.Press(Key.CursorDown, index);
+    }, WithColors: true, Verify: () =>
+    {
+        Check("title", ScreenHas(" install " + SlowClient.FailingId));
+        Check("exit code", ScreenHas(" exit code 1603  "));
+        Check("usually means", ScreenHas(" Usually means "));
+        Check("suggestion", ScreenHas(" Suggestion "));
+        Check("its log", ScreenHas(" $ winget install"));
+        Check("row keys", ScreenHas(" R retry   o edit options"));
+    }),
+    new(50, "Tab, PageDown: the log scrolls", () => { before = screen.Rows(); screen.Press(Key.Tab); screen.Press(Key.PageDown); }, Verify: () =>
+    {
+        Check("log pane has focus", Focused() == nameof(HistoryDetailsPane));
+        Check("log moved", RightPaneText(screen.Rows()) != RightPaneText(before));
+    }),
+    new(50, "Tab back, Del: the forget question", () => { screen.Press(Key.Tab); screen.Press(Key.Delete); }, Verify: () =>
+        Check("question", ScreenHas("Forget install " + SlowClient.FailingId + "? (y/n)"))),
+    new(50, "y: forgotten", () => screen.Press(Key.Y)),
+    new(300, "the list reloaded without it", () => { }, Verify: () =>
+    {
+        Check("count dropped by one", ScreenHas($"{historyCount - 1} operations"));
+        Check("json gone", !File.Exists(Path.Combine(historyDirectory, Path.ChangeExtension(forgotten!.LogFileName, ".json"))));
+        Check("log gone", !File.Exists(Path.Combine(historyDirectory, forgotten.LogFileName)));
+        Check("forgot message", ScreenHas("Forgot install " + SlowClient.FailingId));
+    }),
+    new(50, "o: the install options editor takes the History tab", () => screen.Press(Key.O), Verify: () =>
+    {
+        Check("editor title", ScreenHas(" Install options  " + PolicyId));
+        Check("list hidden", !ScreenHas("operations"));
+    }),
+    new(50, "Esc: the list is back", () => screen.Press(Key.Esc), Verify: () =>
+    {
+        Check("list back", ScreenHas($"{historyCount - 1} operations"));
+        Check("table has focus", Focused() == "KeyPassingTableView");
+    }),
+    new(50, "R, y: retry the upgrade as a batch of one on the History tab", () => { screen.Press(new Key('R')); screen.Press(Key.Y); }, Verify: () =>
+        Check("running title", ScreenHas(" Running batch  1 of 1") && ScreenHas(" upgrade  30.7.0.0 → 31.3.0"))),
+    new(1000, "the retry finished", () => { }, Verify: () =>
+        Check("finished title", ScreenHas(" Batch finished  1 of 1"))),
+    new(50, "Enter: History reloaded with the retry and its batch", () => screen.Press(Key.Enter), Verify: () =>
+    {
+        historyCount = new HistoryStore(historyDirectory).List().Count;
+        Check("count", ScreenHas($"{historyCount} operations"));
+        var retried = new HistoryStore(historyDirectory).List().First(entry => entry.Operation != "batch");
+        Check("the retry recorded", retried.PackageId == PolicyId && retried.Operation == "upgrade" && retried.Succeeded);
+        Check("the retry listed", LeftPaneHas(" upgrade    JanDeDobbel"));
+    }),
+
+    new(50, "5: Settings", () => screen.Press(new Key('5')), WithColors: true, Verify: () =>
+    {
+        Check("defaults", ScreenHas(" Defaults") && ScreenHas("   Install scope             (•) default  ( ) user  ( ) machine"));
+        Check("source", ScreenHas("   Source                    (•) winget  ( ) msstore  ( ) all"));
+        Check("default flags", ScreenHas("[x] Accept package agreements   [x] Include unknown versions"));
+        Check("batch flags", ScreenHas("[x] Auto-elevate when needed   [x] Continue on failure"));
+        Check("theme row", ScreenHas("   Theme                     (•) Midnight  ( ) Daylight  ( ) Nord  ( ) Dracula  ( ) Auto"));
+        Check("phase 3 groups", ScreenHas(" Updates") && ScreenHas(" Tray") && ScreenHas("phase 3"));
+        Check("tools", ScreenHas("   ⏎ Import bundle…   ⏎ Export bundle…   ⏎ Register scheduled tasks"));
+        Check("footer", ScreenHas(" Saved to "));
+        Check("settings key bar", ScreenHas(" Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "));
+        Check("scope has focus", Focused() == nameof(OptionRow));
+    }),
+    new(50, "Tab x5, Space: Continue on failure off", () => { screen.Press(Key.Tab, 5); screen.Press(Key.Space); }, Verify: () =>
+    {
+        Check("unchecked", ScreenHas("[ ] Continue on failure"));
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"continueOnFailure\": false", StringComparison.Ordinal));
+        Check("in effect", !shell.Settings.ContinueOnFailure);
+    }),
+    new(50, "Tab x2, Enter on Import bundle…", () => { screen.Press(Key.Tab, 2); screen.Press(Key.Enter); }, Verify: () =>
+        Check("bundles later", ScreenHas("Bundles arrive in #47/#48"))),
+    new(50, "click Daylight: the theme switches live", () => ClickText("( ) Daylight"), WithColors: true, Verify: () =>
+    {
+        Check("Daylight picked", ScreenHas("(•) Daylight"));
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"theme\": \"Daylight\"", StringComparison.Ordinal));
+        Check("Daylight ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Daylight.Background);
+        Check("no Midnight ground left", !screen.AnyBackground(Theme.Midnight.Background));
+    }),
+    new(50, "4: the History table is in Daylight too", () => screen.Press(new Key('4')), WithColors: true, Verify: () =>
+    {
+        var daylightRows = Enumerable.Range(FirstRowY, 4).Count(y => screen.BackgroundAt(3, y) == Theme.Daylight.Background);
+        Check("table cells on the Daylight ground", daylightRows >= 3);
+        Check("header on the Daylight ground", screen.BackgroundAt(3, FirstRowY - 1) == Theme.Daylight.Background);
+        Check("no Midnight ground left", !screen.AnyBackground(Theme.Midnight.Background));
+    }),
+    new(50, "5, Right, Space: Nord", () => { screen.Press(new Key('5')); screen.Press(Key.CursorRight); screen.Press(Key.Space); }, WithColors: true, Verify: () =>
+    {
+        Check("Nord picked", ScreenHas("(•) Nord"));
+        Check("Nord ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Nord.Background);
+    }),
+    new(50, "Right, Space: Dracula", () => { screen.Press(Key.CursorRight); screen.Press(Key.Space); }, WithColors: true, Verify: () =>
+    {
+        Check("Dracula picked", ScreenHas("(•) Dracula"));
+        Check("Dracula ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Dracula.Background);
+    }),
+    new(50, "click Midnight: back to the default", () => ClickText("( ) Midnight"), Verify: () =>
+    {
+        Check("Midnight picked", ScreenHas("(•) Midnight"));
+        Check("Midnight ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Midnight.Background);
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"theme\": \"Midnight\"", StringComparison.Ordinal));
+    }),
+
     new(50, "q quits", () => screen.Press(Key.Q)),
 ];
 

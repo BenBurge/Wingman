@@ -15,7 +15,7 @@ namespace Wingman.Tui;
 /// entries outgrow the pane they scroll between the title and the summary, which stay put; with
 /// focus the arrow and paging keys scroll them, and the mouse wheel does whenever it is over the pane.
 /// </summary>
-internal sealed class QueuePane : View
+internal sealed class QueuePane : View, IThemedView
 {
     private const string Indent = "    ";
     private const string AdminText = "⚡ admin";
@@ -33,7 +33,7 @@ internal sealed class QueuePane : View
     // Measured by Terminal.Gui, which draws ⚡ two cells wide like Windows Terminal does; DisplayWidth counts it as one.
     private static readonly int AdminSuffixWidth = (AdminGap + AdminText).GetColumns();
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private readonly OperationQueue _queue;
     private int _scroll;
     private int _entryRowsShown;
@@ -55,6 +55,8 @@ internal sealed class QueuePane : View
 
     /// <summary>Raised on a click on <c>c clear</c>.</summary>
     public event Action? ClearRequested;
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {

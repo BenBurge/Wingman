@@ -13,7 +13,7 @@ namespace Wingman.Tui;
 /// suggestion when the package's last operation failed on a hash mismatch. The current policy is
 /// chosen when it opens; Enter saves through <see cref="Shell.ApplyPolicyAsync"/> and Esc cancels.
 /// </summary>
-internal sealed class UpdatePolicyDialog : FormView
+internal sealed class UpdatePolicyDialog : FormView, IThemedView
 {
     private const int ChoicesRow = 2;
     private const int NoteRow = 15;
@@ -22,7 +22,7 @@ internal sealed class UpdatePolicyDialog : FormView
     private const string HashMismatchName = "INSTALLER_HASH_MISMATCH";
 
     private readonly Shell _shell;
-    private readonly Theme _theme;
+    private Theme _theme;
     private readonly PackageRow _row;
     private readonly ChoiceList _choices;
     private readonly FormTextField _note;
@@ -74,6 +74,8 @@ internal sealed class UpdatePolicyDialog : FormView
     ]);
 
     protected override IReadOnlyList<View> Fields => _fields;
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool HandleFormKey(Key key)
     {
@@ -180,11 +182,11 @@ internal sealed class UpdatePolicyDialog : FormView
     /// it. Up and down choose among the enabled ones and a click on a level's lines chooses it; the
     /// chosen line is drawn background-on-accent while the list has focus.
     /// </summary>
-    private sealed class ChoiceList : View
+    private sealed class ChoiceList : View, IThemedView
     {
         private const string ExplanationIndent = "     ";
 
-        private readonly Theme _theme;
+        private Theme _theme;
         private readonly Choice[] _choices;
         private readonly int[] _tops;
         private int _selected;
@@ -211,6 +213,8 @@ internal sealed class UpdatePolicyDialog : FormView
         }
 
         public UpdatePolicyKind Selected => _choices[_selected].Kind;
+
+        public void ApplyTheme(Theme theme) => _theme = theme;
 
         protected override bool OnDrawingContent(DrawContext? context)
         {

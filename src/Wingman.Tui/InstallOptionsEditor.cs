@@ -16,7 +16,7 @@ namespace Wingman.Tui;
 /// <see cref="Shell.Options"/>, Esc cancels and asks first when something changed, and Ctrl+R puts
 /// every field back to its default. Options the form has no field for keep their stored values.
 /// </summary>
-internal sealed class InstallOptionsEditor : FormView
+internal sealed class InstallOptionsEditor : FormView, IThemedView
 {
     private const int LabelWidth = 22;
 
@@ -53,7 +53,7 @@ internal sealed class InstallOptionsEditor : FormView
     private static readonly string[] ArchitectureValues = ["", "x64", "arm64"];
 
     private readonly Shell _shell;
-    private readonly Theme _theme;
+    private Theme _theme;
     private readonly PackageRow _row;
     private readonly InstallOptions _savedInstall;
     private readonly UpdatesOptions _savedUpdates;
@@ -162,6 +162,8 @@ internal sealed class InstallOptionsEditor : FormView
     ]);
 
     protected override IReadOnlyList<View> Fields => _fields;
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     /// <summary>Splits on spaces, keeping a double-quoted stretch together without its quotes.</summary>
     internal static List<string> ParseArguments(string text)

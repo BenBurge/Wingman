@@ -11,9 +11,9 @@ namespace Wingman.Tui;
 /// <see cref="Placeholder"/> while it is empty and unfocused, and every key offered to
 /// <see cref="FormKeys"/> before the box types it.
 /// </summary>
-internal sealed class FormTextField : TextField
+internal sealed class FormTextField : TextField, IThemedView
 {
-    private readonly Theme _theme;
+    private Theme _theme;
 
     public FormTextField(Theme theme)
     {
@@ -27,6 +27,12 @@ internal sealed class FormTextField : TextField
 
     /// <summary>Returns true for a key the form handled, which the box then leaves alone.</summary>
     public Func<Key, bool>? FormKeys { get; set; }
+
+    public void ApplyTheme(Theme theme)
+    {
+        _theme = theme;
+        SetScheme(theme.FieldScheme);
+    }
 
     protected override bool OnKeyDown(Key key) => (FormKeys?.Invoke(key) ?? false) || base.OnKeyDown(key);
 
@@ -47,11 +53,11 @@ internal sealed class FormTextField : TextField
 
 /// <summary>
 /// One checkbox, <c>[x] Label</c>, with the <c>x</c> in accent; drawn background-on-accent while
-/// it has focus. Space or a click toggles it.
+/// it has focus. Space or a click toggles it and raises <see cref="Toggled"/>.
 /// </summary>
-internal sealed class CheckField : View
+internal sealed class CheckField : View, IThemedView
 {
-    private readonly Theme _theme;
+    private Theme _theme;
     private readonly string _label;
     private bool _isChecked;
 
@@ -60,9 +66,15 @@ internal sealed class CheckField : View
         _theme = theme;
         _label = label;
         Height = 1;
-        Width = DisplayWidth.Of(label) + 4;
+        Width = WidthFor(label);
         CanFocus = true;
     }
+
+    /// <summary>Raised after <see cref="Toggle"/>, which Space and a click call; setting <see cref="IsChecked"/> does not raise it.</summary>
+    public event Action? Toggled;
+
+    /// <summary>The cells a checkbox labeled <paramref name="label"/> takes: <c>[x] </c> and the label.</summary>
+    public static int WidthFor(string label) => DisplayWidth.Of(label) + 4;
 
     public bool IsChecked
     {
@@ -74,7 +86,13 @@ internal sealed class CheckField : View
         }
     }
 
-    public void Toggle() => IsChecked = !IsChecked;
+    public void Toggle()
+    {
+        IsChecked = !IsChecked;
+        Toggled?.Invoke();
+    }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {
@@ -125,14 +143,14 @@ internal sealed class CheckField : View
 /// <summary>
 /// A row of radio options, <c>( ) default  (•) machine  ( ) user</c>, with the dot in accent. With
 /// focus, left and right move a highlight drawn background-on-accent and Space picks the
-/// highlighted option; a click picks the option under it. <see cref="SelectedIndex"/> is -1 when
-/// none is picked, for a stored value that matches no option.
+/// highlighted option; a click picks the option under it. Either raises <see cref="Picked"/>.
+/// <see cref="SelectedIndex"/> is -1 when none is picked, for a stored value that matches no option.
 /// </summary>
-internal sealed class OptionRow : View
+internal sealed class OptionRow : View, IThemedView
 {
     private const string Gap = "  ";
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private readonly string[] _options;
     private readonly (int Start, int End)[] _spans;
     private int _selectedIndex = -1;
@@ -162,6 +180,9 @@ internal sealed class OptionRow : View
         CanFocus = true;
     }
 
+    /// <summary>Raised after Space, a click, or <see cref="PickHighlighted"/> picks an option; setting <see cref="SelectedIndex"/> does not raise it.</summary>
+    public event Action? Picked;
+
     public int SelectedIndex
     {
         get => _selectedIndex;
@@ -174,7 +195,9 @@ internal sealed class OptionRow : View
     }
 
     /// <summary>Picks the highlighted option, as Space does.</summary>
-    public void PickHighlighted() => SelectedIndex = _highlight;
+    public void PickHighlighted() => Pick(_highlight);
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {
@@ -232,7 +255,7 @@ internal sealed class OptionRow : View
         {
             if (position.X >= _spans[i].Start && position.X < _spans[i].End)
             {
-                SelectedIndex = i;
+                Pick(i);
                 break;
             }
         }
@@ -251,5 +274,83 @@ internal sealed class OptionRow : View
         SetNeedsDraw();
     }
 
+    private void Pick(int index)
+    {
+        SelectedIndex = index;
+        Picked?.Invoke();
+    }
+
     private string OptionText(int index) => $"( ) {_options[index]}";
+}
+
+/// <summary>
+/// An action in a form's row of actions, <c>⏎ Import bundle…</c>, with the <c>⏎</c> in accent;
+/// drawn background-on-accent while it has focus. Enter or a click raises <see cref="Pressed"/>.
+/// </summary>
+internal sealed class ActionField : View, IThemedView
+{
+    private const string EnterGlyph = "⏎";
+
+    private readonly string _label;
+    private Theme _theme;
+
+    public ActionField(Theme theme, string label)
+    {
+        _theme = theme;
+        _label = label;
+        Height = 1;
+        Width = WidthFor(label);
+        CanFocus = true;
+    }
+
+    public event Action? Pressed;
+
+    /// <summary>The cells an action labeled <paramref name="label"/> takes: <c>⏎ </c> and the label.</summary>
+    public static int WidthFor(string label) => DisplayWidth.Of(EnterGlyph) + 1 + DisplayWidth.Of(label);
+
+    public void Press() => Pressed?.Invoke();
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
+
+    protected override bool OnDrawingContent(DrawContext? context)
+    {
+        Move(0, 0);
+        if (HasFocus)
+        {
+            SetAttribute(_theme.Selected);
+            AddStr($"{EnterGlyph} {_label}");
+            return true;
+        }
+
+        SetAttribute(_theme.On(_theme.Accent, TextStyle.Bold));
+        AddStr(EnterGlyph);
+        SetAttribute(_theme.On(_theme.Foreground));
+        AddStr(" " + _label);
+        return true;
+    }
+
+    protected override bool OnKeyDown(Key key)
+    {
+        if (key == Key.Enter)
+        {
+            Press();
+            return true;
+        }
+
+        return base.OnKeyDown(key);
+    }
+
+    protected override bool OnMouseEvent(Mouse mouse)
+    {
+        if (!mouse.IsLeftClick())
+        {
+            return base.OnMouseEvent(mouse);
+        }
+
+        SetFocus();
+        Press();
+        return true;
+    }
+
+    protected override void OnHasFocusChanged(bool newHasFocus, View? previousFocusedView, View? focusedView) => SetNeedsDraw();
 }

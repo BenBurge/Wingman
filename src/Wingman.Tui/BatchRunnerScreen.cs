@@ -26,7 +26,7 @@ namespace Wingman.Tui;
 /// operation finished still joins its log, a state never moves backward, and an event for an
 /// index outside the batch is ignored.
 /// </remarks>
-internal sealed class BatchRunnerScreen : View
+internal sealed class BatchRunnerScreen : View, IThemedView
 {
     private const int IdWidth = 22;
     private const int ActionWidth = 30;
@@ -46,7 +46,7 @@ internal sealed class BatchRunnerScreen : View
     private static readonly string[] SpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     private readonly IApplication _app;
-    private readonly Theme _theme;
+    private Theme _theme;
     private readonly OperationView[] _operations;
     private readonly KeyHint[] _runningHints;
     private readonly KeyHint[] _finishedHints;
@@ -258,6 +258,8 @@ internal sealed class BatchRunnerScreen : View
         var (filled, empty) = BarCells(line);
         return filled + empty == 0 ? null : filled * 100 / (filled + empty);
     }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {

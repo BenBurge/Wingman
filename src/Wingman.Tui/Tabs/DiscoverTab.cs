@@ -46,7 +46,7 @@ internal sealed class DiscoverTab : PackageListTab
         Table.EmptyText = "Type a query and press Enter";
         Table.Footer = Legend;
         Table.Marker = row => shell.IsInstalled(row.Id) ? InstalledMarker : "";
-        Table.MarkerScheme = shell.Theme.CellScheme(shell.Theme.Ok);
+        Table.MarkerColor = theme => theme.Ok;
         Table.QuerySubmitted += Search;
         shell.InstalledChanged += Table.RefreshMarkers;
 

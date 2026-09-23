@@ -40,11 +40,11 @@ internal sealed record KeyHint(Key Key, string Label, Action Action, string? Key
 /// which overflows 96 columns with the Installed tab's nine hints, so this view draws the
 /// mockup's compact layout itself.
 /// </remarks>
-internal sealed class KeyBar : View
+internal sealed class KeyBar : View, IThemedView
 {
     private const string Gap = "   ";
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private IReadOnlyList<KeyHint> _hints = [];
     private KeyHint[] _shownHints = [];
 
@@ -70,6 +70,8 @@ internal sealed class KeyBar : View
             SetNeedsDraw();
         }
     }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {
