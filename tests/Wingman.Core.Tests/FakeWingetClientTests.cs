@@ -141,6 +141,42 @@ public class FakeWingetClientTests
     }
 
     [Fact]
+    public async Task UpgradeAsync_ExplicitVersionBelowAvailable_InstallsItAndKeepsTheUpgradeRow()
+    {
+        var client = CreateClient();
+
+        var result = await client.UpgradeAsync(
+            new OperationRequest("AutoHotkey.AutoHotkey", Version: "2.0.27"),
+            new RecordingProgress(),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+
+        var installed = await client.ListInstalledAsync(CancellationToken.None);
+        var installedRow = Assert.Single(installed, r => r.Id == "AutoHotkey.AutoHotkey");
+        Assert.Equal("2.0.27", installedRow.Version);
+
+        var upgrades = await client.ListUpgradesAsync(CancellationToken.None);
+        var upgradeRow = Assert.Single(upgrades, r => r.Id == "AutoHotkey.AutoHotkey");
+        Assert.Equal("2.0.27", upgradeRow.Version);
+        Assert.Equal("2.0.28", upgradeRow.AvailableVersion);
+    }
+
+    [Fact]
+    public async Task UpgradeAsync_ExplicitVersion_StreamsThatVersionInTheFoundLine()
+    {
+        var client = CreateClient();
+        var progress = new RecordingProgress();
+
+        await client.UpgradeAsync(
+            new OperationRequest("AutoHotkey.AutoHotkey", Version: "2.0.27"),
+            progress,
+            CancellationToken.None);
+
+        Assert.Contains("Found AutoHotkey [AutoHotkey.AutoHotkey] Version 2.0.27", progress.Lines);
+    }
+
+    [Fact]
     public async Task UninstallAsync_RemovesTheRowFromInstalled()
     {
         var client = CreateClient();
