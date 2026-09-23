@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Targets plain net10.0 so the CI matrix builds it on Linux too. Windows-only types carry
+    [SupportedOSPlatform("windows")], which makes the platform analyzer require an
+    OperatingSystem.IsWindows() guard at every call site outside this project.
+  -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\Wingman.Core\Wingman.Core.csproj" />
+  </ItemGroup>
+
+</Project>

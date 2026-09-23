@@ -198,7 +198,15 @@ public sealed class FakeWingetClient : IWingetClient
             return NoMatchResultAsync(output, ct);
         }
 
-        var targetVersion = installedRow.AvailableVersion ?? request.Version ?? installedRow.Version;
+        var targetVersion = string.IsNullOrEmpty(request.Version)
+            ? installedRow.AvailableVersion ?? installedRow.Version
+            : request.Version;
+
+        // A pinned or explicitly older/newer version than the known available one is still an
+        // upgrade from what was installed, but it hasn't caught up to that available version, so
+        // the row stays in _upgrades (with its installed version updated) instead of clearing.
+        var reachedAvailableVersion = installedRow.AvailableVersion is null
+            || string.Equals(targetVersion, installedRow.AvailableVersion, StringComparison.OrdinalIgnoreCase);
 
         void OnSuccess()
         {
@@ -207,10 +215,25 @@ public sealed class FakeWingetClient : IWingetClient
                 var index = _installed.FindIndex(r => string.Equals(r.Id, request.Id, StringComparison.OrdinalIgnoreCase));
                 if (index >= 0)
                 {
-                    _installed[index] = _installed[index] with { Version = targetVersion, AvailableVersion = null };
+                    _installed[index] = _installed[index] with
+                    {
+                        Version = targetVersion,
+                        AvailableVersion = reachedAvailableVersion ? null : installedRow.AvailableVersion,
+                    };
                 }
 
-                _upgrades.RemoveAll(r => string.Equals(r.Id, request.Id, StringComparison.OrdinalIgnoreCase));
+                if (reachedAvailableVersion)
+                {
+                    _upgrades.RemoveAll(r => string.Equals(r.Id, request.Id, StringComparison.OrdinalIgnoreCase));
+                }
+                else
+                {
+                    var upgradeIndex = _upgrades.FindIndex(r => string.Equals(r.Id, request.Id, StringComparison.OrdinalIgnoreCase));
+                    if (upgradeIndex >= 0)
+                    {
+                        _upgrades[upgradeIndex] = _upgrades[upgradeIndex] with { Version = targetVersion };
+                    }
+                }
             }
         }
 

@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Wingman.Core\Wingman.Core.csproj" />
     <ProjectReference Include="..\Wingman.Tui\Wingman.Tui.csproj" />
+    <ProjectReference Include="..\Wingman.Windows\Wingman.Windows.csproj" />
   </ItemGroup>
 
 </Project>

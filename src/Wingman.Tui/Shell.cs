@@ -6,7 +6,13 @@ using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
+using Wingman.Core.Bundles;
+using Wingman.Core.History;
 using Wingman.Core.Models;
+using Wingman.Core.Operations;
+using Wingman.Core.Options;
+using Wingman.Core.Settings;
+using Wingman.Core.Updates;
 using Wingman.Core.Winget;
 using Wingman.Tui.Tabs;
 
@@ -14,14 +20,21 @@ namespace Wingman.Tui;
 
 /// <summary>
 /// The window chrome every tab shares: title bar, tab strip, message line, and key bar, plus the
-/// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n prompt on
-/// the message line, the row context menu and the help overlay, which take every key while open,
-/// the one <see cref="OperationRunner"/>, and the pins every tab marks. Every
+/// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n and choice
+/// prompts on the message line, the row context menu, the version picker, and the help overlay,
+/// which take every key while open,
+/// the one batch allowed to run at a time, the batch <see cref="Queue"/>, the pins every tab marks,
+/// the update policy and install option changes every tab follows, and the settings and theme. Every
 /// member must be called on the UI thread; background work marshals back with <c>App.Invoke</c>.
 /// </summary>
 internal sealed class Shell
 {
-    public const string AlreadyRunningText = "An operation is already running";
+    public const string BatchRunningText = "A batch is already running";
+    public const string PolicyChangingText = "A policy change is already running";
+    public const string QueueClearedText = "Queue cleared";
+    public const string QueueEmptyText = "The queue is empty; press Space to mark rows";
+    public const string NothingToRunText = "Nothing to run";
+    public const string DiscardAndQuitText = "Discard changes and quit? (y/n)";
 
     private const string AppTitle = "Wingman";
     private static readonly TimeSpan StatusLifetime = TimeSpan.FromSeconds(5);
@@ -39,15 +52,21 @@ internal sealed class Shell
     ]);
 
     private readonly IWingetClient _client;
+    private readonly BatchRunner _batchRunner;
+    private readonly HistoryStore _history;
+    private readonly bool _canElevate;
+    private readonly Line _tabSeparator;
+    private readonly Line _footerSeparator;
     private readonly View _content;
     private readonly Label _message;
     private readonly KeyBar _keyBar;
     private readonly KeyHint _quitHint;
     private readonly KeyHint[] _globalHints;
-    private readonly KeyHint[] _promptHints;
-    private readonly HashSet<string> _installedIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PackageRow> _installed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<PackageRow> _installedRows = [];
     private readonly ContextMenu _menu;
     private readonly HelpOverlay _help;
+    private readonly VersionPicker _versionPicker;
 
     private List<ShellTab> _tabs = [];
     private TabStrip? _tabStrip;
@@ -56,20 +75,48 @@ internal sealed class Shell
     private object? _statusTimer;
 
     private IReadOnlyList<Pin> _pins = [];
-    private bool _isChangingPin;
+    private bool _isApplyingPolicy;
 
-    // Set while the y/n prompt is up: what y runs.
-    private Action? _onPromptYes;
+    // The running batch, or the finished one whose screen is still up; null once that is dismissed.
+    private ActiveBatch? _batch;
 
-    // A message posted while the prompt is up, shown once it is answered.
-    private (string Text, Scheme Scheme, bool IsTransient)? _heldMessage;
+    // Set while a prompt is up: the answers it takes, and the one Enter gives, if any.
+    private IReadOnlyList<PromptChoice>? _prompt;
+    private PromptChoice? _promptEnterChoice;
+    private KeyHint[] _promptHints = [];
 
-    public Shell(IApplication app, Theme theme, IWingetClient client)
+    // Only the version list this numbers may fill the picker; an older one arriving late is ignored.
+    private int _versionRequest;
+
+    // A message posted while a prompt is up, shown once it is answered.
+    private (string Text, MessageTone Tone, bool IsTransient)? _heldMessage;
+
+    // The message line's color, kept so a theme switch can recolor the message showing.
+    private MessageTone _messageTone;
+
+    /// <param name="settingsStore">Where <paramref name="settings"/> came from and where changes to them are saved.</param>
+    /// <param name="canElevate">Whether <paramref name="batchRunner"/> has an elevated helper to start.</param>
+    public Shell(
+        IApplication app,
+        Theme theme,
+        IWingetClient client,
+        SettingsStore settingsStore,
+        WingmanSettings settings,
+        IThemeDetector themeDetector,
+        BatchRunner batchRunner,
+        HistoryStore history,
+        bool canElevate)
     {
         App = app;
         Theme = theme;
+        SettingsStore = settingsStore;
+        Settings = settings;
+        ThemeDetector = themeDetector;
         _client = client;
-        Runner = new OperationRunner(client, action => app.Invoke(action));
+        _batchRunner = batchRunner;
+        _history = history;
+        _canElevate = canElevate;
+        Options = WingmanApp.CreatePackageOptionsStore();
 
         Window = new Window { Title = AppTitle, BorderStyle = LineStyle.Single };
         Window.SetScheme(theme.Normal);
@@ -96,7 +143,7 @@ internal sealed class Shell
         var borderAttribute = theme.On(theme.Border);
 
         // X = -1 and Dim.Fill(-1) overlap the window border so the lines join it as ├ and ┤.
-        var tabSeparator = new Line
+        _tabSeparator = new Line
         {
             X = -1,
             Y = 1,
@@ -104,7 +151,7 @@ internal sealed class Shell
             SuperViewRendersLineCanvas = true,
             LineAttribute = borderAttribute,
         };
-        var footerSeparator = new Line
+        _footerSeparator = new Line
         {
             X = -1,
             Y = Pos.AnchorEnd(3),
@@ -133,39 +180,65 @@ internal sealed class Shell
             new(new Key('?'), "Help", ShowHelp),
             _quitHint,
         ];
-        _promptHints =
-        [
-            new(Key.Y, "Yes", () => AnswerPrompt(true)),
-            new(Key.N, "No", () => AnswerPrompt(false)),
-        ];
 
         _menu = new ContextMenu(theme);
         _help = new HelpOverlay(theme);
+        _versionPicker = new VersionPicker(theme);
 
-        Window.Add(tabSeparator, _content, footerSeparator, _message, _keyBar, _menu, _help);
+        Window.Add(_tabSeparator, _content, _footerSeparator, _message, _keyBar, _menu, _help, _versionPicker);
     }
 
     public IApplication App { get; }
 
-    public Theme Theme { get; }
+    /// <summary>The theme every view draws with; <see cref="ApplyTheme"/> switches it.</summary>
+    public Theme Theme { get; private set; }
 
-    /// <summary>Runs the one install, upgrade, or uninstall allowed at a time.</summary>
-    public OperationRunner Runner { get; }
+    /// <summary>
+    /// The settings in effect, shared with the Settings tab, which changes them in place and saves
+    /// them with <see cref="SaveSettings"/>; each operation and batch reads them when it starts.
+    /// </summary>
+    public WingmanSettings Settings { get; }
 
-    /// <summary>Raised after <see cref="InstalledIds"/> changes.</summary>
+    public SettingsStore SettingsStore { get; }
+
+    /// <summary>What the <c>Auto</c> theme asks for the system's light or dark mode.</summary>
+    public IThemeDetector ThemeDetector { get; }
+
+    /// <summary>Every operation and batch the batch runner has recorded.</summary>
+    public HistoryStore History => _history;
+
+    /// <summary>Per-package install options, which shape every queued operation.</summary>
+    public PackageOptionsStore Options { get; }
+
+    /// <summary>The operations marked for the batch, shared by every tab.</summary>
+    public OperationQueue Queue { get; } = new();
+
+    /// <summary>Whether a batch is running; only one may run at a time.</summary>
+    public bool IsBatchRunning => _batch is { IsRunning: true };
+
+    /// <summary>Raised after the installed set changes.</summary>
     public event Action? InstalledChanged;
+
+    /// <summary>Raised after a batch ends, once its history entries are written.</summary>
+    public event Action? BatchFinished;
 
     /// <summary>Raised after <see cref="Pins"/> changes.</summary>
     public event Action? PinsChanged;
 
-    /// <summary>Ids of the installed packages as of the Installed tab's last load, ignoring case; empty before it.</summary>
-    public IReadOnlySet<string> InstalledIds => _installedIds;
+    /// <summary>Raised after a package's install or update options change in <see cref="Options"/>.</summary>
+    public event Action? OptionsChanged;
 
     /// <summary>Winget's pins as of the last load or pin change; empty until the first load finishes.</summary>
     public IReadOnlyList<Pin> Pins => _pins;
 
     /// <summary><c>ShowAsync</c> results by Id for the session, shared by every tab's details pane.</summary>
     public Dictionary<string, PackageDetails?> DetailsCache { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The note last saved in the update policy dialog, by Id, for the session only: UniGetUI's
+    /// <c>UpdatesOptions</c> has no field to store it in.
+    /// </summary>
+    public Dictionary<string, string> PolicyNotes { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Window Window { get; }
 
@@ -219,19 +292,102 @@ internal sealed class Shell
         }
     }
 
-    /// <summary>Replaces <see cref="InstalledIds"/> with the Ids of <paramref name="rows"/>.</summary>
+    /// <summary>Replaces the installed set with <paramref name="rows"/>; the first row wins for an Id listed twice.</summary>
     public void SetInstalled(IReadOnlyList<PackageRow> rows)
     {
-        _installedIds.Clear();
+        _installed.Clear();
+        _installedRows.Clear();
         foreach (var row in rows)
         {
-            _installedIds.Add(row.Id);
+            if (_installed.TryAdd(row.Id, row))
+            {
+                _installedRows.Add(row);
+            }
         }
 
+        HasLoadedInstalled = true;
         InstalledChanged?.Invoke();
     }
 
-    /// <summary>Starts the Installed tab's first load, for a tab that needs <see cref="InstalledIds"/> before Installed was shown.</summary>
+    /// <summary>The installed set in winget's order, one row per Id, as of the Installed tab's last load; empty before it.</summary>
+    public IReadOnlyList<PackageRow> InstalledRows => _installedRows;
+
+    /// <summary>Whether the Installed tab has finished a load, so <see cref="InstalledRows"/> is winget's list rather than empty for want of one.</summary>
+    public bool HasLoadedInstalled { get; private set; }
+
+    /// <summary>The bundle file last exported or read this session, which the import screen offers first; null before any.</summary>
+    public string? LastBundlePath { get; set; }
+
+    /// <summary>Whether the Installed tab's last load listed <paramref name="id"/>, ignoring case; false before it.</summary>
+    public bool IsInstalled(string id) => _installed.ContainsKey(id);
+
+    /// <summary>The installed row for <paramref name="id"/> as of the Installed tab's last load, or null.</summary>
+    public PackageRow? FindInstalled(string id) => _installed.GetValueOrDefault(id);
+
+    /// <summary>
+    /// A queue entry for <paramref name="kind"/> on <paramref name="row"/>, shaped by the package's
+    /// saved install options and the settings, as the batch runner will run it.
+    /// </summary>
+    public QueuedOperation BuildOperation(OperationKind kind, PackageRow row)
+    {
+        var plan = OperationRequestFactory.Create(kind, row, Settings, Options.GetInstallOptions(row.Id));
+        return new QueuedOperation(kind, row, plan);
+    }
+
+    /// <summary><see cref="BuildOperation(OperationKind, PackageRow)"/> pinned to <paramref name="version"/>, which winget gets as <c>--version</c>.</summary>
+    public QueuedOperation BuildOperation(OperationKind kind, PackageRow row, string version)
+    {
+        var operation = BuildOperation(kind, row);
+        var request = operation.Plan.Request with { Version = version };
+        return operation with { Plan = operation.Plan with { Request = request } };
+    }
+
+    public void ClearQueue()
+    {
+        Queue.Clear();
+        SetStatus(QueueClearedText);
+    }
+
+    /// <summary>Runs every queued operation as one batch, with its screen in place of <paramref name="origin"/>'s content.</summary>
+    public void RunQueue(PackageListTab origin)
+    {
+        if (IsBatchRunning)
+        {
+            SetStatus(BatchRunningText);
+            return;
+        }
+
+        if (Queue.Count == 0)
+        {
+            SetStatus(QueueEmptyText);
+            return;
+        }
+
+        StartBatch([.. Queue.Items], origin, isFromQueue: true);
+    }
+
+    /// <summary>Runs <paramref name="operation"/> as a batch of one, with its screen in place of <paramref name="origin"/>'s content, leaving the queue alone.</summary>
+    public void RunOperation(QueuedOperation operation, ScreenHostTab origin) => RunOperations([operation], origin);
+
+    /// <summary>Runs <paramref name="operations"/> in order as one batch, with its screen in place of <paramref name="origin"/>'s content, leaving the queue alone.</summary>
+    public void RunOperations(IReadOnlyList<QueuedOperation> operations, ScreenHostTab origin)
+    {
+        if (IsBatchRunning)
+        {
+            SetStatus(BatchRunningText);
+            return;
+        }
+
+        if (operations.Count == 0)
+        {
+            SetStatus(NothingToRunText);
+            return;
+        }
+
+        StartBatch(operations, origin, isFromQueue: false);
+    }
+
+    /// <summary>Starts the Installed tab's first load, for a tab that needs the installed set before Installed was shown.</summary>
     public void EnsureInstalledLoaded()
     {
         foreach (var tab in _tabs)
@@ -243,7 +399,7 @@ internal sealed class Shell
         }
     }
 
-    /// <summary>Tells every list tab that an operation started from <paramref name="origin"/> has finished, so each reloads what it may have changed.</summary>
+    /// <summary>Tells every list tab that a batch started from <paramref name="origin"/> has finished, so each reloads what it may have changed.</summary>
     public void RefreshAfterOperation(ShellTab origin)
     {
         foreach (var tab in _tabs)
@@ -288,40 +444,176 @@ internal sealed class Shell
         });
     }
 
+    /// <summary>How Wingman treats <paramref name="row"/>'s updates, from winget's pins and the package's update options.</summary>
+    public UpdatePolicyKind ResolvePolicy(PackageRow row) =>
+        UpdatePolicyResolver.Resolve(row, _pins, Options.GetUpdatesOptions(row.Id));
+
+    /// <summary>Whether the package is excluded from Wingman's updates because it updates itself.</summary>
+    public bool IsExcluded(string id) => Options.GetUpdatesOptions(id).UpdatesIgnored;
+
     /// <summary>
-    /// Removes the package's pin, or adds a blocking one when it has none, on a background task,
-    /// then reloads <see cref="Pins"/> and reports the result on the message line. Refused while an
-    /// operation or another pin change is running.
+    /// Stores both option sets for <paramref name="id"/>, raises <see cref="OptionsChanged"/>, and
+    /// says so on the message line; false, with the error shown, when the file could not be written.
     /// </summary>
-    public void TogglePin(string id)
+    public bool SaveOptions(string id, InstallOptions install, UpdatesOptions updates)
     {
-        if (Runner.IsRunning || _isChangingPin)
+        try
         {
-            SetStatus(AlreadyRunningText);
+            Options.SetInstallOptions(id, install);
+            Options.SetUpdatesOptions(id, updates);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetError($"Could not save options for {id}: {ex.Message}");
+            return false;
+        }
+
+        OptionsChanged?.Invoke();
+        SetStatus($"Saved options for {id}");
+        return true;
+    }
+
+    /// <summary>
+    /// Stores the option sets a bundle carries, a null set leaving that package's stored one alone,
+    /// and raises <see cref="OptionsChanged"/> once; false, with the error shown, when the file could not be written.
+    /// </summary>
+    public bool ImportOptions(IReadOnlyList<BundlePackage> packages)
+    {
+        try
+        {
+            foreach (var package in packages)
+            {
+                if (package.InstallationOptions is { } install)
+                {
+                    Options.SetInstallOptions(package.Id, install);
+                }
+
+                if (package.Updates is { } updates)
+                {
+                    Options.SetUpdatesOptions(package.Id, updates);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetError($"Could not save the bundle's options: {ex.Message}");
+            return false;
+        }
+
+        OptionsChanged?.Invoke();
+        return true;
+    }
+
+    /// <summary>
+    /// Gives <paramref name="row"/> the update policy <paramref name="kind"/> through
+    /// <see cref="UpdatePolicyApplier"/>, which pins or unpins it with winget as needed and stores
+    /// its update options, then reloads <see cref="Pins"/> and reports the result on the message
+    /// line. Refused while a batch or another policy change is running.
+    /// </summary>
+    /// <remarks>
+    /// Awaited on the UI thread rather than run on a background task: Terminal.Gui's
+    /// synchronization context brings each await back to the UI thread, so the store, which is
+    /// not thread-safe, is only ever touched there.
+    /// </remarks>
+    public async Task ApplyPolicyAsync(PackageRow row, UpdatePolicyKind kind, string? note)
+    {
+        if (IsBatchRunning)
+        {
+            SetStatus(BatchRunningText);
             return;
         }
 
-        _isChangingPin = true;
-        var wasPinned = IsPinned(id);
-        _ = Task.Run(async () =>
+        if (_isApplyingPolicy)
         {
-            OperationResult? result = null;
-            IReadOnlyList<Pin>? pins = null;
-            Exception? error = null;
+            SetStatus(PolicyChangingText);
+            return;
+        }
+
+        _isApplyingPolicy = true;
+        try
+        {
+            var applier = new UpdatePolicyApplier(_client, Options);
+            var result = await applier.ApplyAsync(row, kind, note, _pins, CancellationToken.None);
+            SetPins(await _client.ListPinsAsync(CancellationToken.None));
+            OptionsChanged?.Invoke();
+            if (result.Succeeded)
+            {
+                SetStatus(PolicyAppliedText(row, kind));
+            }
+            else
+            {
+                SetError($"winget: {FailureText(result)}");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"winget: {ex.Message}");
+        }
+        finally
+        {
+            _isApplyingPolicy = false;
+        }
+    }
+
+    /// <summary>
+    /// Reads the history on a background task and calls <paramref name="onLoaded"/> on the UI thread
+    /// with what the package's last operation's exit code means when that operation failed, or null
+    /// when it succeeded or there is none.
+    /// </summary>
+    public void LoadLastFailure(string id, Action<ErrorExplanation?> onLoaded)
+    {
+        _ = Task.Run(() =>
+        {
+            ErrorExplanation? explanation = null;
             try
             {
-                result = wasPinned
-                    ? await _client.UnpinAsync(id, CancellationToken.None)
-                    : await _client.PinAsync(id, blocking: true, version: null, CancellationToken.None);
-                pins = await _client.ListPinsAsync(CancellationToken.None);
+                foreach (var entry in _history.List())
+                {
+                    var isOperation = entry.Operation != "batch"
+                        && string.Equals(entry.PackageId, id, StringComparison.OrdinalIgnoreCase);
+                    if (isOperation)
+                    {
+                        explanation = entry.Succeeded ? null : WingetErrorCodes.Explain(entry.ExitCode);
+                        break;
+                    }
+                }
             }
-            catch (Exception ex)
+            catch (IOException)
             {
-                error = ex;
             }
 
-            App.Invoke(() => FinishPinChange(id, wasPinned, result, pins, error));
+            App.Invoke(() => onLoaded(explanation));
         });
+    }
+
+    /// <summary>Writes <see cref="Settings"/> to <see cref="SettingsStore"/>; false, with the error shown, when the file could not be written.</summary>
+    public bool SaveSettings()
+    {
+        try
+        {
+            SettingsStore.Save(Settings);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetError($"Could not save settings: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Recolors the whole window with <paramref name="theme"/> without a restart: the window's own
+    /// schemes and lines, then every <see cref="IThemedView"/> in it, hidden tabs and open forms included.
+    /// </summary>
+    public void ApplyTheme(Theme theme)
+    {
+        Theme = theme;
+        Window.SetScheme(theme.Normal);
+        Window.Border.GetOrCreateView().SetScheme(theme.BorderScheme);
+        _tabSeparator.LineAttribute = theme.On(theme.Border);
+        _footerSeparator.LineAttribute = theme.On(theme.Border);
+        _message.SetScheme(SchemeFor(_messageTone));
+        ApplyThemeTo(Window, theme);
     }
 
     /// <summary>
@@ -331,10 +623,59 @@ internal sealed class Shell
     /// </summary>
     public void AskConfirm(string question, Action onYes)
     {
-        _onPromptYes = onYes;
-        _heldMessage = null;
-        ShowMessage(question, Theme.Normal, isTransient: false);
-        ApplyHints();
+        var yes = new PromptChoice('y', "Yes", onYes);
+        OpenPrompt(question, [yes, new PromptChoice('n', "No", null)], enterChoice: yes, cancelHint: null);
+    }
+
+    /// <summary>
+    /// Shows <paramref name="question"/> on the message line and each choice's letter and label,
+    /// then <c>Esc Cancel</c>, on the key bar, and takes every key until one is picked or Esc
+    /// dismisses it; any other key is ignored.
+    /// </summary>
+    public void AskChoice(string question, IReadOnlyList<PromptChoice> choices)
+    {
+        var cancelHint = new KeyHint(Key.Esc, "Cancel", () => AnswerPrompt(null));
+        OpenPrompt(question, choices, enterChoice: null, cancelHint);
+    }
+
+    /// <summary>Opens the version picker for <paramref name="row"/> at <paramref name="screenPosition"/> and loads winget's versions for it on a background task.</summary>
+    public void ShowVersionPicker(PackageRow row, Point screenPosition, Action<string> onPicked)
+    {
+        if (_prompt is not null || OpenOverlay is not null)
+        {
+            return;
+        }
+
+        var request = ++_versionRequest;
+        var installedVersion = FindInstalled(row.Id)?.Version;
+        Window.MoveSubViewToEnd(_versionPicker);
+        _versionPicker.Open(row.Name, installedVersion, Window.ScreenToViewport(screenPosition), _content.Frame, onPicked);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var versions = await _client.ListVersionsAsync(row.Id, CancellationToken.None);
+                App.Invoke(() =>
+                {
+                    if (request == _versionRequest && _versionPicker.Visible)
+                    {
+                        _versionPicker.ShowVersions(versions);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                App.Invoke(() =>
+                {
+                    if (request == _versionRequest && _versionPicker.Visible)
+                    {
+                        _versionPicker.Close();
+                        SetError($"winget: {ex.Message}");
+                    }
+                });
+            }
+        });
     }
 
     /// <summary>Puts the tab's current <see cref="ShellTab.Hints"/> on the key bar if it is the active tab.</summary>
@@ -347,13 +688,13 @@ internal sealed class Shell
     }
 
     /// <summary>Shows <paramref name="text"/> on the message line for a few seconds.</summary>
-    public void SetStatus(string text) => PostMessage(text, Theme.Normal, isTransient: true);
+    public void SetStatus(string text) => PostMessage(text, MessageTone.Normal, isTransient: true);
 
     /// <summary>Shows <paramref name="text"/> on the message line in the success color for a few seconds.</summary>
-    public void SetSuccess(string text) => PostMessage(text, Theme.OkScheme, isTransient: true);
+    public void SetSuccess(string text) => PostMessage(text, MessageTone.Ok, isTransient: true);
 
     /// <summary>Shows <paramref name="text"/> on the message line in the error color until the next message.</summary>
-    public void SetError(string text) => PostMessage(text, Theme.ErrorScheme, isTransient: false);
+    public void SetError(string text) => PostMessage(text, MessageTone.Error, isTransient: false);
 
     /// <summary>
     /// Opens the context menu titled <paramref name="title"/> with its corner at <paramref name="screenPosition"/>,
@@ -361,7 +702,7 @@ internal sealed class Shell
     /// </summary>
     public void ShowContextMenu(string title, IReadOnlyList<MenuEntry> entries, Point screenPosition)
     {
-        if (_onPromptYes is not null || OpenOverlay is not null)
+        if (_prompt is not null || OpenOverlay is not null)
         {
             return;
         }
@@ -374,7 +715,7 @@ internal sealed class Shell
     /// <summary>Opens the key list for the active tab over the content.</summary>
     public void ShowHelp()
     {
-        if (_onPromptYes is not null || OpenOverlay is not null)
+        if (_prompt is not null || OpenOverlay is not null)
         {
             return;
         }
@@ -418,18 +759,39 @@ internal sealed class Shell
         });
     }
 
-    private void PostMessage(string text, Scheme scheme, bool isTransient)
+    private static void ApplyThemeTo(View view, Theme theme)
     {
-        if (_onPromptYes is not null)
+        if (view is IThemedView themed)
         {
-            _heldMessage = (text, scheme, isTransient);
+            themed.ApplyTheme(theme);
+        }
+
+        view.SetNeedsDraw();
+        foreach (var subView in view.SubViews)
+        {
+            ApplyThemeTo(subView, theme);
+        }
+    }
+
+    private Scheme SchemeFor(MessageTone tone) => tone switch
+    {
+        MessageTone.Ok => Theme.OkScheme,
+        MessageTone.Error => Theme.ErrorScheme,
+        _ => Theme.Normal,
+    };
+
+    private void PostMessage(string text, MessageTone tone, bool isTransient)
+    {
+        if (_prompt is not null)
+        {
+            _heldMessage = (text, tone, isTransient);
             return;
         }
 
-        ShowMessage(text, scheme, isTransient);
+        ShowMessage(text, tone, isTransient);
     }
 
-    private void ShowMessage(string text, Scheme scheme, bool isTransient)
+    private void ShowMessage(string text, MessageTone tone, bool isTransient)
     {
         if (_statusTimer is not null)
         {
@@ -437,7 +799,8 @@ internal sealed class Shell
             _statusTimer = null;
         }
 
-        _message.SetScheme(scheme);
+        _messageTone = tone;
+        _message.SetScheme(SchemeFor(tone));
         _message.Text = text;
 
         if (isTransient)
@@ -451,32 +814,52 @@ internal sealed class Shell
         }
     }
 
-    private void AnswerPrompt(bool isYes)
+    private void OpenPrompt(string question, IReadOnlyList<PromptChoice> choices, PromptChoice? enterChoice, KeyHint? cancelHint)
     {
-        if (_onPromptYes is not { } onYes)
+        _prompt = choices;
+        _promptEnterChoice = enterChoice;
+        var hints = new List<KeyHint>();
+        foreach (var choice in choices)
+        {
+            hints.Add(new KeyHint(new Key(choice.Letter), choice.Label, () => AnswerPrompt(choice), choice.Letter.ToString()));
+        }
+
+        if (cancelHint is not null)
+        {
+            hints.Add(cancelHint);
+        }
+
+        _promptHints = [.. hints];
+        _heldMessage = null;
+        ShowMessage(question, MessageTone.Normal, isTransient: false);
+        ApplyHints();
+    }
+
+    /// <summary>Takes the prompt down and runs <paramref name="choice"/>'s action; null, or a choice without one, dismisses it.</summary>
+    private void AnswerPrompt(PromptChoice? choice)
+    {
+        if (_prompt is null)
         {
             return;
         }
 
-        _onPromptYes = null;
+        _prompt = null;
+        _promptEnterChoice = null;
         if (_heldMessage is { } held)
         {
             _heldMessage = null;
-            ShowMessage(held.Text, held.Scheme, held.IsTransient);
+            ShowMessage(held.Text, held.Tone, held.IsTransient);
         }
         else
         {
-            ShowMessage("", Theme.Normal, isTransient: false);
+            ShowMessage("", MessageTone.Normal, isTransient: false);
         }
 
         ApplyHints();
-        if (isYes)
-        {
-            onYes();
-        }
+        choice?.Action?.Invoke();
     }
 
-    /// <summary>The context menu or help overlay while one is open, or null.</summary>
+    /// <summary>The context menu, version picker, or help overlay while one is open, or null.</summary>
     private View? OpenOverlay
     {
         get
@@ -484,6 +867,11 @@ internal sealed class Shell
             if (_menu.Visible)
             {
                 return _menu;
+            }
+
+            if (_versionPicker.Visible)
+            {
+                return _versionPicker;
             }
 
             if (_help.Visible)
@@ -539,6 +927,13 @@ internal sealed class Shell
             return;
         }
 
+        if (_versionPicker.Visible)
+        {
+            key.Handled = true;
+            _versionPicker.HandleKey(key);
+            return;
+        }
+
         if (_help.Visible)
         {
             key.Handled = true;
@@ -570,19 +965,35 @@ internal sealed class Shell
 
     private void OnPromptKeyDown(Key key)
     {
-        if (_onPromptYes is null)
+        if (_prompt is not { } choices)
         {
             return;
         }
 
         key.Handled = true;
-        if (key == Key.Enter || IsPlainLetter(key, 'y'))
+        if (key == Key.Enter)
         {
-            AnswerPrompt(true);
+            if (_promptEnterChoice is { } enterChoice)
+            {
+                AnswerPrompt(enterChoice);
+            }
+
+            return;
         }
-        else if (key == Key.Esc || IsPlainLetter(key, 'n'))
+
+        if (key == Key.Esc)
         {
-            AnswerPrompt(false);
+            AnswerPrompt(null);
+            return;
+        }
+
+        foreach (var choice in choices)
+        {
+            if (IsPlainLetter(key, choice.Letter))
+            {
+                AnswerPrompt(choice);
+                return;
+            }
         }
     }
 
@@ -596,7 +1007,7 @@ internal sealed class Shell
 
     private void ApplyHints()
     {
-        if (_onPromptYes is not null)
+        if (_prompt is not null)
         {
             _keyBar.Hints = _promptHints;
             return;
@@ -611,17 +1022,180 @@ internal sealed class Shell
 
     private void Quit()
     {
-        if (Runner.Current is not { } operation)
+        if (_batch is { IsRunning: true } batch)
         {
-            App.RequestStop();
+            AskConfirm("Quit and cancel the batch? (y/n)", () =>
+            {
+                batch.Cancellation.Cancel();
+                App.RequestStop();
+            });
             return;
         }
 
-        AskConfirm($"Quit and cancel {operation.Verb} {operation.Id}? (y/n)", () =>
+        // Any tab, not only the active one: a form left open on another tab still holds its edits.
+        var hasUnsavedForm = _tabs.OfType<ScreenHostTab>().Any(tab => tab.HasUnsavedForm);
+        if (hasUnsavedForm)
         {
-            Runner.Cancel();
-            App.RequestStop();
+            AskConfirm(DiscardAndQuitText, App.RequestStop);
+            return;
+        }
+
+        App.RequestStop();
+    }
+
+    /// <summary>
+    /// Shows a new <see cref="BatchRunnerScreen"/> on <paramref name="origin"/>, dismissing a
+    /// finished one still up on any tab, and runs <paramref name="operations"/> on a background
+    /// task that reports back through <c>App.Invoke</c>.
+    /// </summary>
+    private void StartBatch(IReadOnlyList<QueuedOperation> operations, ScreenHostTab origin, bool isFromQueue)
+    {
+        CloseBatch();
+
+        var options = new BatchOptions(Settings.ContinueOnFailure, Settings.AutoElevate);
+        var screen = new BatchRunnerScreen(App, Theme, operations, InitialElevationState(operations, options));
+        var batch = new ActiveBatch(screen, origin, operations, isFromQueue);
+        _batch = batch;
+        screen.CancelRequested += () => AskCancelBatch(batch);
+        screen.BackRequested += CloseBatch;
+        screen.RetryRequested += operation => RunOperation(operation, origin);
+        screen.PolicyRequested += (row, kind) => _ = ApplyPolicyAsync(row, kind, note: null);
+        screen.HintsChanged += () => RefreshHints(origin);
+        origin.ShowBatchScreen(screen);
+        RefreshHints(origin);
+
+        var progress = new InvokingProgress<BatchProgress>(update => App.Invoke(() => screen.Apply(update)));
+        var token = batch.Cancellation.Token;
+        _ = Task.Run(async () =>
+        {
+            Exception? error = null;
+            IReadOnlyList<string?> logFiles = [];
+            try
+            {
+                var summary = await _batchRunner.RunAsync(operations, options, progress, token);
+                logFiles = LogFilesFor(summary.BatchId, operations);
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+
+            App.Invoke(() => FinishBatch(batch, logFiles, error));
         });
+    }
+
+    /// <summary>What the batch screen shows for the elevated helper before the runner reports on it.</summary>
+    private string InitialElevationState(IReadOnlyList<QueuedOperation> operations, BatchOptions options)
+    {
+        var needsElevation = operations.Any(operation => operation.Plan.RequiresElevation);
+        if (!needsElevation)
+        {
+            return "not needed";
+        }
+
+        // Auto-elevate off runs elevated operations in-process too, each installer prompting for itself.
+        if (!options.AutoElevate)
+        {
+            return "off";
+        }
+
+        // Without a helper to start, the runner runs elevated operations in-process and says nothing.
+        return _canElevate ? "requesting" : "not available";
+    }
+
+    /// <summary>
+    /// Each operation's history log file name, or null for one that never ran, read from the
+    /// store the runner wrote to; called on the background task, since it reads every entry.
+    /// </summary>
+    private IReadOnlyList<string?> LogFilesFor(string batchId, IReadOnlyList<QueuedOperation> operations)
+    {
+        var files = new string?[operations.Count];
+        IReadOnlyList<HistoryEntry> entries;
+        try
+        {
+            entries = _history.List();
+        }
+        catch (IOException)
+        {
+            return files;
+        }
+
+        for (var i = 0; i < operations.Count; i++)
+        {
+            var id = operations[i].Row.Id;
+            var verb = operations[i].Kind.ToString().ToLowerInvariant();
+            foreach (var entry in entries)
+            {
+                var isThisOperation = entry.BatchId == batchId
+                    && entry.Operation == verb
+                    && string.Equals(entry.PackageId, id, StringComparison.OrdinalIgnoreCase);
+                if (isThisOperation)
+                {
+                    files[i] = entry.LogFileName;
+                    break;
+                }
+            }
+        }
+
+        return files;
+    }
+
+    /// <summary>
+    /// Ends the batch on its screen, takes what it ran out of the queue, and has every list tab
+    /// reload what the batch may have changed, whether or not its screen is dismissed yet.
+    /// </summary>
+    private void FinishBatch(ActiveBatch batch, IReadOnlyList<string?> logFiles, Exception? error)
+    {
+        batch.IsRunning = false;
+        batch.Screen.Finish(logFiles);
+        if (error is not null)
+        {
+            SetError($"Batch stopped: {error.Message}");
+        }
+
+        // Taken out one by one rather than cleared, so rows marked while the batch ran stay marked.
+        if (batch.IsFromQueue)
+        {
+            foreach (var operation in batch.Operations)
+            {
+                Queue.Remove(operation.Row.Id);
+            }
+        }
+
+        RefreshHints(batch.Origin);
+        RefreshAfterOperation(batch.Origin);
+        BatchFinished?.Invoke();
+    }
+
+    private void AskCancelBatch(ActiveBatch batch)
+    {
+        if (!batch.IsRunning)
+        {
+            return;
+        }
+
+        AskConfirm("Cancel remaining operations? (y/n)", () =>
+        {
+            // Checked again because the batch can finish while the question is up.
+            if (batch.IsRunning)
+            {
+                batch.Screen.MarkCancelRequested();
+                batch.Cancellation.Cancel();
+            }
+        });
+    }
+
+    /// <summary>Takes a finished batch's screen down and puts its tab's list back; does nothing while the batch runs.</summary>
+    private void CloseBatch()
+    {
+        if (_batch is not { IsRunning: false } batch)
+        {
+            return;
+        }
+
+        _batch = null;
+        batch.Origin.HideBatchScreen();
+        RefreshHints(batch.Origin);
     }
 
     private void SetPins(IReadOnlyList<Pin> pins)
@@ -630,27 +1204,13 @@ internal sealed class Shell
         PinsChanged?.Invoke();
     }
 
-    private void FinishPinChange(string id, bool wasPinned, OperationResult? result, IReadOnlyList<Pin>? pins, Exception? error)
+    private static string PolicyAppliedText(PackageRow row, UpdatePolicyKind kind) => kind switch
     {
-        _isChangingPin = false;
-        if (pins is not null)
-        {
-            SetPins(pins);
-        }
-
-        if (error is not null)
-        {
-            SetError($"winget: {error.Message}");
-        }
-        else if (result is { Succeeded: false })
-        {
-            SetError($"winget: {FailureText(result)}");
-        }
-        else
-        {
-            SetStatus(wasPinned ? $"Unpinned {id}" : $"Pinned {id} (blocking)");
-        }
-    }
+        UpdatePolicyKind.Hold => $"Held {row.Id}",
+        UpdatePolicyKind.SkipVersion => $"Skipping {row.AvailableVersion} of {row.Id}",
+        UpdatePolicyKind.Exclude => $"Excluded {row.Id} from Wingman updates",
+        _ => $"{row.Id} updates with Wingman",
+    };
 
     /// <summary>Winget's last line of output, which names the problem, or the exit code when it printed nothing.</summary>
     private static string FailureText(OperationResult result)
@@ -678,7 +1238,7 @@ internal sealed class Shell
     private void ShowTab(int index)
     {
         // Only a click on the strip gets here while a prompt is up, and the question was about the tab being left.
-        AnswerPrompt(false);
+        AnswerPrompt(null);
 
         _activeTab = _tabs[index];
         foreach (var tab in _tabs)
@@ -710,17 +1270,10 @@ internal sealed class Shell
                 return;
             }
 
-            // Help and the menu work on every tab and while a log shows, whether or not the key bar lists them.
+            // Help works on every tab and while a log shows, whether or not the key bar lists it.
             if (rune.Value == '?')
             {
                 ShowHelp();
-                key.Handled = true;
-                return;
-            }
-
-            if (rune.Value == 'm')
-            {
-                _activeTab?.ShowContextMenu();
                 key.Handled = true;
                 return;
             }
@@ -734,6 +1287,14 @@ internal sealed class Shell
                 key.Handled = true;
                 return;
             }
+        }
+
+        // The menu works on every tab whether or not the key bar lists it, but after the hints, so a
+        // form's own m, such as the export screen's Marked only, wins.
+        if (isPlainKey && key.TryGetPrintableRune(out var letter) && letter.Value == 'm')
+        {
+            _activeTab?.ShowContextMenu();
+            key.Handled = true;
         }
     }
 
@@ -749,6 +1310,10 @@ internal sealed class Shell
         if (_menu.Visible)
         {
             _menu.Paint();
+        }
+        else if (_versionPicker.Visible)
+        {
+            _versionPicker.Paint();
         }
         else
         {
@@ -799,5 +1364,47 @@ internal sealed class Shell
         }
 
         Window.SetClip(savedClip);
+    }
+
+    /// <summary>One answer to a prompt on the message line: the letter that picks it, its key bar label, and what it runs; null runs nothing.</summary>
+    public sealed record PromptChoice(char Letter, string Label, Action? Action);
+
+    private enum MessageTone
+    {
+        Normal,
+        Ok,
+        Error,
+    }
+
+    /// <summary>A batch the shell started: its screen, the tab showing it, and what it runs.</summary>
+    private sealed class ActiveBatch(
+        BatchRunnerScreen screen,
+        ScreenHostTab origin,
+        IReadOnlyList<QueuedOperation> operations,
+        bool isFromQueue)
+    {
+        public BatchRunnerScreen Screen { get; } = screen;
+
+        public ScreenHostTab Origin { get; } = origin;
+
+        public IReadOnlyList<QueuedOperation> Operations { get; } = operations;
+
+        /// <summary>Whether <see cref="Operations"/> came from the queue, which then gives them up when the batch ends.</summary>
+        public bool IsFromQueue { get; } = isFromQueue;
+
+        // Not disposed: a source without a timer holds no resources, and a late cancel must not throw.
+        public CancellationTokenSource Cancellation { get; } = new();
+
+        public bool IsRunning { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Forwards each report synchronously, so the order of <c>App.Invoke</c> calls is the order the
+    /// runner reported in. <see cref="Progress{T}"/> posts each report to the thread pool when there
+    /// is no synchronization context instead, which can reorder them.
+    /// </summary>
+    private sealed class InvokingProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 }

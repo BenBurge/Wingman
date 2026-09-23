@@ -1,0 +1,79 @@
+{
+    "export_version": 3,
+    "packages": [
+        {
+            "Id": "Git.Git",
+            "Name": "Git",
+            "Version": "2.55.0.3",
+            "Source": "winget",
+            "ManagerName": "WinGet"
+        },
+        {
+            "Id": "AutoHotkey.AutoHotkey",
+            "Name": "AutoHotkey",
+            "Version": "2.0.28",
+            "Source": "winget",
+            "ManagerName": "WinGet"
+        },
+        {
+            "Id": "7zip.7zip",
+            "Name": "7-Zip",
+            "Version": "25.01",
+            "Source": "winget",
+            "ManagerName": "WinGet",
+            "InstallationOptions": {
+                "SkipHashCheck": true,
+                "InteractiveInstallation": false,
+                "RunAsAdministrator": false,
+                "PreRelease": false,
+                "SkipMinorUpdates": false,
+                "SkipMinorUpdatesLevel": 0,
+                "RemoveDataOnUninstall": false,
+                "UninstallPreviousVersionsOnUpdate": false,
+                "AbortOnPreInstallFail": false,
+                "AbortOnPreUpdateFail": false,
+                "AbortOnPreUninstallFail": false,
+                "AutoUpdatePackage": false,
+                "Architecture": "",
+                "InstallationScope": "machine",
+                "CustomInstallLocation": "",
+                "Version": "",
+                "PreInstallCommand": "",
+                "PostInstallCommand": "",
+                "PreUpdateCommand": "",
+                "PostUpdateCommand": "",
+                "PreUninstallCommand": "",
+                "PostUninstallCommand": "",
+                "CustomParameters_Install": [],
+                "CustomParameters_Update": [],
+                "CustomParameters_Uninstall": [],
+                "KillBeforeOperation": [],
+                "OverridesNextLevelOpts": false,
+                "CustomInstallLocationIsExplicit": false
+            }
+        },
+        {
+            "Id": "Obsidian.Obsidian",
+            "Name": "Obsidian",
+            "Version": "latest",
+            "Source": "winget",
+            "ManagerName": "WinGet"
+        },
+        {
+            "Id": "ripgrep",
+            "Name": "ripgrep",
+            "Version": "14.1.0",
+            "Source": "main",
+            "ManagerName": "Scoop"
+        }
+    ],
+    "incompatible_packages_info": "The following packages could not be exported because they are not from a supported package manager.",
+    "incompatible_packages": [
+        {
+            "Id": "ARP\\Machine\\X64\\Something",
+            "Name": "Something",
+            "Version": "1.0.0",
+            "Source": ""
+        }
+    ]
+}

@@ -1,9 +1,10 @@
 using System.Drawing;
-using System.Globalization;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Wingman.Core.Models;
+using Wingman.Core.Operations;
+using Wingman.Core.Updates;
 using Wingman.Core.Winget;
 
 namespace Wingman.Tui.Tabs;
@@ -11,10 +12,13 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// A tab with a <see cref="PackageTable"/> on the left and a <see cref="DetailsPane"/> for the
 /// cursor row on the right, filled by a background load. Installed, Discover, and Updates are
-/// these; they differ in their columns, what they load, and their keys. An operation started from
-/// the tab swaps the details pane for a <see cref="LogPane"/> until it is over and dismissed.
+/// these; they differ in their columns, what they load, and their keys. While the batch queue has
+/// entries a <see cref="QueuePane"/> takes the details pane's place, and a tab can add a pane of its
+/// own that takes it while toggled on. A batch started from the tab puts its
+/// <see cref="BatchRunnerScreen"/> in place of both panes until it is over and dismissed, and the
+/// install options editor, the update policy dialog, and the bundle screens do the same until they close.
 /// </summary>
-internal abstract class PackageListTab : ShellTab
+internal abstract class PackageListTab : ScreenHostTab, IThemedView
 {
     private const int WideLayoutWidth = 96;
     private const int WideLeftPaneWidth = 57;
@@ -23,34 +27,24 @@ internal abstract class PackageListTab : ShellTab
     // The left-pane column where m opens the menu on the cursor row, as the mockup draws it.
     private const int MenuColumn = 24;
 
-    private static readonly HelpGroup LogHelp = new("Log",
-    [
-        new("Esc", "cancel"),
-        new("↑↓", "scroll log"),
-        new("⏎", "back"),
-    ]);
-
     private readonly Line _divider;
-    private readonly KeyHint[] _runningHints;
-    private readonly KeyHint[] _finishedHints;
+    private readonly QueuePane _queuePane;
 
     // Only the load this points at may touch the UI; an older one finishing late is ignored.
     private CancellationTokenSource? _loadCancellation;
     private int _leftPaneWidth = WideLeftPaneWidth;
 
-    // True while a load's rows go into the table, so the cursor moving onto a surviving row is
-    // not taken for the user moving it.
-    private bool _isShowingRows;
+    // Where the last context menu opened, so a version picker chosen from it opens in the same place.
+    private Point _menuPosition;
 
-    // Whether the key bar was last given the hints for a pinned cursor row.
-    private bool _hintsAreForPinnedRow;
+    // The tab's own right pane, if it has one, and whether it is toggled on.
+    private View? _extraPane;
+    private bool _showsExtraPane;
 
     protected PackageListTab(Shell shell, IWingetClient client, string title, IReadOnlyList<PackageColumn> columns)
-        : base(title)
+        : base(shell, title)
     {
-        Shell = shell;
         Client = client;
-        CanFocus = true;
 
         Table = new PackageTable(shell.Theme, columns)
         {
@@ -77,10 +71,11 @@ internal abstract class PackageListTab : ShellTab
             Y = 0,
             Width = Dim.Fill(),
             Height = Dim.Fill(),
-            PinFor = shell.FindPin,
+            PolicyFor = PolicyText,
+            HasCustomOptions = shell.Options.HasCustomInstallOptions,
         };
 
-        Log = new LogPane(shell.Theme)
+        _queuePane = new QueuePane(shell.Theme, shell.Queue)
         {
             X = WideLeftPaneWidth + 1,
             Y = 0,
@@ -88,55 +83,42 @@ internal abstract class PackageListTab : ShellTab
             Height = Dim.Fill(),
             Visible = false,
         };
-        Log.CancelRequested += AskCancel;
-        Log.BackRequested += CloseLog;
+        _queuePane.RunRequested += RunQueue;
+        _queuePane.ClearRequested += shell.ClearQueue;
 
-        _runningHints =
-        [
-            new(Key.Esc, "Cancel", AskCancel),
-            new(Key.CursorUp, "Scroll log", FocusLog, "↑↓"),
-            new(Key.Tab, "Pane", SwitchPane),
-        ];
-        _finishedHints =
-        [
-            new(Key.Enter, "Back", CloseLog, "⏎"),
-            new(Key.CursorUp, "Scroll log", FocusLog, "↑↓"),
-        ];
+        Table.IsMarked = row => shell.Queue.Contains(row.Id);
+        Table.MarkedColor = theme => theme.Accent;
+
+        MarkHint = new(Key.Space, "Mark", MarkCursorRow, "␣");
+        ClearHint = new(Key.C, "Clear", shell.ClearQueue);
+        RunHint = new(Key.G, "Run", RunQueue);
+        OptionsHint = new(Key.O, "Options", OpenOptionsForCursorRow, IsOnBar: false);
+        BundleHint = new(Key.B, "Bundle", ChooseBundle, IsOnBar: false);
 
         Table.CursorChanged += OnCursorChanged;
         Table.RowActivated += _ => OnRowActivated();
         Table.RowMenuRequested += OpenContextMenu;
         shell.PinsChanged += OnPinsChanged;
+        shell.OptionsChanged += OnOptionsChanged;
+        shell.Queue.Changed += OnQueueChanged;
 
-        Add(Table, _divider, Details, Log);
+        Add(Table, _divider, Details, _queuePane);
     }
-
-    public sealed override IReadOnlyList<KeyHint> Hints
-    {
-        get
-        {
-            if (!IsLogShown)
-            {
-                return TableHints;
-            }
-
-            return Log.IsRunning ? _runningHints : _finishedHints;
-        }
-    }
-
-    public override bool ShowsHelpHint => !IsLogShown;
-
-    public sealed override IReadOnlyList<HelpGroup> HelpGroups => IsLogShown ? [TabHelp, LogHelp] : [TabHelp];
 
     public override void ShowContextMenu()
     {
+        if (IsBatchShown || IsFormShown)
+        {
+            return;
+        }
+
         if (Table.CurrentRow is { } row && Table.CursorRowScreenPosition(MenuColumn) is { } position)
         {
             OpenContextMenu(row, position);
         }
     }
 
-    protected Shell Shell { get; }
+    public void ApplyTheme(Theme theme) => _divider.LineAttribute = theme.On(theme.Border);
 
     protected IWingetClient Client { get; }
 
@@ -144,28 +126,36 @@ internal abstract class PackageListTab : ShellTab
 
     protected DetailsPane Details { get; }
 
-    protected LogPane Log { get; }
+    /// <summary><c>␣ Mark</c>, which toggles the cursor row in the batch queue.</summary>
+    protected KeyHint MarkHint { get; }
 
-    /// <summary>The tab's own keys, shown while the details pane is.</summary>
-    protected abstract IReadOnlyList<KeyHint> TableHints { get; }
+    /// <summary><c>c Clear</c>, which empties the batch queue.</summary>
+    protected KeyHint ClearHint { get; }
 
-    /// <summary>The tab's own keys in the help overlay.</summary>
-    protected abstract HelpGroup TabHelp { get; }
+    /// <summary><c>g Run</c>, which runs the batch queue.</summary>
+    protected KeyHint RunHint { get; }
 
-    protected bool IsLogShown => Log.Visible;
+    /// <summary><c>o Options</c>, which opens the cursor row's install options; off the bar, since no tab has room for it at 96 columns.</summary>
+    protected KeyHint OptionsHint { get; }
 
-    protected bool IsCursorRowPinned => Table.CurrentRow is { } row && Shell.IsPinned(row.Id);
+    /// <summary><c>b Bundle</c>, which asks whether to export or import a bundle; off the bar, like <see cref="OptionsHint"/>.</summary>
+    protected KeyHint BundleHint { get; }
+
+    /// <summary>Whether the tab's own right pane is toggled on, whether or not the table is showing.</summary>
+    protected bool IsExtraPaneShown => _showsExtraPane;
+
+    private bool IsQueueShown => _queuePane.Visible;
 
     /// <summary>
-    /// Called on the UI thread after any operation finishes, from whichever tab. <paramref name="isOrigin"/>
+    /// Called on the UI thread after any batch finishes, from whichever tab. <paramref name="isOrigin"/>
     /// is true on the tab that started it.
     /// </summary>
     public abstract void RefreshAfterOperation(bool isOrigin);
 
     /// <summary>
     /// Runs <paramref name="fetch"/> on a background task with the table's spinner showing, then
-    /// shows its rows and calls <see cref="OnLoaded"/>, or puts the error on the message line.
-    /// Starting another load abandons this one.
+    /// shows its rows, as <see cref="RowsToShow"/> picks them, and calls <see cref="OnLoaded"/>, or
+    /// puts the error on the message line. Starting another load abandons this one.
     /// </summary>
     protected void Load(Func<CancellationToken, Task<IReadOnlyList<PackageRow>>> fetch)
     {
@@ -194,7 +184,10 @@ internal abstract class PackageListTab : ShellTab
         });
     }
 
-    /// <summary>Called on the UI thread after a load's rows are in the table.</summary>
+    /// <summary>The rows of a finished load the table shows; all of them unless a tab leaves some out.</summary>
+    protected virtual IReadOnlyList<PackageRow> RowsToShow(IReadOnlyList<PackageRow> loaded) => loaded;
+
+    /// <summary>Called on the UI thread after a load's rows are in the table, with every row the load returned.</summary>
     protected abstract void OnLoaded(IReadOnlyList<PackageRow> rows);
 
     /// <summary>Called on the UI thread after <see cref="Shell.Pins"/> changes.</summary>
@@ -202,10 +195,22 @@ internal abstract class PackageListTab : ShellTab
     {
         Table.RefreshMarkers();
         Details.SetNeedsDraw();
-        UpdateHintsForCursorRow();
     }
 
-    /// <summary>Asks to confirm <paramref name="kind"/> on the cursor row, then runs it with its log in place of the details.</summary>
+    /// <summary>Called on the UI thread after a package's options change, which can change its update policy.</summary>
+    protected virtual void OnOptionsChanged()
+    {
+        Table.RefreshMarkers();
+        Details.SetNeedsDraw();
+    }
+
+    /// <summary>
+    /// The installed row whose update policy the details pane shows for <paramref name="row"/>, or
+    /// null for none; the row itself by default, since Installed and Updates list installed packages.
+    /// </summary>
+    protected virtual PackageRow? PolicyRow(PackageRow row) => row;
+
+    /// <summary>Asks to confirm <paramref name="kind"/> on the cursor row, then runs it as a batch of one.</summary>
     protected void RunOperation(OperationKind kind)
     {
         if (Table.CurrentRow is { } row)
@@ -214,24 +219,107 @@ internal abstract class PackageListTab : ShellTab
         }
     }
 
-    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/>, then runs it with its log in place of the details.</summary>
+    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/>, then runs it as a batch of one.</summary>
     protected void RunOperation(OperationKind kind, PackageRow row)
     {
-        if (Shell.Runner.IsRunning)
+        if (Shell.IsBatchRunning)
         {
-            Shell.SetStatus(Shell.AlreadyRunningText);
+            Shell.SetStatus(Shell.BatchRunningText);
             return;
         }
 
-        Shell.AskConfirm(ConfirmQuestion(kind, row), () => StartOperation(kind, row.Id));
+        // Built when the question is answered, so the batch uses the package's options as they are then.
+        Shell.AskConfirm(ConfirmQuestion(kind, row), () => Shell.RunOperation(Shell.BuildOperation(kind, row), this));
     }
 
-    protected void TogglePin()
+    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/> at <paramref name="version"/>, then runs it as a batch of one.</summary>
+    private void RunOperation(OperationKind kind, PackageRow row, string version)
+    {
+        if (Shell.IsBatchRunning)
+        {
+            Shell.SetStatus(Shell.BatchRunningText);
+            return;
+        }
+
+        var question = kind == OperationKind.Install
+            ? $"Install {row.Id} {version}? (y/n)"
+            : $"Upgrade {row.Id} to {version}? (y/n)";
+        Shell.AskConfirm(question, () => Shell.RunOperation(Shell.BuildOperation(kind, row, version), this));
+    }
+
+    /// <summary>
+    /// <c>Upgrade to version…</c> or <c>Install version…</c>, which opens the version picker where the
+    /// menu was, then asks to confirm <paramref name="kind"/> on <paramref name="row"/> at the version
+    /// picked and runs it as a batch of one.
+    /// </summary>
+    protected MenuEntry VersionMenuEntry(OperationKind kind, PackageRow row)
+    {
+        var label = kind == OperationKind.Install ? "Install version…" : "Upgrade to version…";
+        return new(label, () => Shell.ShowVersionPicker(row, _menuPosition, version => RunOperation(kind, row, version)));
+    }
+
+    /// <summary>Opens the update policy dialog for <paramref name="row"/> in place of the table and the right pane.</summary>
+    protected void OpenPolicy(PackageRow row) => ShowForm(new UpdatePolicyDialog(Shell, row));
+
+    protected void OpenPolicyForCursorRow()
     {
         if (Table.CurrentRow is { } row)
         {
-            Shell.TogglePin(row.Id);
+            OpenPolicy(row);
         }
+    }
+
+    /// <summary><c>Install options…</c>, which opens the editor for <paramref name="row"/>.</summary>
+    protected MenuEntry OptionsMenuEntry(PackageRow row) => new("Install options…", () => OpenOptions(row));
+
+    /// <summary><c>Update policy…</c>, which opens the dialog for <paramref name="row"/>.</summary>
+    protected MenuEntry PolicyMenuEntry(PackageRow row) => new("Update policy…", () => OpenPolicy(row));
+
+    /// <summary>
+    /// Takes <paramref name="row"/> out of the batch queue when it is there, or adds it with the
+    /// operation the tab marks it for; a tab that has none for the row says why on the message line.
+    /// </summary>
+    protected abstract void ToggleMark(PackageRow row);
+
+    /// <summary>Takes <paramref name="row"/> out of the queue when it is there, or queues <paramref name="kind"/> on it.</summary>
+    protected void ToggleQueued(OperationKind kind, PackageRow row)
+    {
+        if (!Shell.Queue.Remove(row.Id))
+        {
+            Shell.Queue.Add(Shell.BuildOperation(kind, row));
+        }
+    }
+
+    /// <summary><c>Unmark</c> for a queued row, <c>Mark for batch</c> otherwise; each runs <see cref="ToggleMark"/> on it.</summary>
+    protected MenuEntry MarkMenuEntry(PackageRow row) =>
+        new(Shell.Queue.Contains(row.Id) ? "Unmark" : "Mark for batch", () => ToggleMark(row));
+
+    /// <summary><c> · 3 marked</c> for the queue entries among <paramref name="rows"/>, or empty when there are none.</summary>
+    protected string MarkedSuffix(IReadOnlyList<PackageRow> rows)
+    {
+        var marked = MarkedCount(rows);
+        return marked == 0 ? "" : $" · {marked} marked";
+    }
+
+    /// <summary>How many queue entries are for a package among <paramref name="rows"/>, counting an Id listed twice once.</summary>
+    protected int MarkedCount(IReadOnlyList<PackageRow> rows)
+    {
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            ids.Add(row.Id);
+        }
+
+        var count = 0;
+        foreach (var item in Shell.Queue.Items)
+        {
+            if (ids.Contains(item.Row.Id))
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     /// <summary>
@@ -251,22 +339,9 @@ internal abstract class PackageListTab : ShellTab
     protected static string UpgradeLabel(PackageRow row) =>
         string.IsNullOrEmpty(row.AvailableVersion) ? "Upgrade" : $"Upgrade to {row.AvailableVersion}";
 
-    /// <summary>Focuses the log when it is showing, so coming back to the tab keeps the arrows on it, and the table otherwise.</summary>
-    protected void FocusTableOrLog()
-    {
-        if (IsLogShown)
-        {
-            Log.SetFocus();
-        }
-        else
-        {
-            Table.FocusTable();
-        }
-    }
-
     protected void SwitchPane()
     {
-        View rightPane = IsLogShown ? Log : Details;
+        var rightPane = RightPane();
         if (rightPane.HasFocus)
         {
             Table.FocusTable();
@@ -275,6 +350,25 @@ internal abstract class PackageListTab : ShellTab
         {
             rightPane.SetFocus();
         }
+    }
+
+    /// <summary>Adds <paramref name="pane"/> right of the divider, hidden until <see cref="ToggleExtraPane"/> shows it.</summary>
+    protected void AddExtraPane(View pane)
+    {
+        _extraPane = pane;
+        pane.X = _leftPaneWidth + 1;
+        pane.Y = 0;
+        pane.Width = Dim.Fill();
+        pane.Height = Dim.Fill();
+        pane.Visible = false;
+        Add(pane);
+    }
+
+    /// <summary>Shows the tab's own pane in place of the queue or the details, or puts them back.</summary>
+    protected void ToggleExtraPane()
+    {
+        _showsExtraPane = !_showsExtraPane;
+        ShowRightPane();
     }
 
     /// <summary>
@@ -293,31 +387,26 @@ internal abstract class PackageListTab : ShellTab
             Table.Width = leftWidth;
             _divider.X = leftWidth;
             Details.X = leftWidth + 1;
-            Log.X = leftWidth + 1;
+            _queuePane.X = leftWidth + 1;
+            if (_extraPane is { } pane)
+            {
+                pane.X = leftWidth + 1;
+            }
         }
     }
 
     /// <summary>
     /// Tab switches panes here rather than through the key bar, because a bar may leave <c>Tab Pane</c>
-    /// off to make room. Esc is for when the log is shown but the table has focus; the log handles its own Esc.
+    /// off to make room. The batch screen and the forms are the only pane while they show, so Tab
+    /// does nothing then; a form moves between its fields before the key gets here.
     /// </summary>
     protected override bool OnKeyDown(Key key)
     {
         if (key == Key.Tab)
         {
-            SwitchPane();
-            return true;
-        }
-
-        if (key == Key.Esc && IsLogShown)
-        {
-            if (Log.IsRunning)
+            if (!IsBatchShown && !IsFormShown)
             {
-                AskCancel();
-            }
-            else
-            {
-                CloseLog();
+                SwitchPane();
             }
 
             return true;
@@ -343,136 +432,122 @@ internal abstract class PackageListTab : ShellTab
             : $"Upgrade {row.Id} to {row.AvailableVersion}? (y/n)";
     }
 
-    private static string Seconds(TimeSpan elapsed) =>
-        elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " s";
-
-    private void StartOperation(OperationKind kind, string id)
+    /// <summary><c>update</c>, <c>hold (blocking)</c>, <c>skip 1.2.3</c>, or <c>excluded</c>; null for a package with no installed row.</summary>
+    private string? PolicyText(PackageRow row)
     {
-        // Checked again because the question can outlive an operation started elsewhere.
-        if (Shell.Runner.IsRunning)
+        if (PolicyRow(row) is not { } installed)
         {
-            Shell.SetStatus(Shell.AlreadyRunningText);
-            return;
+            return null;
         }
 
-        // Version stays null so winget picks the latest; the row's Available column can be stale.
-        var request = new OperationRequest(id);
-        var operation = new RunningOperation(kind, id);
-        Log.Begin($"{operation.Verb} {id}", OperationRunner.CommandLine(kind, request));
-        Shell.Runner.Start(kind, request, Log.Append, outcome => FinishOperation(operation, outcome));
+        return Shell.ResolvePolicy(installed) switch
+        {
+            UpdatePolicyKind.Hold => "hold (blocking)",
+            UpdatePolicyKind.SkipVersion => $"skip {Shell.Options.GetUpdatesOptions(installed.Id).IgnoredVersion}",
+            UpdatePolicyKind.Exclude => "excluded",
+            _ => "update",
+        };
+    }
 
+    private void OpenOptionsForCursorRow()
+    {
+        if (Table.CurrentRow is { } row)
+        {
+            OpenOptions(row);
+        }
+    }
+
+    protected override void FocusTable() => Table.FocusTable();
+
+    protected override void HideContent()
+    {
+        Table.Visible = false;
+        _divider.Visible = false;
         Details.Visible = false;
-        Log.Visible = true;
-        Log.SetFocus();
-        Shell.RefreshHints(this);
-    }
-
-    private void FinishOperation(RunningOperation operation, OperationOutcome outcome)
-    {
-        var elapsed = Seconds(outcome.Elapsed);
-        var subject = $"{operation.Verb} {operation.Id}";
-        if (outcome.Succeeded)
+        _queuePane.Visible = false;
+        if (_extraPane is { } pane)
         {
-            Log.Finish(true, $"Done in {elapsed}");
-            Shell.SetSuccess($"{PastTense(operation.Kind)} {operation.Id} in {elapsed}");
-        }
-        else if (outcome.WasCanceled)
-        {
-            Log.Finish(false, $"Canceled after {elapsed}");
-            Shell.SetStatus($"Canceled {subject}");
-        }
-        else if (outcome.Result is { } result)
-        {
-            Log.Finish(false, $"Failed with exit code {result.ExitCode}");
-            Shell.SetError($"{subject} failed with exit code {result.ExitCode}");
-        }
-        else
-        {
-            var message = outcome.Error?.Message ?? "unknown error";
-            Log.Finish(false, $"Failed: {message}");
-            Shell.SetError($"{subject} failed: {message}");
-        }
-
-        Shell.RefreshHints(this);
-        Shell.RefreshAfterOperation(this);
-    }
-
-    private static string PastTense(OperationKind kind) => kind switch
-    {
-        OperationKind.Install => "Installed",
-        OperationKind.Upgrade => "Upgraded",
-        _ => "Uninstalled",
-    };
-
-    private void AskCancel()
-    {
-        if (Shell.Runner.Current is { } operation && Log.IsRunning)
-        {
-            Shell.AskConfirm($"Cancel {operation.Verb} {operation.Id}? (y/n)", Shell.Runner.Cancel);
+            pane.Visible = false;
         }
     }
 
-    /// <summary>Puts the details pane back once the operation is over; does nothing while it runs.</summary>
-    private void CloseLog()
+    protected override void ShowContent()
     {
-        if (!IsLogShown || Log.IsRunning)
+        Table.Visible = true;
+        _divider.Visible = true;
+        Table.FocusTable();
+        ShowRightPane();
+    }
+
+    private void RunQueue() => Shell.RunQueue(this);
+
+    /// <summary>The pane right of the divider that is showing: the tab's own, the queue, or the details.</summary>
+    private View RightPane()
+    {
+        if (_showsExtraPane && _extraPane is { } pane)
+        {
+            return pane;
+        }
+
+        return IsQueueShown ? _queuePane : Details;
+    }
+
+    /// <summary>
+    /// Shows the tab's own pane while it is toggled on, else the queue while it has entries, else
+    /// the details, unless the batch screen or a form is showing.
+    /// </summary>
+    private void ShowRightPane()
+    {
+        if (IsBatchShown || IsFormShown)
         {
             return;
         }
 
-        // Moved first, so hiding the log does not leave focus to Terminal.Gui's choice.
-        if (Log.HasFocus)
+        var showsExtra = _showsExtraPane && _extraPane is not null;
+        var showsQueue = !showsExtra && Shell.Queue.Count > 0;
+        var showsDetails = !showsExtra && !showsQueue;
+
+        // Moved first, so hiding the focused pane does not leave focus to Terminal.Gui's choice.
+        var hidesFocusedPane = (!showsDetails && Details.HasFocus)
+            || (!showsQueue && _queuePane.HasFocus)
+            || (!showsExtra && _extraPane is { HasFocus: true });
+        if (hidesFocusedPane)
         {
             Table.FocusTable();
         }
 
-        Log.Visible = false;
-        Details.Visible = true;
-        Shell.RefreshHints(this);
+        Details.Visible = showsDetails;
+        _queuePane.Visible = showsQueue;
+        if (_extraPane is { } pane)
+        {
+            pane.Visible = showsExtra;
+        }
     }
 
-    private void FocusLog() => Log.SetFocus();
+    private void OnQueueChanged()
+    {
+        Table.RefreshMarkers();
+        Table.RefreshCount();
+        ShowRightPane();
+    }
 
-    private void OpenContextMenu(PackageRow row, Point screenPosition) =>
+    private void MarkCursorRow()
+    {
+        if (Table.CurrentRow is { } row)
+        {
+            ToggleMark(row);
+        }
+    }
+
+    private void OpenContextMenu(PackageRow row, Point screenPosition)
+    {
+        _menuPosition = screenPosition;
         Shell.ShowContextMenu(row.Name, MenuEntries(row), screenPosition);
-
-    private void OnCursorChanged(PackageRow? row)
-    {
-        Details.Show(row);
-        if (!_isShowingRows)
-        {
-            CloseLog();
-        }
-
-        UpdateHintsForCursorRow();
     }
 
-    private void OnRowActivated()
-    {
-        if (!IsLogShown)
-        {
-            Details.SetFocus();
-        }
-        else if (Log.IsRunning)
-        {
-            Log.SetFocus();
-        }
-        else
-        {
-            CloseLog();
-        }
-    }
+    private void OnCursorChanged(PackageRow? row) => Details.Show(row);
 
-    /// <summary>Refreshes the key bar when the cursor row's pin state differs from what its hints were built for, such as <c>p Pin</c> against <c>p Unpin</c>.</summary>
-    private void UpdateHintsForCursorRow()
-    {
-        var isPinned = IsCursorRowPinned;
-        if (isPinned != _hintsAreForPinnedRow)
-        {
-            _hintsAreForPinnedRow = isPinned;
-            Shell.RefreshHints(this);
-        }
-    }
+    private void OnRowActivated() => RightPane().SetFocus();
 
     private void ShowRows(CancellationTokenSource cancellation, IReadOnlyList<PackageRow> rows)
     {
@@ -481,9 +556,7 @@ internal abstract class PackageListTab : ShellTab
             return;
         }
 
-        _isShowingRows = true;
-        Table.SetRows(rows);
-        _isShowingRows = false;
+        Table.SetRows(RowsToShow(rows));
         Table.IsLoading = false;
         OnLoaded(rows);
     }

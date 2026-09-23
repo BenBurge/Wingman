@@ -21,14 +21,14 @@ internal sealed record MenuEntry(string Label, Action? Action)
 /// forwards every key to <see cref="HandleKey"/> while it is open, so nothing reaches the tab
 /// underneath, and closes it on a click outside.
 /// </summary>
-internal sealed class ContextMenu : View
+internal sealed class ContextMenu : View, IThemedView
 {
     private const int MinWidth = 30;
 
     // The top border, the title, and the rule under it.
     private const int EntriesTop = 3;
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private string _title = "";
     private IReadOnlyList<MenuEntry> _entries = [];
     private int _selected;
@@ -122,6 +122,8 @@ internal sealed class ContextMenu : View
 
         DrawEdge(EntriesTop + _entries.Count, '└', '┘', border);
     }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     /// <summary>Draws nothing; see <see cref="Paint"/>.</summary>
     protected override bool OnDrawingContent(DrawContext? context) => true;

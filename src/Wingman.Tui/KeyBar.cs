@@ -8,8 +8,10 @@ namespace Wingman.Tui;
 /// <summary>
 /// A key the key bar shows and the shell dispatches: pressing <see cref="Key"/> runs <see cref="Action"/>.
 /// <paramref name="KeyLabel"/> replaces the key's own name on the bar, such as <c>⏎</c> for Enter.
+/// <paramref name="IsOnBar"/> false keeps the key working but leaves it off the bar, for a tab
+/// whose keys would overflow 96 columns; the help overlay still lists it.
 /// </summary>
-internal sealed record KeyHint(Key Key, string Label, Action Action, string? KeyLabel = null)
+internal sealed record KeyHint(Key Key, string Label, Action Action, string? KeyLabel = null, bool IsOnBar = true)
 {
     public string KeyText => KeyLabel ?? Key.ToString();
 
@@ -38,14 +40,15 @@ internal sealed record KeyHint(Key Key, string Label, Action Action, string? Key
 /// which overflows 96 columns with the Installed tab's nine hints, so this view draws the
 /// mockup's compact layout itself.
 /// </remarks>
-internal sealed class KeyBar : View
+internal sealed class KeyBar : View, IThemedView
 {
     private const string Gap = "   ";
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private IReadOnlyList<KeyHint> _hints = [];
+    private KeyHint[] _shownHints = [];
 
-    // Column span of each hint as last drawn, used to hit-test clicks.
+    // Column span of each shown hint as last drawn, used to hit-test clicks.
     private (int Start, int End)[] _spans = [];
 
     public KeyBar(Theme theme)
@@ -55,16 +58,20 @@ internal sealed class KeyBar : View
         CanFocus = false;
     }
 
+    /// <summary>Every key the shell dispatches for the active tab, including those not drawn on the bar.</summary>
     public IReadOnlyList<KeyHint> Hints
     {
         get => _hints;
         set
         {
             _hints = value;
-            _spans = new (int, int)[value.Count];
+            _shownHints = [.. value.Where(hint => hint.IsOnBar)];
+            _spans = new (int, int)[_shownHints.Length];
             SetNeedsDraw();
         }
     }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {
@@ -76,7 +83,7 @@ internal sealed class KeyBar : View
         AddStr(" ");
         var column = 1;
 
-        for (var i = 0; i < _hints.Count; i++)
+        for (var i = 0; i < _shownHints.Length; i++)
         {
             if (i > 0)
             {
@@ -85,7 +92,7 @@ internal sealed class KeyBar : View
                 column += Gap.Length;
             }
 
-            var hint = _hints[i];
+            var hint = _shownHints[i];
             var start = column;
             SetAttribute(keyAttribute);
             AddStr(hint.KeyText);
@@ -109,7 +116,7 @@ internal sealed class KeyBar : View
         {
             if (position.X >= _spans[i].Start && position.X < _spans[i].End)
             {
-                _hints[i].Action();
+                _shownHints[i].Action();
                 return true;
             }
         }

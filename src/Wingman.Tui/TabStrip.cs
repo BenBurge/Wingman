@@ -8,11 +8,11 @@ namespace Wingman.Tui;
 /// The one-row tab strip, <c> Installed 142 │ Discover │ Updates 6 │ …</c>, with the selected tab
 /// drawn background-on-accent. Clicking a label selects that tab.
 /// </summary>
-internal sealed class TabStrip : View
+internal sealed class TabStrip : View, IThemedView
 {
     private const string Separator = "│";
 
-    private readonly Theme _theme;
+    private Theme _theme;
     private readonly string[] _titles;
     private readonly int?[] _counts;
 
@@ -55,6 +55,8 @@ internal sealed class TabStrip : View
         _counts[index] = count;
         SetNeedsDraw();
     }
+
+    public void ApplyTheme(Theme theme) => _theme = theme;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {

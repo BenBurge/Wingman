@@ -3,10 +3,12 @@
 Wingman is a keyboard-driven terminal UI (and headless CLI) for the Windows
 Package Manager, `winget`, built in C# with Terminal.Gui.
 
-**Status:** the phase 1 prototype is in progress on the `phase-1-prototype`
-branch. It has the Installed, Discover, and Updates tabs with install,
-upgrade, uninstall, and pin for one package at a time, plus a `--fake` mode
-that drives the UI from captured fixtures.
+**Status:** phase 2 is complete on the `phase-2-batches` branch. Wingman has
+Installed, Discover, Updates, History, and Settings tabs; batch install, upgrade,
+and uninstall with one UAC prompt per batch; per-package install options and
+update policies; UniGetUI bundle export and import; and four themes. Phase 3
+(headless CLI, scheduled checks, toasts, tray icon) has not started. `--fake` mode
+drives the whole UI from captured fixtures on any OS.
 
 ## Build and test
 

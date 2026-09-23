@@ -68,8 +68,7 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - Sibling views overlap in add order: a view added later draws over an earlier one. Add centered overlay labels after the `TableView`.
 - In Git Bash, `grep -c $'\r'` miscounts carriage returns; use `tr -cd '\r' < file | wc -c` to check line endings.
 - `app.Keyboard.KeyDown` fires before any view, including the focused table; the y/n confirmation prompt in `Shell` uses it to take every key while a question is up.
-- A tab's `OnShown` that calls `Table.FocusTable()` steals focus from a `LogPane` that is showing; check for a visible log first.
-- Reloading rows after an operation that removed the cursor row fires `CursorChanged`. Code that treats a cursor move as a user action must ignore changes raised during `SetRows`.
+- Reloading rows after an operation that removed the cursor row fires `CursorChanged`; treat cursor moves during `SetRows` as data changes, not user actions, if a feature ever depends on the difference.
 - `TableStyle.RowColorGetter` colors a whole row, but a column's own `ColorGetter` wins for that column.
 - A `Label` clips overflowing text without an ellipsis; fit it with `CellText.Fit` first.
 - `tools/TuiHarness` steps can assert on their frame and the harness exits 1 on any failed check, so run it after every TUI change.
@@ -77,3 +76,27 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - `App.Mouse.MouseEvent` fires before any view; setting `Handled` there stops the event. Swallow the press and release too, or the table moves its cursor on a click outside an overlay.
 - `IsSingleDoubleOrTripleClicked` also covers right clicks.
 - The harness's ANSI driver sometimes resets its size between steps, which breaks mouse coordinates; `Screen.HoldSize()` restores it on `IDriver.SizeChanged`. The footer separator's left end is sometimes drawn `│` instead of `├` between steps (a Terminal.Gui glitch), so the harness leaves separator rows out of comparisons.
+- `TableView` binds Space to its multi-select toggle and consumes the key; `PackageTable`'s nested `TableView` subclass removes that binding so Space reaches the key bar.
+- Terminal.Gui measures glyph width with `GetColumns()`, which can disagree with Core's `DisplayWidth` for emoji-presentation symbols; keep `DisplayWidth`'s wide ranges in sync when a new symbol is drawn, and measure UI text with `GetColumns()` when the two must agree on screen.
+- The harness dumps the second cell of a wide character as a space, so frame checks must not expect `⚡ admin` as one contiguous string.
+- Python cannot open files under the long scratchpad path (over 260 characters); pipe scripts through stdin or use a short temp path.
+- `WINGMAN_DATA_DIR` overrides the settings, package-options, and history folders; the harness sets it to a temp folder so runs never touch the real profile.
+- `BatchRunner` does not return the history entries it writes; the TUI finds an operation's `.log` afterward by listing history and matching `BatchId`, verb, and `PackageId`.
+- On Windows `Task.Delay(40)` takes about 46 ms, so fake operations run longer than steps × delay; harness timings must allow for it.
+- `BatchRunnerScreen` replaces the whole content area of a tab (table and right pane hidden, tab strip and key bar kept); editors and dialogs follow the same pattern rather than opening modal `Dialog`s.
+- There is no `RadioGroup` in 2.5; the built-in `OptionSelector` and `CheckBox` (`Value`, not `CheckedState`) draw global glyphs, so `FormFields` draws radio rows and checkboxes by hand in theme colors.
+- `TextField` has no placeholder; `FormTextField` draws one in `OnDrawingContent` when empty and unfocused. `OnKeyDown` is the earliest hook for Tab, Enter, and Esc, ahead of the field's own bindings.
+- `IApplication.Begin` installs a `MainLoopSyncContext`, so an `await` started on the UI thread resumes on the UI thread; `Shell.ApplyPolicyAsync` relies on this to keep the stores single-threaded.
+- `Key.R.ToString()` is `r`; use `KeyLabel` to show an uppercase letter, and remember `new Key('E')` is Shift+E and does not match a `Key.E` hint.
+- Harness checks next to an overlay should cover only the box, because rows under it change while a batch streams.
+- `python3` is not installed on the development machine; use PowerShell or a small C# script for scripted checks.
+- A view that draws with theme colors must implement `IThemedView`, or it keeps the old palette after a switch. Cell and row color getters take the `Theme` and read it at draw time rather than holding a `Scheme` built earlier.
+- `View.Activated` already exists, so an event named `Activated` on a subclass fails with CS0108; `ActionField` uses `Pressed`.
+- `Pos.GetAnchor` and `Dim.GetAnchor` are internal; compute field widths yourself (`CheckField.WidthFor`, `ActionField.WidthFor`).
+- `SetFocus()` on a container gives focus back to the subview that had it last; the Settings tab relies on this.
+- `HistoryEntry` has no canceled flag; `HistoryRow.FromEntries` infers it from the log (an operation whose log ends with `Canceled`, a batch that canceled something and failed nothing).
+- `ScreenHostTab` is the base for any tab that can show the batch screen or a form in its content area; `Shell.RunOperation` takes the host so History can retry from its own tab.
+- A `Label` word-wraps long text with no spaces onto rows you cannot see; fit paths yourself with `CellText.FitKeepingEnd` before putting them in the message line.
+- The install options editor fills all 23 content rows at 96x30 and its Updates row ends at the last column; a new row needs the form to scroll and the label column cannot grow.
+- The shell handles `m` (context menu) only after the key bar hints, so a screen can bind `m` to its own action.
+- To retype a prefilled `FormTextField` in the harness, press End, then Backspace once per character.

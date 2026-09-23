@@ -17,5 +17,15 @@ public sealed class WingmanSettings
 
     public bool IncludeUnknown { get; set; } = true;
 
+    /// <summary>
+    /// Runs a batch's operations that need elevation through one elevated helper, behind a single
+    /// UAC prompt; when false, they run in-process and each installer prompts for itself.
+    /// </summary>
+    public bool AutoElevate { get; set; } = true;
+
+    /// <summary>Keeps a batch running after one of its operations fails; when false, the rest are canceled.</summary>
+    public bool ContinueOnFailure { get; set; } = true;
+
+    /// <summary>A theme name, or <c>Auto</c> to follow the system's light or dark mode.</summary>
     public string Theme { get; set; } = "Midnight";
 }
