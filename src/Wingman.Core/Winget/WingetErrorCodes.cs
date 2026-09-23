@@ -8,6 +8,12 @@ namespace Wingman.Core.Winget;
 /// </summary>
 public static class WingetErrorCodes
 {
+    private const int AssertionFailure = -2147024228;
+    private const int AccessDenied = -2147024891;
+
+    private const string RetryElevatedSuggestion =
+        "Retry elevated so the whole operation runs as administrator, or restart Wingman as administrator.";
+
     // Winget's own codes are HRESULTs in the 0x8A15xxxx (APPINSTALLER_CLI_ERROR_*) range and always
     // arrive as negative ints; MSI codes are small positive ints from the Windows Installer.
     //
@@ -231,6 +237,20 @@ public static class WingetErrorCodes
                 "Check the last log lines, retry interactive to see the installer's own message.",
                 null),
 
+            // Win32 errors wrapped as HRESULTs (0x8007xxxx), which winget passes through when the
+            // installer's own elevation fails rather than the installer itself.
+            (AssertionFailure, "ERROR_ASSERTION_FAILURE",
+                "An assertion failure has occurred.",
+                "winget could not complete the installer's elevation; a UAC or Admin By Request prompt was intercepted or declined, or the installer ran outside winget.",
+                RetryElevatedSuggestion,
+                null),
+
+            (AccessDenied, "E_ACCESSDENIED",
+                "Access is denied.",
+                "The operation needs administrator rights.",
+                RetryElevatedSuggestion,
+                null),
+
             (1602, "ERROR_INSTALL_USEREXIT",
                 "User cancelled installation.",
                 "The install was cancelled from inside the installer's own UI.",
@@ -288,6 +308,13 @@ public static class WingetErrorCodes
                 $"winget exited with {Format(exitCode)}",
                 "Read the log; retry interactive to see the installer's own message.",
                 null);
+
+    /// <summary>
+    /// True for exit codes that a retry through the elevated helper usually fixes, so the failure
+    /// panel can put that action first.
+    /// </summary>
+    public static bool SuggestsElevation(int exitCode) =>
+        exitCode is AssertionFailure or AccessDenied;
 
     /// <summary>
     /// Formats an exit code the way winget's own output does: negative HRESULTs as

@@ -29,7 +29,10 @@ public sealed record OperationCanceled(int Index, QueuedOperation Operation) : B
 
 /// <summary>
 /// A step in the elevated helper's life for this batch: <c>requesting</c>, <c>connected</c>,
-/// <c>declined</c>, <c>failed: &lt;reason&gt;</c>, or <c>closed</c>.
+/// <c>declined</c>, <c>failed: &lt;reason&gt;</c>, or <c>closed</c>. A batch that never starts
+/// the helper reports one of <c>not needed</c>, <c>off</c> (<see cref="Settings.ElevationMode.Never"/>
+/// kept an operation that needed it in-process), or <c>running as administrator</c> (this process
+/// is already elevated), and nothing when the helper was needed but no factory can start it.
 /// </summary>
 public sealed record ElevationState(string State) : BatchProgress;
 

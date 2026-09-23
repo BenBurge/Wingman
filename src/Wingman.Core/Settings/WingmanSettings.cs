@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Wingman.Core.Settings;
 
 /// <summary>
@@ -18,10 +20,11 @@ public sealed class WingmanSettings
     public bool IncludeUnknown { get; set; } = true;
 
     /// <summary>
-    /// Runs a batch's operations that need elevation through one elevated helper, behind a single
-    /// UAC prompt; when false, they run in-process and each installer prompts for itself.
+    /// Which of a batch's operations run through the elevated helper. An unrecognized value in the
+    /// file fails the whole load, and <see cref="SettingsStore.Load"/> falls back to defaults.
     /// </summary>
-    public bool AutoElevate { get; set; } = true;
+    [JsonConverter(typeof(JsonStringEnumConverter<ElevationMode>))]
+    public ElevationMode ElevationMode { get; set; } = ElevationMode.Auto;
 
     /// <summary>Keeps a batch running after one of its operations fails; when false, the rest are canceled.</summary>
     public bool ContinueOnFailure { get; set; } = true;

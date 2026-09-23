@@ -30,7 +30,7 @@ public sealed class BatchRunnerElevationTests : IDisposable
         }
     }
 
-    private BatchRunner CreateRunner(Func<CancellationToken, Task<IElevatedOperationChannel>> factory) =>
+    private BatchRunner CreateRunner(Func<CancellationToken, Task<IElevatedOperationChannel>>? factory) =>
         new(_client, new PrePostCommandRunner(new FakeProcessRunner()), new HistoryStore(_directoryPath), factory);
 
     private Task<IElevatedOperationChannel> OpenFakeChannel(CancellationToken ct)
@@ -45,13 +45,13 @@ public sealed class BatchRunnerElevationTests : IDisposable
         return Task.FromException<IElevatedOperationChannel>(ex);
     }
 
-    private static QueuedOperation Queue(string id, bool elevated)
+    private static QueuedOperation Queue(string id, bool elevated, bool forced = false)
     {
         var row = new PackageRow(Name: $"{id} name", Id: id, Version: "1.0", AvailableVersion: null, Source: "winget");
         var options = new InstallOptions { RunAsAdministrator = elevated };
         var plan = OperationRequestFactory.Create(OperationKind.Install, row, new WingmanSettings(), options);
         Assert.Equal(elevated, plan.RequiresElevation);
-        return new QueuedOperation(OperationKind.Install, row, plan);
+        return new QueuedOperation(OperationKind.Install, row, plan with { ForceElevation = forced });
     }
 
     private static QueuedOperation[] ElevatedThenUnelevated() =>
@@ -146,22 +146,80 @@ public sealed class BatchRunnerElevationTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsync_AutoElevateOff_NeverCallsFactoryAndRunsInProcess()
+    public async Task RunAsync_ModeNever_RunsElevatedPlanInProcessAndReportsOff()
     {
         var runner = CreateRunner(OpenFakeChannel);
         var progress = new RecordingBatchProgress();
 
         var summary = await runner.RunAsync(
-            ElevatedThenUnelevated(), new BatchOptions(AutoElevate: false), progress, CancellationToken.None);
+            ElevatedThenUnelevated(), new BatchOptions(ElevationMode: ElevationMode.Never), progress, CancellationToken.None);
 
         Assert.Equal(0, _factoryCalls);
-        Assert.Empty(ElevationStates(progress));
+        Assert.Equal(["off"], ElevationStates(progress));
         Assert.Equal(2, summary.Succeeded);
         Assert.True(await IsInstalledAsync(ElevatedId));
     }
 
     [Fact]
-    public async Task RunAsync_NoElevatedOperations_NeverCallsFactory()
+    public async Task RunAsync_ModeAlways_RoutesUnelevatedPlanThroughChannel()
+    {
+        var runner = CreateRunner(OpenFakeChannel);
+        var progress = new RecordingBatchProgress();
+
+        var summary = await runner.RunAsync(
+            [Queue(UnelevatedId, elevated: false)],
+            new BatchOptions(ElevationMode: ElevationMode.Always),
+            progress,
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.Succeeded);
+        Assert.Equal(1, _factoryCalls);
+        Assert.Equal((OperationKind.Install, UnelevatedId), Assert.Single(_channel.Received));
+        Assert.Equal(["requesting", "connected", "closed"], ElevationStates(progress));
+        Assert.False(await IsInstalledAsync(UnelevatedId));
+    }
+
+    [Fact]
+    public async Task RunAsync_ForcedPlanUnderModeNever_RoutesOnlyThatPlanThroughChannel()
+    {
+        var runner = CreateRunner(OpenFakeChannel);
+        var progress = new RecordingBatchProgress();
+        QueuedOperation[] operations =
+        [
+            Queue(ElevatedId, elevated: false, forced: true),
+            Queue(UnelevatedId, elevated: true),
+        ];
+
+        var summary = await runner.RunAsync(
+            operations, new BatchOptions(ElevationMode: ElevationMode.Never), progress, CancellationToken.None);
+
+        Assert.Equal(2, summary.Succeeded);
+        Assert.Equal(1, _factoryCalls);
+        Assert.Equal((OperationKind.Install, ElevatedId), Assert.Single(_channel.Received));
+        Assert.True(await IsInstalledAsync(UnelevatedId));
+    }
+
+    [Theory]
+    [InlineData(ElevationMode.Auto)]
+    [InlineData(ElevationMode.Always)]
+    public async Task RunAsync_ProcessElevated_RunsInProcessAndReportsRunningAsAdministrator(ElevationMode mode)
+    {
+        var runner = CreateRunner(OpenFakeChannel);
+        var progress = new RecordingBatchProgress();
+        QueuedOperation[] operations = [Queue(ElevatedId, elevated: true), Queue(UnelevatedId, elevated: false, forced: true)];
+
+        var summary = await runner.RunAsync(
+            operations, new BatchOptions(ElevationMode: mode, ProcessIsElevated: true), progress, CancellationToken.None);
+
+        Assert.Equal(0, _factoryCalls);
+        Assert.Equal(["running as administrator"], ElevationStates(progress));
+        Assert.Equal(2, summary.Succeeded);
+        Assert.True(await IsInstalledAsync(ElevatedId));
+        Assert.True(await IsInstalledAsync(UnelevatedId));
+    }
+
+    [Fact]
+    public async Task RunAsync_NoElevatedOperations_NeverCallsFactoryAndReportsNotNeeded()
     {
         var runner = CreateRunner(OpenFakeChannel);
         var progress = new RecordingBatchProgress();
@@ -169,7 +227,20 @@ public sealed class BatchRunnerElevationTests : IDisposable
         await runner.RunAsync([Queue(UnelevatedId, elevated: false)], new BatchOptions(), progress, CancellationToken.None);
 
         Assert.Equal(0, _factoryCalls);
+        Assert.Equal(["not needed"], ElevationStates(progress));
+    }
+
+    [Fact]
+    public async Task RunAsync_ElevatedPlanWithNoFactory_RunsInProcessAndReportsNoState()
+    {
+        var runner = CreateRunner(factory: null);
+        var progress = new RecordingBatchProgress();
+
+        var summary = await runner.RunAsync(ElevatedThenUnelevated(), new BatchOptions(), progress, CancellationToken.None);
+
+        Assert.Equal(2, summary.Succeeded);
         Assert.Empty(ElevationStates(progress));
+        Assert.True(await IsInstalledAsync(ElevatedId));
     }
 
     /// <summary>

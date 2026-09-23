@@ -3,6 +3,7 @@ using System.Globalization;
 using Wingman.Core.Elevation;
 using Wingman.Core.History;
 using Wingman.Core.Models;
+using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 
 namespace Wingman.Core.Operations;
@@ -13,9 +14,10 @@ namespace Wingman.Core.Operations;
 /// to the caller's <see cref="IProgress{T}"/> and leaves marshaling to a UI thread to the caller.
 /// </summary>
 /// <remarks>
-/// Operations whose plan requires elevation run through one elevated channel opened for the whole
-/// batch, when a channel factory is given and <see cref="BatchOptions.AutoElevate"/> is on. Their
-/// pre- and post-commands still run in this process.
+/// Operations that <see cref="ElevationPolicy.UsesHelper"/> sends to the helper run through one
+/// elevated channel opened for the whole batch, when a channel factory is given. Their pre- and
+/// post-commands still run in this process. The runner never calls <c>winget show</c>: the caller
+/// folds the installer heuristic into <see cref="OperationPlan.RequiresElevation"/> before queuing.
 /// </remarks>
 public sealed class BatchRunner
 {
@@ -65,7 +67,8 @@ public sealed class BatchRunner
         for (var index = 0; index < operations.Count; index++)
         {
             var operation = operations[index];
-            var elevationUnavailableReason = operation.Plan.RequiresElevation ? elevation.UnavailableReason : null;
+            var usesHelper = ElevationPolicy.UsesHelper(operation.Plan, options.ElevationMode, options.ProcessIsElevated);
+            var elevationUnavailableReason = usesHelper ? elevation.UnavailableReason : null;
             if (stopping || ct.IsCancellationRequested || elevationUnavailableReason is not null)
             {
                 if (elevationUnavailableReason is not null)
@@ -79,7 +82,8 @@ public sealed class BatchRunner
                 continue;
             }
 
-            var outcome = await RunOperationAsync(index, operation, elevation.Channel, progress, ct);
+            var elevatedChannel = usesHelper ? elevation.Channel : null;
+            var outcome = await RunOperationAsync(index, operation, elevatedChannel, progress, ct);
             progress.Report(new OperationFinished(index, operation, outcome.Result, outcome.Skipped));
 
             var plan = operation.Plan;
@@ -135,9 +139,15 @@ public sealed class BatchRunner
         IProgress<BatchProgress> progress,
         CancellationToken ct)
     {
-        var needsHelper = ElevationPolicy.NeedsHelper(operations, options.AutoElevate);
-        if (_elevatedChannelFactory is null || !needsHelper)
+        var needsHelper = ElevationPolicy.NeedsHelper(operations, options.ElevationMode, options.ProcessIsElevated);
+        if (!needsHelper || _elevatedChannelFactory is null)
         {
+            var state = UnneededHelperState(operations, options, needsHelper);
+            if (state is not null)
+            {
+                progress.Report(new ElevationState(state));
+            }
+
             return new ElevationOutcome(null, null);
         }
 
@@ -158,6 +168,34 @@ public sealed class BatchRunner
             progress.Report(new ElevationState($"failed: {ex.Message}"));
             return new ElevationOutcome(null, $"Canceled: elevated helper failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Why a batch that does not start the helper runs everything in-process, as the
+    /// <see cref="ElevationState"/> to report; null when the helper was needed but there is no
+    /// factory to start it, a case the caller already knows about and labels itself.
+    /// </summary>
+    private static string? UnneededHelperState(
+        IReadOnlyList<QueuedOperation> operations, BatchOptions options, bool needsHelper)
+    {
+        if (needsHelper)
+        {
+            return null;
+        }
+
+        var wouldNeedUnelevated = ElevationPolicy.NeedsHelper(operations, options.ElevationMode, processIsElevated: false);
+        if (options.ProcessIsElevated && wouldNeedUnelevated)
+        {
+            return "running as administrator";
+        }
+
+        var wouldNeedUnderAuto = ElevationPolicy.NeedsHelper(operations, ElevationMode.Auto, processIsElevated: false);
+        if (options.ElevationMode == ElevationMode.Never && wouldNeedUnderAuto)
+        {
+            return "off";
+        }
+
+        return "not needed";
     }
 
     // Not canceled by the batch token: a canceled batch still has to tell the helper to exit.
@@ -222,7 +260,7 @@ public sealed class BatchRunner
     private Task<OperationResult> RunWingetAsync(
         OperationPlan plan, IElevatedOperationChannel? elevatedChannel, IProgress<string> output, CancellationToken ct)
     {
-        if (plan.RequiresElevation && elevatedChannel is not null)
+        if (elevatedChannel is not null)
         {
             return elevatedChannel.RunAsync(plan.Kind, plan.Request, output, ct);
         }
