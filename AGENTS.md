@@ -68,8 +68,7 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - Sibling views overlap in add order: a view added later draws over an earlier one. Add centered overlay labels after the `TableView`.
 - In Git Bash, `grep -c $'\r'` miscounts carriage returns; use `tr -cd '\r' < file | wc -c` to check line endings.
 - `app.Keyboard.KeyDown` fires before any view, including the focused table; the y/n confirmation prompt in `Shell` uses it to take every key while a question is up.
-- A tab's `OnShown` that calls `Table.FocusTable()` steals focus from a `LogPane` that is showing; check for a visible log first.
-- Reloading rows after an operation that removed the cursor row fires `CursorChanged`. Code that treats a cursor move as a user action must ignore changes raised during `SetRows`.
+- Reloading rows after an operation that removed the cursor row fires `CursorChanged`; treat cursor moves during `SetRows` as data changes, not user actions, if a feature ever depends on the difference.
 - `TableStyle.RowColorGetter` colors a whole row, but a column's own `ColorGetter` wins for that column.
 - A `Label` clips overflowing text without an ellipsis; fit it with `CellText.Fit` first.
 - `tools/TuiHarness` steps can assert on their frame and the harness exits 1 on any failed check, so run it after every TUI change.
@@ -82,3 +81,6 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - The harness dumps the second cell of a wide character as a space, so frame checks must not expect `⚡ admin` as one contiguous string.
 - Python cannot open files under the long scratchpad path (over 260 characters); pipe scripts through stdin or use a short temp path.
 - `WINGMAN_DATA_DIR` overrides the settings, package-options, and history folders; the harness sets it to a temp folder so runs never touch the real profile.
+- `BatchRunner` does not return the history entries it writes; the TUI finds an operation's `.log` afterward by listing history and matching `BatchId`, verb, and `PackageId`.
+- On Windows `Task.Delay(40)` takes about 46 ms, so fake operations run longer than steps × delay; harness timings must allow for it.
+- `BatchRunnerScreen` replaces the whole content area of a tab (table and right pane hidden, tab strip and key bar kept); editors and dialogs follow the same pattern rather than opening modal `Dialog`s.
