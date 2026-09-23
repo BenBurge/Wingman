@@ -77,3 +77,8 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - `App.Mouse.MouseEvent` fires before any view; setting `Handled` there stops the event. Swallow the press and release too, or the table moves its cursor on a click outside an overlay.
 - `IsSingleDoubleOrTripleClicked` also covers right clicks.
 - The harness's ANSI driver sometimes resets its size between steps, which breaks mouse coordinates; `Screen.HoldSize()` restores it on `IDriver.SizeChanged`. The footer separator's left end is sometimes drawn `│` instead of `├` between steps (a Terminal.Gui glitch), so the harness leaves separator rows out of comparisons.
+- `TableView` binds Space to its multi-select toggle and consumes the key; `PackageTable`'s nested `TableView` subclass removes that binding so Space reaches the key bar.
+- Terminal.Gui measures glyph width with `GetColumns()`, which can disagree with Core's `DisplayWidth` for emoji-presentation symbols; keep `DisplayWidth`'s wide ranges in sync when a new symbol is drawn, and measure UI text with `GetColumns()` when the two must agree on screen.
+- The harness dumps the second cell of a wide character as a space, so frame checks must not expect `⚡ admin` as one contiguous string.
+- Python cannot open files under the long scratchpad path (over 260 characters); pipe scripts through stdin or use a short temp path.
+- `WINGMAN_DATA_DIR` overrides the settings, package-options, and history folders; the harness sets it to a temp folder so runs never touch the real profile.
