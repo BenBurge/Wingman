@@ -1,0 +1,225 @@
+using System.Diagnostics;
+using System.Globalization;
+using Wingman.Core.History;
+using Wingman.Core.Models;
+using Wingman.Core.Winget;
+
+namespace Wingman.Core.Operations;
+
+/// <summary>
+/// Runs a queue of operations one after another, with each operation's pre- and post-commands,
+/// writing one history entry per operation and a closing <c>batch</c> entry. Reports every step
+/// to the caller's <see cref="IProgress{T}"/> and leaves marshaling to a UI thread to the caller.
+/// </summary>
+public sealed class BatchRunner
+{
+    private const int FailedExitCode = -1;
+
+    private readonly IWingetClient _client;
+    private readonly PrePostCommandRunner _commands;
+    private readonly HistoryStore _history;
+
+    public BatchRunner(IWingetClient client, PrePostCommandRunner commands, HistoryStore history)
+    {
+        _client = client;
+        _commands = commands;
+        _history = history;
+    }
+
+    /// <summary>
+    /// Runs <paramref name="operations"/> in order. Never throws for a failed, faulted, or canceled
+    /// operation: those are recorded in history and counted in the returned summary.
+    /// </summary>
+    public async Task<BatchSummary> RunAsync(
+        IReadOnlyList<QueuedOperation> operations,
+        BatchOptions options,
+        IProgress<BatchProgress> progress,
+        CancellationToken ct)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var batchId = NewBatchId();
+        progress.Report(new BatchStarted(batchId, operations.Count));
+
+        var summaryLines = new List<string>();
+        var succeeded = 0;
+        var failed = 0;
+        var canceled = 0;
+        var stopping = false;
+
+        for (var index = 0; index < operations.Count; index++)
+        {
+            var operation = operations[index];
+            if (stopping || ct.IsCancellationRequested)
+            {
+                progress.Report(new OperationCanceled(index, operation));
+                summaryLines.Add($"· {operation.Row.Id} canceled");
+                canceled++;
+                continue;
+            }
+
+            var outcome = await RunOperationAsync(index, operation, progress, ct);
+            progress.Report(new OperationFinished(index, operation, outcome.Result, outcome.Skipped));
+
+            var plan = operation.Plan;
+            _history.Append(
+                DateTimeOffset.Now,
+                Verb(plan.Kind),
+                operation.Row.Id,
+                operation.Row.Name,
+                outcome.Result,
+                Arguments(plan),
+                batchId);
+            summaryLines.Add(SummaryLine(operation, outcome));
+
+            if (outcome.Result.Succeeded)
+            {
+                succeeded++;
+            }
+            else
+            {
+                failed++;
+            }
+
+            var abortAfterFailure = !outcome.Result.Succeeded && !options.ContinueOnFailure;
+            stopping = outcome.WasCanceled || abortAfterFailure;
+        }
+
+        var duration = stopwatch.Elapsed;
+        var summary = new BatchSummary(batchId, operations.Count, succeeded, failed, canceled, duration);
+
+        var batchExitCode = failed == 0 && canceled == 0 ? 0 : 1;
+        var batchResult = new OperationResult(batchExitCode, batchExitCode == 0, duration, summaryLines);
+        _history.Append(
+            DateTimeOffset.Now, "batch", batchId, $"{operations.Count} operations", batchResult, [], batchId);
+
+        progress.Report(new BatchFinished(summary));
+        return summary;
+    }
+
+    private async Task<OperationOutcome> RunOperationAsync(
+        int index, QueuedOperation operation, IProgress<BatchProgress> progress, CancellationToken ct)
+    {
+        progress.Report(new OperationStarted(index, operation));
+
+        var plan = operation.Plan;
+        var lines = new LineCollector(index, progress);
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var preExitCode = await _commands.RunPreAsync(plan, lines, ct);
+            if (preExitCode is int exitCode && PrePostCommandRunner.ShouldSkipOperation(plan, exitCode))
+            {
+                var skipped = PrePostCommandRunner.SkippedResult(exitCode, lines.Snapshot());
+                return new OperationOutcome(skipped, Skipped: true, WasCanceled: false);
+            }
+
+            var result = await RunWingetAsync(plan, lines, ct);
+            await _commands.RunPostAsync(plan, lines, ct);
+
+            // The client's log holds only winget's lines; history keeps the pre- and
+            // post-command output around them too.
+            return new OperationOutcome(result with { Log = lines.Snapshot() }, Skipped: false, WasCanceled: false);
+        }
+        catch (OperationCanceledException)
+        {
+            lines.Report("Canceled");
+            var canceled = new OperationResult(FailedExitCode, false, stopwatch.Elapsed, lines.Snapshot());
+            return new OperationOutcome(canceled, Skipped: false, WasCanceled: true);
+        }
+        catch (Exception ex)
+        {
+            lines.Report($"Failed: {ex.Message}");
+            var faulted = new OperationResult(FailedExitCode, false, stopwatch.Elapsed, lines.Snapshot());
+            return new OperationOutcome(faulted, Skipped: false, WasCanceled: false);
+        }
+    }
+
+    private Task<OperationResult> RunWingetAsync(OperationPlan plan, IProgress<string> output, CancellationToken ct) =>
+        plan.Kind switch
+        {
+            OperationKind.Install => _client.InstallAsync(plan.Request, output, ct),
+            OperationKind.Upgrade => _client.UpgradeAsync(plan.Request, output, ct),
+            OperationKind.Uninstall => _client.UninstallAsync(plan.Request, output, ct),
+            _ => throw new ArgumentOutOfRangeException(nameof(plan), plan.Kind, null),
+        };
+
+    private static string[] Arguments(OperationPlan plan) => plan.Kind switch
+    {
+        OperationKind.Install => WingetArguments.Install(plan.Request),
+        OperationKind.Upgrade => WingetArguments.Upgrade(plan.Request),
+        OperationKind.Uninstall => WingetArguments.Uninstall(plan.Request),
+        _ => throw new ArgumentOutOfRangeException(nameof(plan), plan.Kind, null),
+    };
+
+    private static string Verb(OperationKind kind) => kind switch
+    {
+        OperationKind.Install => "install",
+        OperationKind.Upgrade => "upgrade",
+        OperationKind.Uninstall => "uninstall",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
+
+    private static string SummaryLine(QueuedOperation operation, OperationOutcome outcome)
+    {
+        var id = operation.Row.Id;
+        if (outcome.Skipped)
+        {
+            return $"· {id} skipped";
+        }
+
+        var verb = Verb(operation.Plan.Kind);
+        var result = outcome.Result;
+        if (result.Succeeded)
+        {
+            var seconds = result.Duration.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture);
+            return $"✓ {id} {verb} {seconds} s";
+        }
+
+        return $"✗ {id} {verb} exit {result.ExitCode}";
+    }
+
+    // The timestamp alone collides when two batches start in the same second.
+    private static string NewBatchId()
+    {
+        var timestamp = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH-mm-ss", CultureInfo.InvariantCulture);
+        var suffix = Random.Shared.Next(0x10000).ToString("x4", CultureInfo.InvariantCulture);
+        return $"{timestamp}-{suffix}";
+    }
+
+    private readonly record struct OperationOutcome(OperationResult Result, bool Skipped, bool WasCanceled);
+
+    /// <summary>
+    /// Forwards each line as an <see cref="OperationLine"/> and keeps it for the history log.
+    /// Locked because <see cref="ProcessRunner"/> reports stdout and stderr from separate threads.
+    /// </summary>
+    private sealed class LineCollector : IProgress<string>
+    {
+        private readonly int _index;
+        private readonly IProgress<BatchProgress> _progress;
+        private readonly Lock _lock = new();
+        private readonly List<string> _lines = [];
+
+        public LineCollector(int index, IProgress<BatchProgress> progress)
+        {
+            _index = index;
+            _progress = progress;
+        }
+
+        public void Report(string value)
+        {
+            lock (_lock)
+            {
+                _lines.Add(value);
+                _progress.Report(new OperationLine(_index, value));
+            }
+        }
+
+        public IReadOnlyList<string> Snapshot()
+        {
+            lock (_lock)
+            {
+                return [.. _lines];
+            }
+        }
+    }
+}
