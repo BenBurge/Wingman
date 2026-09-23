@@ -50,7 +50,9 @@ public sealed class SettingsStore
         try
         {
             var json = File.ReadAllText(FilePath);
-            return JsonSerializer.Deserialize<WingmanSettings>(json, JsonOptions) ?? new WingmanSettings();
+            var settings = JsonSerializer.Deserialize<WingmanSettings>(json, JsonOptions) ?? new WingmanSettings();
+            settings.Normalize();
+            return settings;
         }
         catch (JsonException)
         {
