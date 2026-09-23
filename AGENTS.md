@@ -48,3 +48,17 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - Keep the UI keyboard-first and fully mouse-operable. Every action has a key shown in
   the status bar and is also reachable by click or the row context menu.
 - American English everywhere. Comments explain why, never what changed.
+
+## Terminal.Gui 2.5 gotchas
+
+- Instance API only: `using var app = Application.Create(); app.Init(); app.Run(window);`. Marshal background results to the UI thread with `app.Invoke(Action)`. Timers are `app.AddTimeout(TimeSpan, Func<bool>)` / `RemoveTimeout`.
+- Look up members in `%USERPROFILE%\.nuget\packages\terminal.gui\2.5.0\lib\net10.0\Terminal.Gui.xml`; v1 names are mostly gone.
+- Custom drawing: override `OnDrawingContent(DrawContext?)` and use `SetAttribute`, `Move`, `AddStr`. Mouse: override `OnMouseEvent(Mouse)`; `mouse.Position` is view-relative. A fast second click arrives as `LeftButtonDoubleClicked`, not a second `Clicked`; `MouseExtensions.IsLeftClick()` accepts all three click flags.
+- Colors: `Scheme` is a record; set `Normal`, `Focus`, `Active`, `Highlight`, `HotNormal`, `Editable`. The border color is set through `Window.Border.GetOrCreateView().SetScheme(...)`. `TextField` text uses `Editable`. `TableView` headers use `Style.HeaderScheme`; set every role or the header renders inverted.
+- Writing on the top border (title left, winget version right): turn off the built-in title with `Window.Border.Settings &= ~BorderSettings.Title`, then draw in `Window.DrawComplete` inside `SetClipToScreen()` / `SetClip(saved)`.
+- Separator lines that join the border as `├ ┬ ┴ ┤`: `new Line { X = -1, Width = Dim.Fill(-1), SuperViewRendersLineCanvas = true }`; every container between the line and the window must also set `SuperViewRendersLineCanvas = true`.
+- `TableView`: selection is `Value` / `ValueChanged` with `TableSelection`; Enter and double-click raise `Accepting` (set `e.Handled = true`); set `CollectionNavigator = null` or type-to-search eats letter keys; set `Style.AlwaysShowHeaders = true`; fixed widths are `ColumnStyle.MinWidth = MaxWidth` with `RepresentationGetter` truncating; call `Update()` after changing column styles; with zero rows it ignores widths, so pad header text; `ScreenToCell(pos, out int? header)` detects header clicks; it does not wheel-scroll by default, so move `RowOffset` yourself; arrow keys at the ends bubble out, so stop them in `KeyDownNotHandled`.
+- Key routing: the focused view sees a key first (`KeyDown`, bindings, `KeyDownNotHandled`), then parents. Handle global keys in `Window.KeyDown` and return early when `MostFocused is TextField`.
+- `StatusBar` always draws `│` separators and pads items, which overflows at 96 columns; the shell uses the custom `KeyBar` instead.
+- Show the first tab from `Window.IsRunningChanged`; focus and timers need the running app. Pane widths are set in `OnSubViewLayout`; a `Dim.Func` reading the parent's size can see the previous frame.
+- There is no headless test project; to check layout without a screen, compile the Tui sources into a small console harness on the ANSI driver at a fixed size and dump the screen cells (see `tools/` if such a harness has been committed, otherwise write one under `%TEMP%`).
