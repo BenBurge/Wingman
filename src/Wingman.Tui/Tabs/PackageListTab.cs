@@ -153,6 +153,15 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
     public abstract void RefreshAfterOperation(bool isOrigin);
 
     /// <summary>
+    /// Starts the tab's first load if it has not started one already, for a tab that loads itself
+    /// the first time it is shown; the shell also calls this at startup so a tab's count and rows
+    /// are ready before the user visits it. A tab with nothing to preload leaves this as a no-op.
+    /// </summary>
+    public virtual void LoadIfNeeded()
+    {
+    }
+
+    /// <summary>
     /// Runs <paramref name="fetch"/> on a background task with the table's spinner showing, then
     /// shows its rows, as <see cref="RowsToShow"/> picks them, and calls <see cref="OnLoaded"/>, or
     /// puts the error on the message line. Starting another load abandons this one.

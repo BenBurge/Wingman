@@ -241,7 +241,24 @@ Step[] elevatedSteps =
 Step[] mainSteps =
 [
     new(100, "Installed loading", () => { }),
-    new(1500, "Installed loaded, details for the first row", () => { }, WithColors: true),
+    new(1500, "Installed loaded, details for the first row", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("tab strip shows Installed 213 as soon as it loads", ScreenHas(" Installed 213 "));
+        Check("tab strip already shows Updates 17, loaded in the background before Updates was ever shown", ScreenHas(" Updates 17 "));
+    }),
+    new(50, "3, r, 1, 3: force a reload on Updates, then leave and come straight back while it is in flight", () =>
+    {
+        screen.Press(new Key('3'));
+        screen.Press(Key.R);
+        screen.Press(new Key('1'));
+        screen.Press(new Key('3'));
+    }),
+    new(600, "the reload finished with no crash and the count still showing", () => { }, Verify: () =>
+    {
+        Check("still running", shell.Window.IsRunning);
+        Check("tab strip still reads Updates 17", ScreenHas(" Updates 17 "));
+    }),
+    new(50, "1: back to Installed", () => screen.Press(new Key('1'))),
     new(50, "Down x3 quickly: row fields at once, details loading", () => screen.Press(Key.CursorDown, 3)),
     new(600, "Down x3 after the wait: details for the fourth row", () => { }),
     new(50, "Ctrl+End: wide row, show fails", () => screen.Press(Key.End.WithCtrl)),
@@ -351,8 +368,10 @@ Step[] mainSteps =
     new(600, "Down x2 after the wait", () => { }),
     new(50, "Search zzzz", () => { screen.Press(new Key('/')); screen.Press(Key.Backspace, 3); screen.Type("zzzz"); screen.Press(Key.Enter); }),
     new(600, "Discover after searching zzzz", () => { }),
-    new(50, "3: Updates loading", () => screen.Press(new Key('3'))),
-    new(1000, "Updates loaded", () => { }, WithColors: true),
+    // Already loaded in the background at startup, and visited once already during the reload-race
+    // check above, so this is a plain tab switch rather than a fresh load.
+    new(50, "3: back to Updates", () => screen.Press(new Key('3'))),
+    new(200, "Updates still shows its rows", () => { }, WithColors: true),
 
     new(50, "u on AutoHotkey.AutoHotkey: confirmation prompt", () => screen.Press(Key.U), Verify: () =>
     {

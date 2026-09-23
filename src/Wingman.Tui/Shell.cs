@@ -434,7 +434,7 @@ internal sealed class Shell
         {
             if (tab is InstalledTab installed)
             {
-                installed.EnsureLoaded();
+                installed.LoadIfNeeded();
             }
         }
     }
@@ -1415,6 +1415,24 @@ internal sealed class Shell
         if (isRunning && _activeTab is null && _tabs.Count > 0)
         {
             ShowTab(0);
+            StartBackgroundLoads();
+        }
+    }
+
+    /// <summary>
+    /// Starts every list tab's first load once the window is running, not only the one just shown,
+    /// so a tab not yet visited, such as Updates, has its tab strip count ready by the time the user
+    /// gets to it. Pins load as soon as the shell is built, ahead of this. Each tab's own
+    /// <see cref="PackageListTab.LoadIfNeeded"/> guards against loading twice.
+    /// </summary>
+    private void StartBackgroundLoads()
+    {
+        foreach (var tab in _tabs)
+        {
+            if (tab is PackageListTab listTab)
+            {
+                listTab.LoadIfNeeded();
+            }
         }
     }
 

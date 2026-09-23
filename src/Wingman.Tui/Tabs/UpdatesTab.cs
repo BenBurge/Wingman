@@ -75,6 +75,11 @@ internal sealed class UpdatesTab : PackageListTab
     public override void OnShown()
     {
         FocusContent();
+        LoadIfNeeded();
+    }
+
+    public override void LoadIfNeeded()
+    {
         if (!_hasStartedLoading)
         {
             Reload();
