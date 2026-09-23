@@ -170,7 +170,7 @@ internal sealed class OptionRow : View, IThemedView
                 x += Gap.Length;
             }
 
-            var width = DisplayWidth.Of(OptionText(i));
+            var width = DisplayWidth.Of(OptionText(_options[i]));
             _spans[i] = (x, x + width);
             x += width;
         }
@@ -178,6 +178,18 @@ internal sealed class OptionRow : View, IThemedView
         Height = 1;
         Width = x;
         CanFocus = true;
+    }
+
+    /// <summary>The cells a row of <paramref name="options"/> takes: each <c>( ) option</c>, two cells apart.</summary>
+    public static int WidthFor(IReadOnlyList<string> options)
+    {
+        var width = Gap.Length * Math.Max(0, options.Count - 1);
+        foreach (var option in options)
+        {
+            width += DisplayWidth.Of(OptionText(option));
+        }
+
+        return width;
     }
 
     /// <summary>Raised after Space, a click, or <see cref="PickHighlighted"/> picks an option; setting <see cref="SelectedIndex"/> does not raise it.</summary>
@@ -280,7 +292,7 @@ internal sealed class OptionRow : View, IThemedView
         Picked?.Invoke();
     }
 
-    private string OptionText(int index) => $"( ) {_options[index]}";
+    private static string OptionText(string option) => $"( ) {option}";
 }
 
 /// <summary>

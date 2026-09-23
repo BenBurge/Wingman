@@ -1,6 +1,7 @@
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
+using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Attribute = Terminal.Gui.Drawing.Attribute;
 
@@ -76,16 +77,19 @@ internal sealed class SettingsTab : ScreenHostTab
         private const int TrayFlagsRow = 13;
         private const int ToolsRow = 14;
         private const int ToolItemsRow = 15;
-        private const int FooterRow = 17;
+        private const int RestartRow = 16;
+        private const int FooterRow = 18;
 
         private const string AcceptAgreementsLabel = "Accept package agreements";
-        private const string AutoElevateLabel = "Auto-elevate when needed";
+        private const string RestartLabel = "Restart as administrator";
         private const string ImportLabel = "Import bundle…";
         private const string ExportLabel = "Export bundle…";
         private const string SetupText = "⏎ Register scheduled tasks (wingman setup)";
 
         private static readonly string[] ScopeValues = ["", "user", "machine"];
         private static readonly string[] SourceValues = ["winget", "msstore", "all"];
+        private static readonly ElevationMode[] ElevationValues = [ElevationMode.Auto, ElevationMode.Always, ElevationMode.Never];
+        private static readonly string[] ElevationLabels = ["Auto", "Always", "Never"];
 
         // The phase 3 rows as the mockup draws them, label then body.
         private static readonly (int Row, string Label, string Body)[] LaterRows =
@@ -101,11 +105,14 @@ internal sealed class SettingsTab : ScreenHostTab
         private readonly OptionRow _source;
         private readonly CheckField _acceptAgreements;
         private readonly CheckField _includeUnknown;
-        private readonly CheckField _autoElevate;
+        private readonly OptionRow _elevation;
         private readonly CheckField _continueOnFailure;
         private readonly OptionRow _themeOption;
         private readonly ActionField _import;
         private readonly ActionField _export;
+
+        // Null when Wingman cannot restart itself elevated, because it already is or is not on Windows.
+        private readonly ActionField? _restart;
         private readonly View[] _fields;
         private readonly KeyHint[] _hints;
 
@@ -131,10 +138,12 @@ internal sealed class SettingsTab : ScreenHostTab
             _includeUnknown = Check("Include unknown versions", FieldLeft + CheckField.WidthFor(AcceptAgreementsLabel) + CheckGap.Length, DefaultFlagsRow, settings.IncludeUnknown);
             _includeUnknown.Toggled += () => Save(() => settings.IncludeUnknown = _includeUnknown.IsChecked);
 
-            _autoElevate = Check(AutoElevateLabel, FieldLeft, BatchFlagsRow, settings.AutoElevate);
-            _autoElevate.Toggled += () => Save(() => settings.AutoElevate = _autoElevate.IsChecked);
+            _elevation = new OptionRow(_theme, ElevationLabels) { X = FieldLeft, Y = BatchFlagsRow };
+            _elevation.SelectedIndex = Array.IndexOf(ElevationValues, settings.ElevationMode);
+            _elevation.Picked += () => Save(() => settings.ElevationMode = ElevationValues[_elevation.SelectedIndex]);
 
-            _continueOnFailure = Check("Continue on failure", FieldLeft + CheckField.WidthFor(AutoElevateLabel) + CheckGap.Length, BatchFlagsRow, settings.ContinueOnFailure);
+            var continueLeft = FieldLeft + OptionRow.WidthFor(ElevationLabels) + CheckGap.Length;
+            _continueOnFailure = Check("Continue on failure", continueLeft, BatchFlagsRow, settings.ContinueOnFailure);
             _continueOnFailure.Toggled += () => Save(() => settings.ContinueOnFailure = _continueOnFailure.IsChecked);
 
             _themeOption = new OptionRow(_theme, Theme.SettingNames) { X = FieldLeft, Y = ThemeRow };
@@ -146,13 +155,26 @@ internal sealed class SettingsTab : ScreenHostTab
             _export = new ActionField(_theme, ExportLabel) { X = LabelLeft + ActionField.WidthFor(ImportLabel) + CheckGap.Length, Y = ToolItemsRow };
             _export.Pressed += openExport;
 
-            _fields =
+            var canRestart = shell.CanRestartAsAdministrator && !shell.ProcessIsElevated;
+            if (canRestart)
+            {
+                _restart = new ActionField(_theme, RestartLabel) { X = LabelLeft, Y = RestartRow };
+                _restart.Pressed += shell.AskRestartAsAdministrator;
+            }
+
+            List<View> fields =
             [
                 _scope, _source, _acceptAgreements, _includeUnknown,
-                _autoElevate, _continueOnFailure,
+                _elevation, _continueOnFailure,
                 _themeOption,
                 _import, _export,
             ];
+            if (_restart is not null)
+            {
+                fields.Add(_restart);
+            }
+
+            _fields = [.. fields];
             _hints =
             [
                 new(Key.Tab, "Next field", () => FocusField(1)),
@@ -217,6 +239,7 @@ internal sealed class SettingsTab : ScreenHostTab
             DrawText(LabelLeft, ScopeRow, "Install scope", normal, width);
             DrawText(LabelLeft, SourceRow, "Source", normal, width);
             DrawText(1, BatchesRow, "Batches", header, width);
+            DrawText(LabelLeft, BatchFlagsRow, "Elevation", normal, width);
             DrawText(1, AppearanceRow, "Appearance", header, width);
             DrawText(LabelLeft, ThemeRow, "Theme", normal, width);
             DrawText(1, ToolsRow, "Tools", header, width);
@@ -232,10 +255,26 @@ internal sealed class SettingsTab : ScreenHostTab
 
             var setupLeft = _export.Frame.Right + CheckGap.Length;
             DrawText(setupLeft, ToolItemsRow, $"{SetupText}   {PhaseNote}", dim, width);
+            DrawUnavailableRestart(width);
 
             var footer = $"Saved to {_shell.SettingsStore.FilePath} as you change them";
             DrawText(1, FooterRow, footer, dim, width);
             return true;
+        }
+
+        /// <summary>
+        /// Draws the restart action dim, with why it is unavailable, where the field would be when
+        /// Wingman cannot restart itself elevated.
+        /// </summary>
+        private void DrawUnavailableRestart(int width)
+        {
+            if (_restart is not null)
+            {
+                return;
+            }
+
+            var reason = _shell.ProcessIsElevated ? "already administrator" : "Windows only";
+            DrawText(LabelLeft, RestartRow, $"⏎ {RestartLabel}   {reason}", _theme.On(_theme.Dim), width);
         }
 
         private static int IndexOfIgnoringCase(IReadOnlyList<string> values, string value)

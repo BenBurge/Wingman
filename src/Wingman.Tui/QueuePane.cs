@@ -2,7 +2,9 @@ using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.Text;
 using Terminal.Gui.ViewBase;
+using Wingman.Core.Elevation;
 using Wingman.Core.Operations;
+using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Attribute = Terminal.Gui.Drawing.Attribute;
 
@@ -10,10 +12,11 @@ namespace Wingman.Tui;
 
 /// <summary>
 /// Takes the details pane's place while the batch queue has entries: a title with the count, one
-/// numbered entry per operation with its target version, <c>⚡ admin</c> when it needs elevation,
-/// and its post command, then how many need elevation and the <c>g</c> and <c>c</c> keys. When the
-/// entries outgrow the pane they scroll between the title and the summary, which stay put; with
-/// focus the arrow and paging keys scroll them, and the mouse wheel does whenever it is over the pane.
+/// numbered entry per operation with its target version, <c>⚡ admin</c> when it needs elevation
+/// under the settings' elevation mode, and its post command, then how many need elevation, how
+/// the batch will get it, and the <c>g</c> and <c>c</c> keys. When the entries outgrow the pane
+/// they scroll between the title and the summary, which stay put; with focus the arrow and paging
+/// keys scroll them, and the mouse wheel does whenever it is over the pane.
 /// </summary>
 internal sealed class QueuePane : View, IThemedView
 {
@@ -35,6 +38,8 @@ internal sealed class QueuePane : View, IThemedView
 
     private Theme _theme;
     private readonly OperationQueue _queue;
+    private readonly WingmanSettings _settings;
+    private readonly bool _processIsElevated;
     private int _scroll;
     private int _entryRowsShown;
     private int _entryLineCount;
@@ -42,10 +47,14 @@ internal sealed class QueuePane : View, IThemedView
     // Where the key row was last drawn, for clicks on its keys.
     private int _keyRowY = -1;
 
-    public QueuePane(Theme theme, OperationQueue queue)
+    /// <param name="settings">The shell's settings, whose elevation mode is read at every draw.</param>
+    /// <param name="processIsElevated">Whether this process already runs as administrator.</param>
+    public QueuePane(Theme theme, OperationQueue queue, WingmanSettings settings, bool processIsElevated)
     {
         _theme = theme;
         _queue = queue;
+        _settings = settings;
+        _processIsElevated = processIsElevated;
         CanFocus = true;
         queue.Changed += SetNeedsDraw;
     }
@@ -79,10 +88,10 @@ internal sealed class QueuePane : View, IThemedView
         AddStr(CellText.Fit("  " + countText, Math.Max(0, textWidth - DisplayWidth.Of(" Queue"))));
 
         var entryLines = EntryLines(textWidth, normal, accent);
-        var summaryLines = SummaryLines();
+        var summaryRows = SummaryRows(SummaryLines(dim), textWidth);
 
         // A blank row, the summary, another blank row, and the key row.
-        var footerRows = 1 + summaryLines.Count + 2;
+        var footerRows = 1 + summaryRows.Count + 2;
         var roomForEntries = Math.Max(0, Viewport.Height - HeaderRows - footerRows);
         _entryLineCount = entryLines.Count;
         _entryRowsShown = Math.Min(entryLines.Count, roomForEntries);
@@ -103,10 +112,10 @@ internal sealed class QueuePane : View, IThemedView
         }
 
         y++;
-        foreach (var line in summaryLines)
+        foreach (var (line, color) in summaryRows)
         {
             Move(0, y);
-            SetAttribute(dim);
+            SetAttribute(color);
             AddStr(CellText.Fit(line, textWidth));
             y++;
         }
@@ -207,7 +216,7 @@ internal sealed class QueuePane : View, IThemedView
             lines.Add([(CellText.Fit(numberColumn + item.Row.Id, textWidth), normal)]);
 
             var action = Indent + ActionText(item);
-            if (item.Plan.RequiresElevation)
+            if (NeedsElevation(item))
             {
                 var fitted = CellText.Fit(action, Math.Max(0, textWidth - AdminSuffixWidth));
                 lines.Add([(fitted + AdminGap, normal), (AdminText, accent)]);
@@ -250,15 +259,53 @@ internal sealed class QueuePane : View, IThemedView
         return $"{verb} → {target}";
     }
 
-    private List<string> SummaryLines()
+    /// <summary>
+    /// Whether <paramref name="item"/> needs administrator rights under the elevation mode, as an
+    /// unelevated process would run it: an elevated one still has it run as administrator, only
+    /// without the helper.
+    /// </summary>
+    private bool NeedsElevation(QueuedOperation item) =>
+        ElevationPolicy.UsesHelper(item.Plan, _settings.ElevationMode, processIsElevated: false);
+
+    /// <summary>How many entries need elevation, then how the batch will get it, each line with its color.</summary>
+    private List<(string Text, Attribute Color)> SummaryLines(Attribute dim)
     {
-        var elevated = _queue.ElevatedCount;
-        if (elevated == 0)
+        if (_settings.ElevationMode == ElevationMode.Never && !_processIsElevated)
         {
-            return [" No elevation needed."];
+            return [("elevation off (winget will prompt per installer)", dim)];
         }
 
-        return [$" {elevated} of {_queue.Count} need elevation.", " One UAC prompt will be shown."];
+        var elevated = _queue.Items.Count(NeedsElevation);
+        var countLine = elevated == 0 ? "No elevation needed." : $"{elevated} of {_queue.Count} need elevation.";
+        if (_processIsElevated)
+        {
+            return [(countLine, dim), ("elevated helper: running as administrator", _theme.On(_theme.Ok))];
+        }
+
+        if (_settings.ElevationMode == ElevationMode.Always)
+        {
+            return [(countLine, dim), ("every operation runs elevated · one UAC prompt", dim)];
+        }
+
+        return elevated == 0 ? [(countLine, dim)] : [(countLine, dim), ("One UAC prompt will be shown.", dim)];
+    }
+
+    /// <summary>
+    /// <paramref name="lines"/> wrapped to the pane one cell in from its edge, since at 96 columns
+    /// the pane is narrower than the longest of them.
+    /// </summary>
+    private static List<(string Text, Attribute Color)> SummaryRows(List<(string Text, Attribute Color)> lines, int textWidth)
+    {
+        var rows = new List<(string Text, Attribute Color)>();
+        foreach (var (text, color) in lines)
+        {
+            foreach (var row in CellText.Wrap(text, Math.Max(1, textWidth - 1)))
+            {
+                rows.Add((" " + row, color));
+            }
+        }
+
+        return rows;
     }
 
     /// <summary>Draws <c> g run queue   c clear</c>, keys in accent bold.</summary>

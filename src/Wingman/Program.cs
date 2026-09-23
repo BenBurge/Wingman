@@ -28,10 +28,12 @@ if (unrecognizedArgs.Length > 0)
 
 IWingetClient client = isFake ? new FakeWingetClient() : new WingetCliClient(new ProcessRunner());
 
-// The fake never needs the elevated helper, and starting it would show a real UAC prompt.
+// The fake never needs the elevated helper or a restart, and either would show a real UAC prompt.
 var elevation = isFake ? null : ElevationSupport.Factory;
+var restartAsAdministrator = isFake ? null : ElevationSupport.RestartAsAdministrator;
+var isElevated = !isFake && (ElevationSupport.IsElevated ?? false);
 
 // The fake leaves Auto on the dark theme, so its screens never depend on the machine's mode.
 IThemeDetector? themeDetector = !isFake && OperatingSystem.IsWindows() ? new WindowsThemeDetector() : null;
-WingmanApp.Run(client, elevation, themeDetector);
+WingmanApp.Run(client, elevation, themeDetector, isElevated, restartAsAdministrator);
 return 0;

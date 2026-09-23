@@ -55,6 +55,8 @@ The TUI marks packages, then builds an ordered queue of operations. Operations t
 
 The TUI is the pipe server: it creates the pipe, starts the helper with `runas`, and waits for it to connect, so the helper needs nothing but the pipe name. Messages are newline-delimited JSON (`run`, `line`, `finished`, `shutdown`). The helper's read-run-reply loop lives in Core (`ElevatedWorkerLoop`) and is tested cross-platform against an in-process pipe; only the launcher and the process entry point are Windows-only. Declining the UAC prompt cancels the elevated operations in the batch and still runs the others.
 
+The elevation mode setting picks which operations use the helper: Auto sends those whose options or installer need administrator rights, Always sends every operation, and Never starts no helper and lets winget and each installer prompt on their own. Auto reads the installer type from `winget show` when a package is queued and treats msi, wix, burn, exe, inno, and nullsoft installers not scoped to the user as needing elevation, because winget elevating an installer mid-run can be intercepted by a UAC broker such as Admin By Request; a Wingman already running as administrator runs everything in-process and never launches the helper.
+
 ### Bundle export and import
 
 Both are reached with the `b` key on the Installed, Discover, and Updates tabs, and from the Tools row on the Settings tab. Export pre-selects every package winget can reinstall and lists the rest under `incompatible_packages`. Import shows a plan first (install, upgrade, keep, skip per row, with packages from other managers shown but unselectable), then hands the selected operations to the batch runner.
