@@ -6,7 +6,14 @@
     <Version>0.0.0-dev</Version>
     <!-- The version flag prints the plain version, not version+commit hash. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <ApplicationIcon>..\..\assets\wingman.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <!-- The tray process loads its badge icons from assets\tray\ next to the exe. -->
+  <ItemGroup>
+    <Content Include="..\..\assets\wingman.ico" LinkBase="assets" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\tray\*.ico" LinkBase="assets\tray" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 
   <!--
     Publish output is a self-contained, untrimmed single file. Native AOT and trimming are
