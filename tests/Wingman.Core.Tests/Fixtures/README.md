@@ -21,3 +21,8 @@ Expected files:
 
 Until these are captured, `WingetTableParserTests` uses inline sample output
 instead of these fixtures.
+
+`bundle-unigetui.ubundle` is different: it is hand-written to UniGetUI's bundle
+schema, not captured from a real tool run, so `BundleImportPlannerTests` has a
+bundle with a known mix of installable, upgradeable, already-installed, and
+incompatible packages to plan against.
