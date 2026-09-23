@@ -106,6 +106,9 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - The queue pane is 37 columns at 96x30, so its summary lines wrap; harness checks use `RightPaneFlowed()` to read them.
 - `OperationPlan.RequiresElevation` means "needs admin rights at all" (resolved under `Auto`); the mode and the process's own elevation are applied later by `ElevationPolicy.UsesHelper`, so the batch runner can report `off` or `running as administrator` correctly.
 - Background `winget show` lookups for queued rows run one at a time and only when the details are not cached and the plan does not already need elevation, so `a` on Updates does not spawn a winget process per row.
+- A `TextField` exactly as wide as its text scrolls one cell to keep the cursor visible and stays scrolled after losing focus; set `InsertionPoint = 0` on leave.
+- A harness step that presses a tab key and then uses `ClickText` in the same action reads the previous frame; switch tabs in one step and click in the next.
+- In this Bash environment a heredoc turns a double backslash before a brace into a single backslash inside C# interpolated strings; use the Write or Edit tools for C# containing backslashes.
 
 ## CLI and Windows service gotchas
 
@@ -119,3 +122,7 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - `LibraryImport` needs `AllowUnsafeBlocks` and cannot marshal `NOTIFYICONDATAW`'s fixed-length strings; the tray uses `DllImport` with `DefaultDllImportSearchPaths(System32)`.
 - A class must not share the simple name of its namespace (`Settings.Settings`, `SelfUpdate.SelfUpdate`): callers outside the namespace then resolve the name to the namespace and fail to compile.
 - Icon assets ship as `Content` next to the exe under `assets/` and `assets/tray/`; `LinkBase` with a wildcard drops subfolders, so the two folders are separate items.
+- `wingman.exe` is a console program: the startup entry and scheduled tasks wrap it in `conhost.exe --headless` and `wingman tray` calls `FreeConsole()` so no console window lingers. Anything else that launches Wingman in the background needs the same treatment.
+- Setting `Console.OutputEncoding` throws `IOException` when there is no console; `Program.cs` catches it.
+- Under the test host the entry assembly is `testhost`, so CLI tests set `CliContext.Version` instead of relying on `CliRunner.Version`.
+- `ToastNotifier` writes failures to `Console.Error`, not the command's `Error` writer.

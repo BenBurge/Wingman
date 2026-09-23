@@ -3,12 +3,56 @@
 Wingman is a keyboard-driven terminal UI (and headless CLI) for the Windows
 Package Manager, `winget`, built in C# with Terminal.Gui.
 
-**Status:** phase 2 is complete on the `phase-2-batches` branch. Wingman has
+**Status:** phase 3 is complete on the `phase-3-automation` branch. Wingman has
 Installed, Discover, Updates, History, and Settings tabs; batch install, upgrade,
 and uninstall with one UAC prompt per batch; per-package install options and
-update policies; UniGetUI bundle export and import; and four themes. Phase 3
-(headless CLI, scheduled checks, toasts, tray icon) has not started. `--fake` mode
-drives the whole UI from captured fixtures on any OS.
+update policies; UniGetUI bundle export and import; four themes; a headless CLI
+for scripting; and scheduled update checks and auto-install, toast notifications,
+a system tray icon, and a self-updater, all registered by `wingman setup`.
+`--fake` mode drives the whole UI (and every CLI command) from captured fixtures
+on any OS.
+
+## Install
+
+Once the winget manifest is published:
+
+```
+winget install BenBurge.Wingman
+```
+
+Until then, download the release zip for your architecture, extract it
+anywhere on your PATH, and run:
+
+```
+wingman setup
+```
+
+to register the scheduled update checks, the tray icon at login, and the
+Start Menu shortcut toasts need.
+
+## Command line
+
+`wingman` with no arguments opens the terminal UI; each command below runs
+headlessly instead. Every command takes `--fake` and, except where noted,
+`--json`. See `docs/DESIGN.md` "Headless CLI" for the full option list.
+
+| Command | Description | Exit codes |
+|---|---|---|
+| `check` | Check for updates | 0, 10 |
+| `list [query]` | List installed packages | 0 |
+| `search <query>` | Search winget for packages | 0, 2 |
+| `upgrade` | Upgrade packages | 0, 1, 2, 130 |
+| `install <id>...` | Install packages | 0, 1, 2, 130 |
+| `export <file>` | Export installed packages to a bundle | 0, 2 |
+| `import <file>` | Install the packages in a bundle | 0, 1, 2, 130 |
+| `history` | Show past operations and their logs | 0, 2 |
+| `setup` | Register scheduled checks, the tray icon, and shortcuts | 0, 1, 2 |
+| `self-update` | Update Wingman through winget | 0, 1, 2, 10 |
+| `tray` | Run the system tray icon | 0, 2 |
+| `open [route]` | Open the terminal UI on a tab | 0, 1, 2 |
+
+`0` success, `1` failure, `2` usage error, `10` updates available (`check`
+only), `130` canceled.
 
 ## Build and test
 

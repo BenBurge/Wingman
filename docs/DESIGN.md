@@ -17,16 +17,26 @@ Stack: C# / .NET 10, Terminal.Gui 2.5, shells out to winget.exe, winget only (no
 ## Architecture
 
 ```
-src/Wingman.Core   models, IWingetClient + WingetCliClient, output parsers, bundle (de)serialization,
-                   settings, package-options store, history store. No UI dependency. Cross-platform.
-src/Wingman.Tui    Terminal.Gui views. Depends on Core only.
-src/Wingman        the `wingman` executable. No args: launches the TUI. Subcommands: headless CLI.
-src/Wingman.Windows elevated helper launcher and worker (phase 2); Task Scheduler registration,
-                   toasts, tray icon (phase 3). Windows-only; referenced by src/Wingman only.
-tests/Wingman.Core.Tests   xunit; parsers are tested against captured winget output in Fixtures/.
+src/Wingman.Core    models, IWingetClient + WingetCliClient, output parsers, bundle (de)serialization,
+                    settings, package-options store, history store, state store, the setup plan
+                    builder, and the toast content builder. No UI dependency. Cross-platform.
+src/Wingman.Cli     headless commands (`check`, `list`, `search`, `upgrade`, `install`, `export`,
+                    `import`, `history`, `setup`, `self-update`, `tray`, `open`). Cross-platform;
+                    references Core only. Reaches Windows-only services only through
+                    interfaces Core defines (`ISetupExecutor`, `IToastSender`, `ISelfUpdateStarter`,
+                    the elevation factory); the host wires the real implementations in from
+                    Wingman.Windows.
+src/Wingman.Tui     Terminal.Gui views. Depends on Core only.
+src/Wingman         the `wingman` executable. No args: launches the TUI. Subcommands: headless CLI.
+src/Wingman.Windows elevated helper launcher and worker, the setup executor, the toast sender, the
+                    tray icon process, and the self-update starter. Windows-only; referenced by
+                    src/Wingman only.
+tests/Wingman.Core.Tests   xunit; parsers are tested against captured winget output in Fixtures/;
+                    headless commands are tested through CliHarness.
 ```
 
-Dependency direction is strictly Core ← Tui ← Wingman. Windows-only code never lands in Core.
+Dependency direction is strictly Core ← {Tui, Cli} ← Wingman, and Windows is referenced only by
+Wingman. Windows-only code never lands in Core, Tui, or Cli.
 
 ### Talking to winget
 
@@ -67,18 +77,55 @@ Every list tab uses one widget: a filterable, sortable table on the left and a d
 
 ### Distribution and background pieces
 
-There is no installer and no Windows service. Wingman ships as a portable single-file executable published to the winget community repository, which puts it on the user's PATH. `wingman setup` idempotently registers the scheduled tasks (update check, auto-install), the login startup entry for the tray process, and the Start Menu shortcut with the AppUserModelID that unpackaged apps need for toasts; `wingman setup --remove` tears them down. Self-update runs `winget upgrade` for Wingman through a detached process, because a running executable cannot be overwritten.
+There is no installer and no Windows service. Wingman ships as a portable single-file executable published to the winget community repository, which puts it on the user's PATH.
 
-Toasts are native Windows toasts and follow the system theme and accent. Actions deep-link into Wingman: "Update all" opens the batch runner with the queue prefilled, "View log" opens History on that row. At most one toast per check.
+`wingman setup` idempotently registers, from the current settings: two scheduled tasks that run `wingman check --notify` (`Wingman\Check` hourly, and `Wingman\CheckAtLogon` at login, as two tasks because `schtasks` cannot combine an interval trigger and a logon trigger on one command line), a `Wingman\AutoInstall` task that runs `wingman upgrade --all --yes --auto --notify` daily at the configured time, a `Run` registry entry that starts `wingman tray` at login, a Start Menu shortcut (`Wingman.lnk`) carrying the AppUserModelID `BenBurge.Wingman` that toasts need, and the `wingman:` protocol under `HKCU\Software\Classes\wingman`, whose `shell\open\command` runs `wingman open "%1"`. `wingman setup --remove` tears every part down. Independent of `--remove`, a part whose own setting is off (`CheckAtLogin`, `AutoInstall`, or the tray's login-start setting) is removed on the next `setup` even without `--remove`, since its setting says it should not be there; a part that already matches what is registered is reported unchanged rather than rewritten. The startup entry and the scheduled tasks run `wingman` through `conhost.exe --headless`, so the console executable leaves no window on the desktop.
 
-The tray icon is the W of Wingman whose last stroke lifts into a wing tip, drawn as a single 2-unit stroke on a 16-unit grid so it inherits the taskbar foreground color like the built-in tray icons. A bottom-right badge shows state: amber dot for updates available, amber ring for working, red dot for a failed last run, gray glyph when notifications are paused. Left-click opens Wingman on the Updates tab in a new terminal window; right-click shows a menu with update-all, open, check now, pause notifications, settings, and quit. The app icon used for toasts and the Start Menu shortcut is the same W on an amber (#F0B54A) tile with a dark (#171B26) glyph.
+Toasts are shown by a hidden `powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden` process that loads the WinRT toast APIs and shows the XML `ToastBuilder` builds, so Wingman.Windows never takes a Windows SDK dependency; the AppUserModelID is only valid once `wingman setup` has created the Start Menu shortcut carrying it. Every toast activates through the `wingman:` protocol: the updates-available toast offers "Update all" (`wingman:update-all`) and "Open" (`wingman:updates`), and the batch-finished toast offers "View log" (`wingman:history`). Each kind of toast carries its own tag (`wingman-updates`, `wingman-batch`), so a later toast of the same kind replaces the last one instead of piling up, giving at most one toast per check. A toast can never fail the command that sent it: a PowerShell failure is written to standard error and otherwise ignored.
+
+`state.json` holds the scheduler's last-known status for the tray to read without running a check of its own: `lastCheck`, `updatesAvailable`, and `updateIds` are written by `wingman check`; `lastBatch`, `lastBatchResult`, and `lastBatchFailed` are written after any batch (`upgrade`, `install`, `import`) finishes; `running` is set for the duration of a check or a batch, and briefly by the tray itself when it starts a check from its menu; `lastError` is set when a check's call to winget fails.
+
+The tray (`wingman tray`) is a message-only window (`HWND_MESSAGE`), so it never appears in the taskbar and never receives `TaskbarCreated`; it re-adds its icon when a modify fails, watches `state.json` and `settings.json` with a debounced `FileSystemWatcher`, and re-reads both on a 60-second timer as a fallback. Selecting the icon and each menu item start a new `wingman` process rather than acting in place: "Update all" and selecting the icon itself open `wingman open update-all` and `wingman open updates`; "Check now" starts `wingman check --notify`; "Pause notifications" toggles `settings.json`'s pause flag directly; "Settings" opens `wingman open settings`; "Quit" closes the window. The icon is the W of Wingman whose last stroke lifts into a wing tip, drawn as a single 2-unit stroke on a 16-unit grid so it inherits the taskbar foreground color like the built-in tray icons. A bottom-right badge shows state: amber dot for updates available, amber ring for working, red dot for a failed last run, gray glyph when notifications are paused. Left-click opens Wingman on the Updates tab in a new terminal window; right-click shows a menu with update-all, open, check now, pause notifications, settings, and quit. The app icon used for toasts and the Start Menu shortcut is the same W on an amber (#F0B54A) tile with a dark (#171B26) glyph.
+
+Self-update compares the running version against `BenBurge.Wingman` on winget and, when a newer one is published, starts a detached `cmd.exe` that waits two seconds (so this process has time to exit and release the executable) and then runs `winget upgrade --id BenBurge.Wingman --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity`, because a running executable cannot overwrite itself. The check never throws: a failed lookup, or a development build's unversioned build, is reported as "no update available" rather than blocking startup. Settings → Tools and the `setup`/`self-update` CLI commands share the same `ISetupExecutor` and `ISelfUpdateStarter`.
+
+## Headless CLI
+
+`wingman <command>` runs one of the commands below instead of the TUI; with no command, `wingman` launches the TUI. Every command accepts `--fake` (run against `FakeWingetClient` instead of a real `winget.exe`, the same fake the TUI's own `--fake` mode uses) and `--json` (print exactly one JSON document to standard output instead of a table; for the batch commands, plan and progress text that would otherwise go to standard output goes to standard error instead, so standard output holds only the document). `WINGMAN_DATA_DIR` overrides `%APPDATA%\Wingman` for `settings.json`, `package-options.json`, `state.json`, and the `history` folder; the TUI honors the same variable, which is how `tools/TuiHarness` and the test suite keep off the real profile.
+
+| Command | Options | Does |
+|---|---|---|
+| `check` | `--notify` | Lists available upgrades and records the result in `state.json`; `--notify` shows a toast when any are available. |
+| `list [query]` | | Installed packages, filtered to those whose name or id contains `query`. |
+| `search <query>` | | winget's search results, with already-installed packages marked. |
+| `upgrade --all \| <id>...` | `--yes` `--dry-run` `--notify` | Upgrades the named packages, or with `--all` every available update except held, excluded, and skipped ones. |
+| `install <id>...` | `--version <v>` `--yes` `--dry-run` | Installs packages with their stored options, or with `--version` moves an installed one to that version. |
+| `export <file>` | `--no-options` | Writes every installed package to a UniGetUI bundle (`.ubundle`). |
+| `import <file>` | `--yes` `--dry-run` `--no-options` | Plans a bundle against what is installed, stores its options, and runs its installs and upgrades. |
+| `history [--last n] [--failed]` | `--yes` | Lists past operations; `history show <n>` prints one operation's details and log, `history forget <n>` deletes it. |
+| `setup [--remove] [--dry-run]` | | Registers or removes the scheduled tasks, the startup entry, the Start Menu shortcut, and the `wingman:` protocol; prints one line per part with `created`, `updated`, `removed`, `unchanged`, `would create`, `would remove`, or `failed`. Exits 0, or 1 when a part failed, 2 off Windows. |
+| `self-update [--check]` | | With `--check`, exits 10 when a newer Wingman is on winget, 0 otherwise; without it, starts the detached `winget upgrade` and exits 0, or 1 when Wingman is not installed through winget, 2 off Windows. |
+| `tray` | | Runs the tray icon process until the user quits it from its menu. Exits 2 off Windows. |
+| `open [route] [--attached]` | | Opens the terminal UI on a route (`updates`, `update-all`, `history`, `settings`, `installed`, `discover`) in the current console, or, when there is no console window, spawns a new terminal window running the same command with `--attached`. The `wingman:` protocol handler calls it with the full link, which is parsed down to the route. |
+
+`upgrade`, `install`, and `import` print their plan and ask `Proceed? [y/N]` before running it, unless `--dry-run` (print the plan and stop) or `--yes` (skip the question) is given; without `--yes`, a redirected standard input cannot answer and the command refuses to run.
+
+Exit codes, shared by every command:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. |
+| 1 | An operation in a batch failed, or the command threw (reported as `wingman: <message>`). |
+| 2 | Usage: an unknown command or subcommand, a missing or invalid argument, or a batch command refusing to run without `--yes` because standard input is not a terminal. |
+| 10 | `check` only: at least one non-held update is available. |
+| 130 | Ctrl+C during a command, or the interactive `Proceed? [y/N]` prompt answered anything but `y`/`yes`. |
 
 ## Phases
 
-1. Core client and parsers with fixtures; TUI with the three views, details pane, filter, sort, install/upgrade/uninstall/pin for one package at a time, output log pane, background operations.
-2. Batch queue, elevated helper, per-package options editor, pre/post commands, bundle import/export, history tab, settings tab, themes, context menus.
-3. Headless CLI (`check`, `list`, `upgrade`, `export`, `import`, `history`, `setup`), Task Scheduler registration, toasts, tray icon, self-updater.
+1. Core client and parsers with fixtures; TUI with the three views, details pane, filter, sort, install/upgrade/uninstall/pin for one package at a time, output log pane, background operations. Done.
+2. Batch queue, elevated helper, per-package options editor, pre/post commands, bundle import/export, history tab, settings tab, themes, context menus. Done.
+3. Headless CLI (`check`, `list`, `search`, `upgrade`, `install`, `export`, `import`, `history`, `setup`, `self-update`, `tray`, `open`), the setup plan builder and executor, toast building and sending, the tray icon process, and the self-updater. Done. Five specific behaviors are covered only by fakes so far and need a manual check on a real Windows machine: `SetupExecutor` registering the scheduled tasks and shortcut against the real `schtasks.exe` and registry (tested against a scripted `IProcessRunner`), a real toast through the hidden PowerShell process having its actions actually launch `wingman` (tested against `ToastBuilder`'s XML and argv), the tray menu (tested only through its message-handling logic, not a real notification area), the elevated helper's UAC prompt including a decline, on a machine with a UAC broker such as Admin By Request in the mix (tested end to end only over an in-process named pipe), and a real self-update through winget (tested against a scripted `IProcessRunner` and `IWingetClient`).
 
 ## Testing strategy
 
-Core is fully testable on macOS: parsers against fixtures, bundle round-trips, options store, queue ordering. The TUI is exercised manually on Windows. Every PR must keep `dotnet test` green on both OSes.
+Core and Cli are fully testable on macOS and Linux: parsers against fixtures, bundle round-trips, options store, queue ordering, setup plan building, toast content, and every headless command's argument parsing, `--json` output, and exit code through `CliHarness` (`tests/Wingman.Core.Tests/CliHarness.cs`), which runs `CliRunner` against a `FakeWingetClient` and a temporary data directory. `tools/TuiHarness` compiles the Tui sources into a console app on the ANSI driver, scripts keys and mouse events at a fixed size, and dumps every screen cell to `out.txt` so a layout or behavior change can be checked without a real terminal; run it after any TUI change. Windows-only code — the elevated helper launcher, `SetupExecutor`'s registry and Task Scheduler calls, `ToastNotifier`'s PowerShell process, and the tray window — is exercised manually on Windows. Every PR must keep `dotnet test` green on both OSes.
