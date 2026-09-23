@@ -9,6 +9,16 @@ internal sealed class OpenCommand : ICliCommand
 {
     private const string ProtocolPrefix = "wingman:";
 
+    /// <summary>
+    /// Every route <c>wingman open</c> accepts. <c>wt.exe</c> splits its command line on
+    /// <c>;</c>, so an unvalidated route could inject a second command; anything not in this set
+    /// is rejected before a process is spawned or the TUI is launched.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> Routes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "updates", "update-all", "history", "settings", "installed", "discover",
+    };
+
     public string Name => "open";
 
     public string Summary => "Open the terminal UI on a tab";
@@ -34,6 +44,12 @@ internal sealed class OpenCommand : ICliCommand
         }
 
         var route = args.Positionals.Count > 0 ? NormalizeRoute(args.Positionals[0]) : null;
+        if (route is not null && !Routes.Contains(route))
+        {
+            context.Error.WriteLine($"wingman open: unknown route '{route}'");
+            return ExitCodes.Usage;
+        }
+
         var runsHere = args.HasFlag("attached") || (!context.IsOutputRedirected && context.HasConsole);
         if (runsHere)
         {
@@ -46,7 +62,7 @@ internal sealed class OpenCommand : ICliCommand
             return ExitCodes.Usage;
         }
 
-        var argv = TerminalArgv(context.ExePath, route, context.IsFake, HasWindowsTerminal());
+        var argv = TerminalArgv(context.ExePath, route, context.IsFake, ResolveWindowsTerminal());
         if (!spawn(argv))
         {
             context.Error.WriteLine($"wingman open: could not start {argv[0]}");
@@ -76,16 +92,16 @@ internal sealed class OpenCommand : ICliCommand
     /// A new Windows Terminal tab in the most recent window (<c>wt.exe -w 0 nt</c>) when Windows
     /// Terminal is installed, else a plain console window, running <c>open &lt;route&gt; --attached</c>.
     /// </summary>
-    internal static string[] TerminalArgv(string exePath, string? route, bool isFake, bool hasWindowsTerminal)
+    internal static string[] TerminalArgv(string exePath, string? route, bool isFake, string? windowsTerminalPath)
     {
         var argv = new List<string>();
-        if (hasWindowsTerminal)
+        if (windowsTerminalPath is not null)
         {
-            argv.AddRange(["wt.exe", "-w", "0", "nt"]);
+            argv.AddRange([windowsTerminalPath, "-w", "0", "nt"]);
         }
         else
         {
-            argv.Add("conhost.exe");
+            argv.Add(ConhostPath());
         }
 
         argv.Add(exePath);
@@ -104,19 +120,34 @@ internal sealed class OpenCommand : ICliCommand
         return [.. argv];
     }
 
+    // conhost.exe hosts a console for a program that has none; resolving it from the system
+    // directory instead of trusting a bare name keeps a PATH entry ahead of System32 from
+    // substituting a different binary.
+    private static string ConhostPath() => Path.Combine(Environment.SystemDirectory, "conhost.exe");
+
     // The same lookup as `where wt`, without starting a process. Windows Terminal installs wt.exe
-    // as an app execution alias under WindowsApps, which is on PATH and passes File.Exists.
-    private static bool HasWindowsTerminal()
+    // as an app execution alias under WindowsApps, which is normally on PATH. Some hardened
+    // environments strip user PATH entries the alias depends on, so fall back to the fixed
+    // location it always installs to.
+    private static string? ResolveWindowsTerminal()
     {
         var path = Environment.GetEnvironmentVariable("PATH") ?? "";
         foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
-            if (File.Exists(Path.Combine(directory.Trim(), "wt.exe")))
+            var candidate = Path.Combine(directory.Trim(), "wt.exe");
+            if (File.Exists(candidate))
             {
-                return true;
+                return candidate;
             }
         }
 
-        return false;
+        var localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+        if (string.IsNullOrEmpty(localAppData))
+        {
+            return null;
+        }
+
+        var fallback = Path.Combine(localAppData, "Microsoft", "WindowsApps", "wt.exe");
+        return File.Exists(fallback) ? fallback : null;
     }
 }

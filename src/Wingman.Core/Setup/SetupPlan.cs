@@ -7,21 +7,51 @@ namespace Wingman.Core.Setup;
 /// <param name="Kind">One of <c>task</c>, <c>registry</c>, <c>shortcut</c>, <c>protocol</c>.</param>
 public sealed record SetupItem(string Kind, string Name, string Description);
 
+/// <summary>When a <see cref="ScheduledTaskSpec"/> runs.</summary>
+public enum TaskTriggerKind
+{
+    /// <summary>Every <see cref="ScheduledTaskSpec.IntervalHours"/> hours, starting at midnight today.</summary>
+    Interval,
+
+    /// <summary>When the user who ran setup logs on.</summary>
+    Logon,
+
+    /// <summary>Once a day at <see cref="ScheduledTaskSpec.DailyTime"/>.</summary>
+    Daily,
+}
+
 /// <summary>
 /// A Task Scheduler entry <see cref="SetupPlanner"/> wants registered, or removed when
-/// <paramref name="Enabled"/> is false because its setting is off.
+/// <paramref name="Enabled"/> is false because its setting is off. It is registered from the
+/// document <see cref="TaskDefinitionXml.Build"/> writes, because the <c>schtasks</c> command-line
+/// flags cannot express an interval over 23 hours, a logon trigger for one user, or the battery
+/// and missed-run settings.
 /// </summary>
-/// <param name="SchtasksCreateArgs">
-/// Argv for <c>schtasks /Create</c>, as separate tokens; <see cref="Command"/> appears here
-/// already quoted as the single <c>/TR</c> token, since schtasks needs the whole command
-/// double-quoted and the process runner must not quote it again.
-/// </param>
+/// <param name="Description">The task's description in Task Scheduler.</param>
+/// <param name="IntervalHours">The repetition interval; used only by <see cref="TaskTriggerKind.Interval"/>.</param>
+/// <param name="DailyTime">The local start time; used only by <see cref="TaskTriggerKind.Daily"/>.</param>
+/// <param name="Executable">The full path of the program the task starts.</param>
+/// <param name="Arguments">The program's command line, already quoted, since Task Scheduler passes it through as is.</param>
 /// <param name="Enabled">
 /// False when the setting behind the task is off, so applying the plan removes the task if an
 /// earlier setup registered it.
 /// </param>
 public sealed record ScheduledTaskSpec(
-    string Name, string[] SchtasksCreateArgs, string[] SchtasksDeleteArgs, string Command, bool Enabled);
+    string Name,
+    string Description,
+    TaskTriggerKind TriggerKind,
+    int IntervalHours,
+    TimeOnly DailyTime,
+    string Executable,
+    string Arguments,
+    bool Enabled)
+{
+    /// <summary>Argv for <c>schtasks</c> that registers the task from the definition written to <paramref name="xmlPath"/>, replacing any earlier one.</summary>
+    public string[] SchtasksRegisterArgs(string xmlPath) => ["/Create", "/TN", Name, "/XML", xmlPath, "/F"];
+
+    /// <summary>Argv for <c>schtasks</c> that deletes the task without asking.</summary>
+    public string[] SchtasksDeleteArgs => ["/Delete", "/TN", Name, "/F"];
+}
 
 /// <summary>
 /// An HKCU value <see cref="SetupPlanner"/> wants written. <paramref name="ValueName"/> of <c>""</c>

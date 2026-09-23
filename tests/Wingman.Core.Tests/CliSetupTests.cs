@@ -32,8 +32,8 @@ public class CliSetupTests : IDisposable
         var call = Assert.Single(executor.Calls);
         Assert.False(call.Remove);
         Assert.False(call.DryRun);
-        Assert.Equal(SetupPlanner.Build(_cli.Settings, _cli.ExePath).Tasks[0].Command, call.Plan.Tasks[0].Command);
-        Assert.Contains("12", call.Plan.Tasks[0].SchtasksCreateArgs);
+        Assert.Equal(SetupPlanner.Build(_cli.Settings, _cli.ExePath).Tasks[0].Arguments, call.Plan.Tasks[0].Arguments);
+        Assert.Equal(12, call.Plan.Tasks[0].IntervalHours);
 
         var lines = _cli.OutputLines;
         Assert.Equal(SetupPlanner.Describe(call.Plan).Count, lines.Length);

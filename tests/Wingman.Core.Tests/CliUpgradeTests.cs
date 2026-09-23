@@ -1,6 +1,9 @@
 using System.Text.Json;
 using Wingman.Cli;
 using Wingman.Core.Bundles;
+using Wingman.Core.Models;
+using Wingman.Core.SelfUpdate;
+using Wingman.Core.Winget;
 
 namespace Wingman.Core.Tests;
 
@@ -225,5 +228,68 @@ public class CliUpgradeTests : IDisposable
         await _cli.RunAsync("upgrade", "--yes", "--notify", "GitHub.cli");
 
         Assert.Single(_cli.Toasts);
+    }
+
+    [Fact]
+    public async Task UpgradeAll_LeavesOutWingmanItselfWithANote()
+    {
+        _cli.ClientOverride = new ClientWithWingmanUpdate(_cli.Client);
+
+        await _cli.RunAsync("upgrade", "--all", "--dry-run");
+
+        var lines = _cli.OutputLines;
+        Assert.Equal(18, lines.Length);
+        Assert.Equal("skip BenBurge.Wingman: use wingman self-update", lines[^1]);
+        Assert.DoesNotContain("upgrade BenBurge.Wingman", _cli.Output);
+    }
+
+    [Fact]
+    public async Task UpgradeAllAuto_LeavesOutWingmanEvenWhenItsAutoUpdateIsOn()
+    {
+        _cli.ClientOverride = new ClientWithWingmanUpdate(_cli.Client);
+        _cli.Options.SetInstallOptions(SelfUpdateChecker.PackageId, new InstallOptions { AutoUpdatePackage = true });
+
+        await _cli.RunAsync("upgrade", "--all", "--auto", "--dry-run");
+
+        Assert.Equal(["skip BenBurge.Wingman: use wingman self-update", "Nothing to do."], _cli.OutputLines);
+    }
+
+    /// <summary>The fake winget, with an update for Wingman itself added to <c>winget upgrade</c>.</summary>
+    private sealed class ClientWithWingmanUpdate(FakeWingetClient inner) : IWingetClient
+    {
+        public async Task<IReadOnlyList<PackageRow>> ListUpgradesAsync(CancellationToken ct)
+        {
+            var rows = new List<PackageRow>(await inner.ListUpgradesAsync(ct))
+            {
+                new("Wingman", SelfUpdateChecker.PackageId, "1.0.0", "1.1.0", "winget"),
+            };
+            return rows;
+        }
+
+        public Task<PackageDetails?> ShowAsync(string id, CancellationToken ct) => inner.ShowAsync(id, ct);
+
+        public Task<string> GetVersionAsync(CancellationToken ct) => inner.GetVersionAsync(ct);
+
+        public Task<IReadOnlyList<PackageRow>> SearchAsync(string query, CancellationToken ct) => inner.SearchAsync(query, ct);
+
+        public Task<IReadOnlyList<PackageRow>> ListInstalledAsync(CancellationToken ct) => inner.ListInstalledAsync(ct);
+
+        public Task<IReadOnlyList<string>> ListVersionsAsync(string id, CancellationToken ct) => inner.ListVersionsAsync(id, ct);
+
+        public Task<IReadOnlyList<Pin>> ListPinsAsync(CancellationToken ct) => inner.ListPinsAsync(ct);
+
+        public Task<OperationResult> InstallAsync(OperationRequest request, IProgress<string> output, CancellationToken ct) =>
+            inner.InstallAsync(request, output, ct);
+
+        public Task<OperationResult> UpgradeAsync(OperationRequest request, IProgress<string> output, CancellationToken ct) =>
+            inner.UpgradeAsync(request, output, ct);
+
+        public Task<OperationResult> UninstallAsync(OperationRequest request, IProgress<string> output, CancellationToken ct) =>
+            inner.UninstallAsync(request, output, ct);
+
+        public Task<OperationResult> PinAsync(string id, bool blocking, string? version, CancellationToken ct) =>
+            inner.PinAsync(id, blocking, version, ct);
+
+        public Task<OperationResult> UnpinAsync(string id, CancellationToken ct) => inner.UnpinAsync(id, ct);
     }
 }

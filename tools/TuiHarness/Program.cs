@@ -1275,10 +1275,10 @@ Step[] mainSteps =
         Check("status", screen.Rows()[MessageY()].Contains("Registered: 8 created", StringComparison.Ordinal));
         Check("one register call", setupExecutor.Calls.Count == 1 && !setupExecutor.Calls[0].Remove);
         var checkTask = setupExecutor.Calls[0].Plan.Tasks[0];
-        Check("the plan uses the new interval", checkTask.SchtasksCreateArgs.SkipWhile(arg => arg != "/MO").ElementAtOrDefault(1) == "12");
+        Check("the plan uses the new interval", checkTask.IntervalHours == 12);
 
         // Scheduled tasks start wingman through conhost --headless so no console window appears.
-        Check("the plan runs this executable", checkTask.Command == $"conhost.exe --headless \"{Environment.ProcessPath}\" check --notify");
+        Check("the plan runs this executable", checkTask.Arguments == $"--headless \"{Environment.ProcessPath}\" check --notify");
         Check("auto-install planned off", !setupExecutor.Calls[0].Plan.Tasks[2].Enabled);
     }),
     new(50, "click Remove scheduled tasks, y: removed", () => { ClickText("⏎ Remove scheduled tasks"); screen.Press(Key.Y); }),

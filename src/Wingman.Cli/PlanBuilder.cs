@@ -1,6 +1,7 @@
 using Wingman.Core.Elevation;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
+using Wingman.Core.SelfUpdate;
 using Wingman.Core.Settings;
 using Wingman.Core.Updates;
 
@@ -29,7 +30,8 @@ internal sealed class PlanBuilder
     /// <summary>
     /// Upgrades for <paramref name="ids"/>, or for every available upgrade when <paramref name="all"/>.
     /// Held and excluded packages are left out with a note either way; <paramref name="all"/> also
-    /// leaves out skipped versions and rows winget only upgrades when they are named.
+    /// leaves out skipped versions, rows winget only upgrades when they are named, and Wingman
+    /// itself, which only <c>wingman self-update</c> can replace.
     /// </summary>
     /// <param name="autoOnly">Limits <paramref name="all"/> to packages whose options turn on
     /// <c>AutoUpdatePackage</c>, for the scheduled auto-install.</param>
@@ -50,6 +52,14 @@ internal sealed class PlanBuilder
                 var isAutoUpdated = _context.Options.GetInstallOptions(row.Id).AutoUpdatePackage;
                 if ((autoOnly && !isAutoUpdated) || !planned.Add(row.Id))
                 {
+                    continue;
+                }
+
+                // winget cannot replace wingman.exe while this process runs it; self-update
+                // upgrades it from a detached process after Wingman exits.
+                if (string.Equals(row.Id, SelfUpdateChecker.PackageId, StringComparison.OrdinalIgnoreCase))
+                {
+                    notes.Add($"skip {row.Id}: use wingman self-update");
                     continue;
                 }
 

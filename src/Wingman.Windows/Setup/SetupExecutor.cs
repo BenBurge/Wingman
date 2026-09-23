@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.Versioning;
 using System.Security;
+using System.Text;
 using Microsoft.Win32;
 using Wingman.Core.Setup;
 using Wingman.Core.Winget;
@@ -16,14 +17,17 @@ namespace Wingman.Windows.Setup;
 [SupportedOSPlatform("windows")]
 public sealed class SetupExecutor : ISetupExecutor
 {
-    private const string Schtasks = "schtasks.exe";
-
     // Removal deletes this whole key rather than the planned values one by one, so no empty
     // shell\open\command keys are left behind.
     private const string ProtocolRootKey = @"Software\Classes\wingman";
 
     private readonly IProcessRunner _runner;
     private readonly string _startMenuDirectory;
+    private readonly string _schtasks = Path.Combine(Environment.SystemDirectory, "schtasks.exe");
+
+    // The account the tasks run as and whose logon starts the logon task; naming it keeps the
+    // logon trigger to this user, which needs no administrator rights.
+    private readonly string _userId = Environment.UserDomainName + "\\" + Environment.UserName;
 
     /// <param name="startMenuDirectory">
     /// Where the shortcut goes; defaults to the user's Start Menu Programs folder. A test points
@@ -72,28 +76,44 @@ public sealed class SetupExecutor : ISetupExecutor
         {
             // schtasks exits non-zero for a missing task and for every other query error alike, so
             // any failure here counts as "not registered" and the create or delete reports the rest.
-            var query = await _runner.RunAsync(Schtasks, ["/Query", "/TN", task.Name, "/XML"], ct);
+            var query = await _runner.RunAsync(_schtasks, ["/Query", "/TN", task.Name, "/XML"], ct);
             var exists = query.ExitCode == 0;
-            var upToDate = exists && ScheduledTaskXml.Matches(query.StandardOutput, task);
+            var upToDate = exists && TaskDefinitionXml.Matches(query.StandardOutput, task, _userId);
 
             var outcome = SetupOutcomes.Decide(exists, task.Enabled, remove, dryRun, upToDate);
             if (outcome == SetupResult.Removed)
             {
-                var delete = await _runner.RunAsync(Schtasks, task.SchtasksDeleteArgs, ct);
+                var delete = await _runner.RunAsync(_schtasks, task.SchtasksDeleteArgs, ct);
                 return delete.ExitCode == 0 ? Outcome(item, outcome) : Failed(item, FirstLine(delete));
             }
 
             if (outcome is SetupResult.Created or SetupResult.Updated)
             {
-                var create = await _runner.RunAsync(Schtasks, task.SchtasksCreateArgs, ct);
-                return create.ExitCode == 0 ? Outcome(item, outcome) : Failed(item, FirstLine(create));
+                var register = await RegisterAsync(task, ct);
+                return register.ExitCode == 0 ? Outcome(item, outcome) : Failed(item, FirstLine(register));
             }
 
             return Outcome(item, outcome);
         }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException)
         {
             return Failed(item, ex.Message);
+        }
+    }
+
+    private async Task<ProcessResult> RegisterAsync(ScheduledTaskSpec task, CancellationToken ct)
+    {
+        var xmlPath = Path.Combine(Path.GetTempPath(), $"wingman-task-{Guid.NewGuid():N}.xml");
+
+        // schtasks /XML reads the file as UTF-16 LE; Encoding.Unicode writes the BOM it looks for.
+        await File.WriteAllTextAsync(xmlPath, TaskDefinitionXml.Build(task, _userId), Encoding.Unicode, ct);
+        try
+        {
+            return await _runner.RunAsync(_schtasks, task.SchtasksRegisterArgs(xmlPath), ct);
+        }
+        finally
+        {
+            File.Delete(xmlPath);
         }
     }
 

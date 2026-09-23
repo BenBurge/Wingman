@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO.Pipes;
 using System.Runtime.Versioning;
 using Wingman.Core.Elevation;
 
@@ -9,9 +11,21 @@ namespace Wingman.Windows.Elevation;
 /// Starts <c>wingman --elevated-worker</c> through a UAC prompt and connects to it. A batch calls
 /// this once, so the user sees one prompt per batch however many operations need elevation.
 /// </summary>
+/// <remarks>
+/// The helper runs whatever arrives on the pipe with administrator rights, so both ends check
+/// the other. The pipe's ACL admits only the current user and Administrators, which keeps other
+/// local users from connecting first or reading it. The helper is told this process's id with
+/// <c>--parent</c> and refuses a server with any other id, so a process that creates a pipe of
+/// the same name after this one has given up cannot feed it operations. This process in turn
+/// refuses a client whose id is not the helper it started. The helper connects at the
+/// Identification impersonation level, so even a server that got past those checks could learn
+/// who the helper is but never act with its elevated token.
+/// </remarks>
 [SupportedOSPlatform("windows")]
 public static class ElevatedHelperLauncher
 {
+    private const string UnexpectedClientMessage = "Unexpected process connected to the elevation pipe";
+
     private const int ErrorCancelled = 1223;
 
     public static readonly TimeSpan DefaultConnectTimeout = TimeSpan.FromSeconds(120);
@@ -25,15 +39,15 @@ public static class ElevatedHelperLauncher
     /// thread pool, because ShellExecute blocks for as long as a UAC broker such as Admin By
     /// Request keeps its prompt up, and the wait must still end on a cancel or a timeout.
     /// </summary>
-    /// <exception cref="ElevationDeclinedException">The user declined the prompt, or the helper
-    /// exited before it connected.</exception>
+    /// <exception cref="ElevationDeclinedException">The user declined the prompt, the helper
+    /// exited before it connected, or a process other than the helper connected.</exception>
     /// <exception cref="ElevationTimedOutException">The helper did not connect within
     /// <paramref name="connectTimeout"/>.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was canceled first.</exception>
     public static async Task<IElevatedOperationChannel> StartAsync(TimeSpan connectTimeout, CancellationToken ct)
     {
         var name = ElevatedWorkerPipe.NewPipeName();
-        var server = ElevatedWorkerPipe.CreateServer(name);
+        var server = SecurePipeServer.Create(name);
         var start = Task.Run(() => StartHelper(name), CancellationToken.None);
 
         // Ends whichever of the two waits is still open once the race is decided.
@@ -43,6 +57,7 @@ public static class ElevatedHelperLauncher
             var connected = server.WaitForConnectionAsync(waits.Token);
             var exited = WaitForExitAsync(start, waits.Token);
             await ElevatedHelperConnection.WaitAsync(connected, exited, connectTimeout, ct);
+            await VerifyClientIsHelperAsync(server, start, connectTimeout, ct);
         }
         catch
         {
@@ -61,9 +76,10 @@ public static class ElevatedHelperLauncher
     {
         try
         {
+            var parentId = Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
             return Process.Start(new ProcessStartInfo(Environment.ProcessPath!)
             {
-                ArgumentList = { "--elevated-worker", pipeName },
+                ArgumentList = { "--elevated-worker", pipeName, "--parent", parentId },
                 UseShellExecute = true,
                 Verb = "runas",
                 WindowStyle = ProcessWindowStyle.Hidden,
@@ -72,6 +88,33 @@ public static class ElevatedHelperLauncher
         catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorCancelled)
         {
             throw new ElevationDeclinedException();
+        }
+    }
+
+    /// <summary>
+    /// Throws unless the connected client is the process <paramref name="start"/> created. The
+    /// helper can only connect once ShellExecute has created it, so its handle is at most moments
+    /// away. A client that connects while the prompt is still up is someone else, so the wait for
+    /// the handle is bounded, and a client that cannot be matched to a handle is refused.
+    /// </summary>
+    private static async Task VerifyClientIsHelperAsync(
+        NamedPipeServerStream server, Task<Process?> start, TimeSpan timeout, CancellationToken ct)
+    {
+        Process? helper;
+        try
+        {
+            helper = await start.WaitAsync(timeout, ct);
+        }
+        catch (TimeoutException)
+        {
+            helper = null;
+        }
+
+        var clientKnown = PipeNativeMethods.GetNamedPipeClientProcessId(server.SafePipeHandle, out var clientProcessId);
+        var clientIsHelper = clientKnown && helper is not null && clientProcessId == (uint)helper.Id;
+        if (!clientIsHelper)
+        {
+            throw new ElevationDeclinedException(UnexpectedClientMessage);
         }
     }
 
@@ -120,17 +163,18 @@ public static class ElevatedHelperLauncher
     }
 
     // Best effort: the handle ShellExecute returns for an elevated process may not grant
-    // terminate access, and the helper exits by itself when its own connect times out.
+    // terminate access, and the helper exits by itself when its own connect times out. The whole
+    // tree goes, so a winget the helper already started does not outlive it.
     private static void KillIfRunning(Process helper)
     {
         try
         {
             if (!helper.HasExited)
             {
-                helper.Kill();
+                helper.Kill(entireProcessTree: true);
             }
         }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or AggregateException)
         {
         }
     }

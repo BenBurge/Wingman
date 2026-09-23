@@ -35,7 +35,15 @@ public sealed class ProcessRunner : IProcessRunner
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        await process.WaitForExitAsync(ct);
+        try
+        {
+            await process.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            KillProcessTree(process);
+            throw;
+        }
 
         return new ProcessResult(process.ExitCode, stdOut.ToString(), stdErr.ToString());
     }
