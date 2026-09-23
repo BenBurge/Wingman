@@ -1,13 +1,15 @@
 using System.Globalization;
 
-namespace Wingman.Tui;
+namespace Wingman.Core.Winget;
 
 /// <summary>
 /// Orders version strings so <c>2.10.0</c> sorts after <c>2.9.1</c>: segments split on <c>.</c>
 /// compare numerically when both are whole numbers and ordinally, ignoring case, otherwise. Winget
 /// prints versions such as <c>Unknown</c> or <c>&lt; 1.2</c>, which fall back to the ordinal rule.
+/// A version that runs out of segments first is the lower one, so <c>2.55.0</c> sorts before
+/// <c>2.55.0.3</c>.
 /// </summary>
-internal sealed class VersionComparer : IComparer<string>
+public sealed class VersionComparer : IComparer<string>
 {
     public static VersionComparer Instance { get; } = new();
 

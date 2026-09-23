@@ -1,6 +1,7 @@
 using Wingman.Core.Bundles;
 using Wingman.Core.Models;
 using Wingman.Core.Settings;
+using Wingman.Core.Winget;
 
 namespace Wingman.Core.Operations;
 
@@ -37,6 +38,43 @@ public static class OperationRequestFactory
 
         return new OperationPlan(kind, request, requiresElevation, preCommand, postCommand, abortOnPreFail);
     }
+
+    /// <summary>
+    /// The plan that takes <paramref name="row"/>'s package to <paramref name="version"/>, picked
+    /// from the version picker: an upgrade pinned to it when it is newer than the installed version,
+    /// and an install pinned to it when the package is not installed. winget's <c>upgrade</c>
+    /// refuses an older version, so going back is an install with <c>--force</c>, labeled
+    /// <see cref="OperationPlan.DowngradeLabel"/>.
+    /// </summary>
+    /// <param name="row">The installed row when <paramref name="isInstalled"/>, so its
+    /// <see cref="PackageRow.Version"/> is the installed version; any row for the package otherwise.</param>
+    /// <returns>Null when <paramref name="version"/> is the installed version, which leaves nothing to run.</returns>
+    public static OperationPlan? CreateForVersion(
+        PackageRow row, string version, WingmanSettings settings, InstallOptions options, bool isInstalled)
+    {
+        if (!isInstalled)
+        {
+            return WithVersion(Create(OperationKind.Install, row, settings, options), version);
+        }
+
+        var comparison = VersionComparer.Instance.Compare(version, row.Version);
+        if (comparison == 0)
+        {
+            return null;
+        }
+
+        if (comparison > 0)
+        {
+            return WithVersion(Create(OperationKind.Upgrade, row, settings, options), version);
+        }
+
+        var install = Create(OperationKind.Install, row, settings, options);
+        var request = install.Request with { Version = version, Force = true };
+        return install with { Request = request, Label = OperationPlan.DowngradeLabel };
+    }
+
+    private static OperationPlan WithVersion(OperationPlan plan, string version) =>
+        plan with { Request = plan.Request with { Version = version } };
 
     private static string? EffectiveScope(InstallOptions options, WingmanSettings settings)
     {

@@ -64,8 +64,9 @@ bool RecordRestart(IReadOnlyList<string> restartArgs)
 
 // A short step delay so an operation streams its nine lines in under half a second.
 var client = new SlowClient(new FakeWingetClient(TimeSpan.FromMilliseconds(40)));
+var elevation = new HarnessElevation(client);
 var shell = WingmanApp.CreateShell(
-    app, theme, client, settingsStore, settings, themeDetector, elevation: null, new FakeCommandRunner(),
+    app, theme, client, settingsStore, settings, themeDetector, elevation.StartAsync, new FakeCommandRunner(),
     processIsElevated: isElevatedRun, restartAsAdministrator: RecordRestart);
 var historyDirectory = Path.Combine(dataDirectory, "history");
 string Focused() => shell.Window.MostFocused?.GetType().Name ?? "none";
@@ -332,11 +333,14 @@ Step[] mainSteps =
     {
         Check("running title", ScreenHas(" Running batch  1 of 1"));
         Check("install row", BatchRow("7zip.7zip").Contains("install  → latest"));
-        Check("the bundle's scope needs elevation", ScreenHas("elevated helper: not available "));
+        Check("the bundle's scope needs elevation", ScreenHas("elevated helper: requesting "));
         Check("options stored", shell.Options.GetInstallOptions("7zip.7zip") is { InstallationScope: "machine", SkipHashCheck: true });
     }),
     new(1000, "the import batch finished", () => { }, Verify: () =>
-        Check("finished title", ScreenHas(" Batch finished  1 of 1") && !ScreenHas("failed"))),
+    {
+        Check("finished title", ScreenHas(" Batch finished  1 of 1") && !ScreenHas("failed"));
+        Check("it ran through the helper", ScreenHas("elevated helper: closed "));
+    }),
     new(50, "Enter: Installed is back", () => screen.Press(Key.Enter), Verify: () =>
         Check("table back", ScreenHas("Filter:"))),
 
@@ -437,15 +441,17 @@ Step[] mainSteps =
         var retry = new HistoryStore(historyDirectory).List().First(entry => entry.PackageId == SlowClient.FailingId);
         Check("the retry passed --ignore-security-hash", retry.Arguments.Contains("--ignore-security-hash"));
     }),
-    new(50, "A: retry elevated, with no helper to start", () => screen.Press(Key.A), Verify: () =>
+    new(50, "A: retry elevated through the helper", () => screen.Press(Key.A), Verify: () =>
     {
         Check("a new batch of one", ScreenHas(" Running batch  1 of 1") && BatchRow(SlowClient.FailingId).Contains("install  → latest"));
-        Check("the helper is needed but not available", ScreenHas("elevated helper: not available "));
+        Check("the helper is requested", ScreenHas("elevated helper: requesting "));
+        Check("the row says so", BatchRow(SlowClient.FailingId).Contains("requesting elevation"));
     }),
-    new(1200, "the elevated retry ran in-process and failed", () => { }, Verify: () =>
+    new(1200, "the elevated retry ran through the helper and failed", () => { }, Verify: () =>
     {
         Check("finished title", ScreenHas(" Batch finished  1 of 1 · 1 failed"));
         Check("failure panel", ScreenHas(" Code            1603  ERROR_INSTALL_FAILURE"));
+        Check("the helper closed", ScreenHas("elevated helper: closed "));
     }),
     new(50, "Shift+E: exclude the failed package", () => screen.Press(new Key('E')), Verify: () =>
     {
@@ -472,7 +478,7 @@ Step[] mainSteps =
     new(50, "Space on Microsoft.Azd, Down, Space, g", () => { screen.Press(Key.Space); screen.Press(Key.CursorDown); screen.Press(Key.Space); screen.Press(Key.G); }, Verify: () =>
     {
         Check("two operations", ScreenHas(" Running batch  1 of 2") && BatchRow(ElevatedId).Length > 0);
-        Check("elevated but no helper", ScreenHas("elevated helper: not available "));
+        Check("the helper is requested", ScreenHas("elevated helper: requesting "));
     }),
     new(100, "Esc while running: cancel prompt", () => screen.Press(Key.Esc), Verify: () =>
         Check("cancel question", ScreenHas("Cancel remaining operations? (y/n)"))),
@@ -485,6 +491,42 @@ Step[] mainSteps =
     }),
     new(50, "Esc: the list is back", () => screen.Press(Key.Esc), Verify: () =>
         Check("Updates still 16", ScreenHas(" Updates 16 "))),
+
+    new(50, "filter Azure, Space on Azd, g: the helper is requested while the prompt is up", () =>
+    {
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(new Key('/'));
+        screen.Type("Azure");
+        screen.Press(Key.Enter);
+        screen.Press(Key.Home.WithCtrl);
+        screen.Press(Key.Space);
+        elevation.DeclineNext();
+        screen.Press(Key.G);
+    }, WithColors: true, Verify: () =>
+    {
+        Check("a batch of Azd alone", ScreenHas(" Running batch  1 of 1") && BatchRow(ElevatedId).Length > 0);
+        Check("the helper is requested", ScreenHas("elevated helper: requesting "));
+        Check("its row is requesting elevation", BatchRow(ElevatedId).Contains("requesting elevation"));
+        var statusX = BatchRow(ElevatedId).IndexOf("requesting elevation", StringComparison.Ordinal);
+        Check("in the accent color", screen.AttributeAt(statusX, BatchRowY(ElevatedId)) == theme.On(theme.Accent).ToString());
+        Check("the prompt line", ScreenHas(" Waiting for the elevation prompt (UAC or Admin By Request)… Esc cancels."));
+        Check("the wait counter", ScreenHas(" Waiting 0 s"));
+    }),
+    new(700, "the prompt was declined", () => { }, Verify: () =>
+    {
+        Check("declined", ScreenHas("elevated helper: declined "));
+        Check("finished title", ScreenHas(" Batch finished  0 of 1 · 1 canceled"));
+        Check("canceled by UAC", BatchRow(ElevatedId).Contains("canceled by UAC"));
+        Check("no failure panel", !ScreenHas(ElevatedId + " failed") && !ScreenHas(" Code            "));
+        Check("its log says so", ScreenHas(" Canceled by UAC"));
+        Check("the wait lines gone", !ScreenHas("Waiting for the elevation prompt"));
+    }),
+    new(50, "Enter, clear the filter: the list is back", () => { screen.Press(Key.Enter); screen.Press(new Key('/')); screen.Press(Key.Esc); }, Verify: () =>
+    {
+        Check("Updates still 16", ScreenHas(" Updates 16 "));
+        Check("queue empty", shell.Queue.Count == 0);
+    }),
 
     new(50, "2 then r: Discover reruns the last search", () => { screen.Press(new Key('2')); screen.Press(Key.R); }),
     new(600, "Discover after the rerun", () => { }),
@@ -1149,29 +1191,81 @@ Step[] mainSteps =
         Check("no question", !ScreenHas("(y/n)"));
     }),
     new(50, "2, search Git.Git", () => { screen.Press(new Key('2')); screen.Press(new Key('/')); screen.Press(Key.Backspace, 20); screen.Type("Git.Git"); screen.Press(Key.Enter); }),
-    new(600, "m, Down x2, Enter on Install version…", () => { screen.Press(Key.M); screen.Press(Key.CursorDown, 2); screen.Press(Key.Enter); }),
+
+    // The version picker runs a batch of one and never queues, so the queue entry comes from the
+    // same Shell method the picker uses.
+    new(600, "a downgrade in the queue pane", () =>
+    {
+        var installedGit = shell.FindInstalled("Git.Git")!;
+        shell.Queue.Add(shell.BuildOperationForVersion(installedGit, "2.55.0", isInstalled: true)!);
+    }, WithColors: true, Verify: () =>
+    {
+        Check("queued as a downgrade", RightPaneFlowed().Contains("1  Git.Git downgrade → 2.55.0", StringComparison.Ordinal));
+        var labelY = screen.Rows().ToList().FindIndex(row => row.Contains("downgrade → 2.55.0", StringComparison.Ordinal));
+        var labelX = labelY >= 0 ? screen.Rows()[labelY].IndexOf("downgrade", StringComparison.Ordinal) : -1;
+        Check("downgrade in the info color", labelY >= 0 && screen.AttributeAt(labelX, labelY) == theme.On(theme.Info).ToString());
+        Check("the plan forces the install", shell.Queue.Items.Single().Plan is { Kind: Wingman.Core.Operations.OperationKind.Install, Request.Force: true });
+    }),
+    new(50, "c: the queue cleared", () => screen.Press(Key.C), Verify: () =>
+        Check("queue empty", shell.Queue.Count == 0)),
+    new(50, "m, Down x2, Enter on Install version…", () => { screen.Press(Key.M); screen.Press(Key.CursorDown, 2); screen.Press(Key.Enter); }),
     new(200, "the picker lists Git's versions, newest first", () => { }, WithColors: true, Verify: () =>
     {
         Check("installed version first and marked", ScreenHas("│ 2.55.0.3  installed"));
         Check("second entry", ScreenHas("│ 2.55.0.2 "));
         Check("ten shown, the count on the border", screen.Rows().Count(row => row.Contains("│ 2.", StringComparison.Ordinal)) == 10 && ScreenHas(" versions "));
     }),
-    new(50, "Down, Enter: the install question for the second version", () => { screen.Press(Key.CursorDown); screen.Press(Key.Enter); }, Verify: () =>
-        Check("question", ScreenHas("Install Git.Git 2.55.0.2? (y/n)"))),
-    new(50, "y: a batch of one pinned to that version", () => screen.Press(Key.Y), Verify: () =>
+    new(50, "Enter on the installed version: nothing to run", () => screen.Press(Key.Enter), Verify: () =>
+    {
+        Check("status", ScreenHas("Already on 2.55.0.3"));
+        Check("no question", !ScreenHas("(y/n)"));
+    }),
+    new(50, "m, Down x2, Enter: the picker again", () =>
+    {
+        screen.Press(Key.M);
+        screen.Press(Key.CursorDown, 2);
+        screen.Press(Key.Enter);
+    }),
+    new(200, "Down x2, Enter on 2.55.0", () => { screen.Press(Key.CursorDown, 2); screen.Press(Key.Enter); }, Verify: () =>
+        Check("question", ScreenHas("Downgrade Git.Git to 2.55.0? (y/n)"))),
+    new(50, "y: a batch of one that downgrades", () => screen.Press(Key.Y), WithColors: true, Verify: () =>
     {
         Check("running title", ScreenHas(" Running batch  1 of 1"));
-        Check("pinned version", BatchRow("Git.Git").Contains("install  → 2.55.0.2"));
+        Check("downgrade row", BatchRow("Git.Git").Contains("downgrade  2.55.0.3 → 2.55.0 "));
+        var labelX = BatchRow("Git.Git").IndexOf("downgrade", StringComparison.Ordinal);
+        Check("downgrade in the info color", screen.AttributeAt(labelX, BatchRowY("Git.Git")) == theme.On(theme.Info).ToString());
     }),
-    new(1000, "the install finished at that version", () => { }, Verify: () =>
+    new(1000, "the downgrade finished", () => { }, Verify: () =>
     {
-        Check("finished title", ScreenHas(" Batch finished  1 of 1"));
-        Check("the log names the version", ScreenHas("Found Git [Git.Git] Version 2.55.0.2"));
+        Check("finished title", ScreenHas(" Batch finished  1 of 1") && !ScreenHas("failed"));
+        Check("the log names the version", ScreenHas("Found Git [Git.Git] Version 2.55.0"));
         var install = new HistoryStore(historyDirectory).List().First(entry => entry.Operation == "install" && entry.PackageId == "Git.Git");
-        Check("winget got --version", install.Arguments.Contains("--version") && install.Arguments.Contains("2.55.0.2"));
+        Check("winget got --version 2.55.0 and --force", install.Arguments.Contains("--version") && install.Arguments.Contains("2.55.0") && install.Arguments.Contains("--force"));
     }),
     new(50, "Enter: the results are back", () => screen.Press(Key.Enter), Verify: () =>
         Check("results back", ScreenHas("Search:"))),
+    new(900, "1, filter Git.Git: Installed shows 2.55.0", () =>
+    {
+        screen.Press(new Key('1'));
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(new Key('/'));
+        screen.Type("Git.Git");
+        screen.Press(Key.Enter);
+    }, Verify: () =>
+    {
+        Check("the installed row downgraded", shell.FindInstalled("Git.Git")?.Version == "2.55.0");
+        Check("the table shows it", screen.Rows().Skip(FirstRowY).Select(LeftOf).Any(row => row.Contains(" Git.Git ", StringComparison.Ordinal) && row.Contains(" 2.55.0 ", StringComparison.Ordinal)));
+    }),
+    new(50, "filter OhMyPosh again", () =>
+    {
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(new Key('/'));
+        screen.Type("OhMyPosh");
+        screen.Press(Key.Enter);
+    }, Verify: () =>
+        Check("Oh My Posh listed", LeftPaneHas("Oh My Posh"))),
 
     new(50, "1, o: the editor has every command field", () => { screen.Press(new Key('1')); screen.Press(Key.O); }, WithColors: true, Verify: () =>
     {

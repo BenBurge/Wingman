@@ -78,7 +78,7 @@ public static class WingetErrorCodes
             (-1978335189, "UPDATE_NOT_APPLICABLE",
                 "No applicable update found.",
                 "The installed version is newer, or the package was installed outside winget.",
-                "Retry with the exact version, or exclude it.",
+                "Retry with the exact version, or exclude it. To install an older version, pick it from Upgrade to version…; Wingman then runs install --force.",
                 null),
 
             (-1978335188, "UPDATE_ALL_HAS_FAILURE",

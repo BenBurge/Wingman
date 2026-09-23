@@ -23,23 +23,34 @@ public sealed class BatchRunner
 {
     private const int FailedExitCode = -1;
 
+    private const string DeclinedLine = "Canceled by UAC";
+    private const string TimedOutLine = "Canceled: elevation request timed out";
+    private const string CanceledLine = "Canceled";
+
+    private static readonly TimeSpan DefaultElevationWaitingInterval = TimeSpan.FromSeconds(1);
+
     private readonly IWingetClient _client;
     private readonly PrePostCommandRunner _commands;
     private readonly HistoryStore _history;
     private readonly Func<CancellationToken, Task<IElevatedOperationChannel>>? _elevatedChannelFactory;
+    private readonly TimeSpan _elevationWaitingInterval;
 
     /// <param name="elevatedChannelFactory">Opens the elevated helper, prompting for UAC; null runs
     /// every operation in-process, as on non-Windows systems and with the fake client.</param>
+    /// <param name="elevationWaitingInterval">How often <see cref="ElevationWaiting"/> is reported
+    /// while the factory runs; once a second when null.</param>
     public BatchRunner(
         IWingetClient client,
         PrePostCommandRunner commands,
         HistoryStore history,
-        Func<CancellationToken, Task<IElevatedOperationChannel>>? elevatedChannelFactory = null)
+        Func<CancellationToken, Task<IElevatedOperationChannel>>? elevatedChannelFactory = null,
+        TimeSpan? elevationWaitingInterval = null)
     {
         _client = client;
         _commands = commands;
         _history = history;
         _elevatedChannelFactory = elevatedChannelFactory;
+        _elevationWaitingInterval = elevationWaitingInterval ?? DefaultElevationWaitingInterval;
     }
 
     /// <summary>
@@ -76,7 +87,7 @@ public sealed class BatchRunner
                     progress.Report(new OperationLine(index, elevationUnavailableReason));
                 }
 
-                progress.Report(new OperationCanceled(index, operation));
+                progress.Report(new OperationCanceled(index, operation, elevationUnavailableReason));
                 summaryLines.Add($"· {operation.Row.Id} canceled");
                 canceled++;
                 continue;
@@ -129,9 +140,10 @@ public sealed class BatchRunner
     }
 
     /// <summary>
-    /// Opens the elevated channel when this batch needs one. A declined UAC prompt or a helper
-    /// that fails to start does not end the batch: the result carries the line to show on each
-    /// elevated operation, which is then canceled while the others still run.
+    /// Opens the elevated channel when this batch needs one, reporting <see cref="ElevationWaiting"/>
+    /// while the prompt is up. A declined prompt, a timeout, or a helper that fails to start does
+    /// not end the batch: the result carries the line to show on each elevated operation, which is
+    /// then canceled while the others still run. A cancel during the wait cancels them all.
     /// </summary>
     private async Task<ElevationOutcome> OpenElevatedChannelAsync(
         IReadOnlyList<QueuedOperation> operations,
@@ -154,19 +166,67 @@ public sealed class BatchRunner
         progress.Report(new ElevationState("requesting"));
         try
         {
-            var channel = await _elevatedChannelFactory(ct);
+            var channel = await OpenReportingWaitAsync(_elevatedChannelFactory, progress, ct);
             progress.Report(new ElevationState("connected"));
             return new ElevationOutcome(channel, null);
         }
-        catch (ElevationDeclinedException ex)
+        catch (ElevationDeclinedException)
         {
             progress.Report(new ElevationState("declined"));
-            return new ElevationOutcome(null, ex.Message);
+            return new ElevationOutcome(null, DeclinedLine);
+        }
+        catch (ElevationTimedOutException ex)
+        {
+            progress.Report(new ElevationState($"timed out after {ElevationTimedOutException.Seconds(ex.Timeout)} s"));
+            return new ElevationOutcome(null, TimedOutLine);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            progress.Report(new ElevationState("canceled"));
+            return new ElevationOutcome(null, CanceledLine);
         }
         catch (Exception ex)
         {
             progress.Report(new ElevationState($"failed: {ex.Message}"));
             return new ElevationOutcome(null, $"Canceled: elevated helper failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="factory"/> with a ticker beside it. The ticker is stopped and awaited
+    /// before this returns, so no <see cref="ElevationWaiting"/> arrives after the state that ends the wait.
+    /// </summary>
+    private async Task<IElevatedOperationChannel> OpenReportingWaitAsync(
+        Func<CancellationToken, Task<IElevatedOperationChannel>> factory,
+        IProgress<BatchProgress> progress,
+        CancellationToken ct)
+    {
+        using var stopTicker = new CancellationTokenSource();
+        var ticker = ReportWaitingAsync(progress, stopTicker.Token);
+        try
+        {
+            return await factory(ct);
+        }
+        finally
+        {
+            await stopTicker.CancelAsync();
+            await ticker;
+        }
+    }
+
+    private async Task ReportWaitingAsync(IProgress<BatchProgress> progress, CancellationToken stop)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        using var timer = new PeriodicTimer(_elevationWaitingInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(stop))
+            {
+                progress.Report(new ElevationWaiting(stopwatch.Elapsed));
+            }
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 

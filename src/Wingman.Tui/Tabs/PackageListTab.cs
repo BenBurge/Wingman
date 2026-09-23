@@ -232,8 +232,12 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
         Shell.AskConfirm(ConfirmQuestion(kind, row), () => Shell.RunOperation(Shell.BuildOperation(kind, row), this));
     }
 
-    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/> at <paramref name="version"/>, then runs it as a batch of one.</summary>
-    private void RunOperation(OperationKind kind, PackageRow row, string version)
+    /// <summary>
+    /// Asks to confirm taking <paramref name="row"/>'s package to <paramref name="version"/>, as an
+    /// upgrade, an install, or a downgrade from what is installed, then runs it as a batch of one.
+    /// </summary>
+    /// <param name="row">The installed row when <paramref name="isInstalled"/>.</param>
+    private void RunVersionOperation(PackageRow row, string version, bool isInstalled)
     {
         if (Shell.IsBatchRunning)
         {
@@ -241,21 +245,49 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
             return;
         }
 
-        var question = kind == OperationKind.Install
-            ? $"Install {row.Id} {version}? (y/n)"
-            : $"Upgrade {row.Id} to {version}? (y/n)";
-        Shell.AskConfirm(question, () => Shell.RunOperation(Shell.BuildOperation(kind, row, version), this));
+        if (Shell.BuildOperationForVersion(row, version, isInstalled) is not { } operation)
+        {
+            Shell.SetStatus($"Already on {version}");
+            return;
+        }
+
+        string question;
+        if (operation.Plan.Label == OperationPlan.DowngradeLabel)
+        {
+            question = $"Downgrade {row.Id} to {version}? (y/n)";
+        }
+        else if (operation.Kind == OperationKind.Upgrade)
+        {
+            question = $"Upgrade {row.Id} to {version}? (y/n)";
+        }
+        else
+        {
+            question = $"Install {row.Id} {version}? (y/n)";
+        }
+
+        // Built again when the question is answered, so the batch uses the package's options as they are then.
+        Shell.AskConfirm(question, () =>
+        {
+            if (Shell.BuildOperationForVersion(row, version, isInstalled) is { } current)
+            {
+                Shell.RunOperation(current, this);
+            }
+        });
     }
 
     /// <summary>
     /// <c>Upgrade to version…</c> or <c>Install version…</c>, which opens the version picker where the
-    /// menu was, then asks to confirm <paramref name="kind"/> on <paramref name="row"/> at the version
-    /// picked and runs it as a batch of one.
+    /// menu was, then asks to confirm taking <paramref name="row"/>'s package to the version picked
+    /// and runs it as a batch of one. <paramref name="kind"/> is what the tab offers the row: an
+    /// upgrade on an installed row, an install on a search result, which may be installed too.
     /// </summary>
     protected MenuEntry VersionMenuEntry(OperationKind kind, PackageRow row)
     {
         var label = kind == OperationKind.Install ? "Install version…" : "Upgrade to version…";
-        return new(label, () => Shell.ShowVersionPicker(row, _menuPosition, version => RunOperation(kind, row, version)));
+        var installed = kind == OperationKind.Upgrade ? row : Shell.FindInstalled(row.Id);
+        var target = installed ?? row;
+        var isInstalled = installed is not null;
+        return new(label, () => Shell.ShowVersionPicker(row, _menuPosition, version => RunVersionOperation(target, version, isInstalled)));
     }
 
     /// <summary>Opens the update policy dialog for <paramref name="row"/> in place of the table and the right pane.</summary>

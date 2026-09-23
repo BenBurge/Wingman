@@ -9,8 +9,8 @@ namespace Wingman.Windows.Elevation;
 public static class ElevationSupport
 {
     /// <summary>
-    /// <see cref="ElevatedHelperLauncher.StartAsync"/> on Windows; null elsewhere, where elevated
-    /// operations run in-process.
+    /// <see cref="ElevatedHelperLauncher.StartAsync(CancellationToken)"/> on Windows; null
+    /// elsewhere, where elevated operations run in-process.
     /// </summary>
     public static Func<CancellationToken, Task<IElevatedOperationChannel>>? Factory =>
         OperatingSystem.IsWindows() ? ElevatedHelperLauncher.StartAsync : null;

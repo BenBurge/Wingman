@@ -154,6 +154,21 @@ public sealed class FakeWingetClient : IWingetClient
 
     public Task<OperationResult> InstallAsync(OperationRequest request, IProgress<string> output, CancellationToken ct)
     {
+        PackageRow? installedRow;
+        lock (_lock)
+        {
+            installedRow = FindInstalledLocked(request.Id);
+        }
+
+        var isDowngrade = request.Force
+            && installedRow is not null
+            && !string.IsNullOrEmpty(request.Version)
+            && VersionComparer.Instance.Compare(request.Version, installedRow.Version) < 0;
+        if (isDowngrade)
+        {
+            return DowngradeAsync(request, installedRow!, output, ct);
+        }
+
         var catalogRow = FindKnownRow(request.Id);
         string name;
         string version;
@@ -264,6 +279,43 @@ public sealed class FakeWingetClient : IWingetClient
         }
 
         return StreamOperationAsync("uninstall", "uninstall", "uninstalled", request.Id, installedRow.Name, installedRow.Version, OnSuccess, output, ct);
+    }
+
+    /// <summary>
+    /// What <c>winget install --force --version</c> does to an installed package with that older
+    /// version: the installed row takes it, and the version it came from, or the newer one already
+    /// known to be available, becomes an upgrade.
+    /// </summary>
+    private Task<OperationResult> DowngradeAsync(
+        OperationRequest request, PackageRow installedRow, IProgress<string> output, CancellationToken ct)
+    {
+        var version = request.Version!;
+        var available = installedRow.AvailableVersion ?? installedRow.Version;
+
+        void OnSuccess()
+        {
+            lock (_lock)
+            {
+                var downgraded = installedRow with { Version = version, AvailableVersion = available };
+                var index = _installed.FindIndex(r => string.Equals(r.Id, request.Id, StringComparison.OrdinalIgnoreCase));
+                if (index >= 0)
+                {
+                    _installed[index] = downgraded;
+                }
+
+                var upgradeIndex = _upgrades.FindIndex(r => string.Equals(r.Id, request.Id, StringComparison.OrdinalIgnoreCase));
+                if (upgradeIndex >= 0)
+                {
+                    _upgrades[upgradeIndex] = _upgrades[upgradeIndex] with { Version = version, AvailableVersion = available };
+                }
+                else
+                {
+                    _upgrades.Add(downgraded);
+                }
+            }
+        }
+
+        return StreamOperationAsync("install", "install", "installed", request.Id, installedRow.Name, version, OnSuccess, output, ct);
     }
 
     /// <summary>A package known from the catalog, falling back to the installed list for rows the catalog fixtures never captured.</summary>

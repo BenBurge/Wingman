@@ -240,4 +240,62 @@ public class FakeWingetClientTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => client.InstallAsync(new OperationRequest("Microsoft.Git"), new RecordingProgress(), cts.Token));
     }
+
+    [Fact]
+    public async Task InstallAsync_ForceOlderVersionOfInstalledPackage_DowngradesAndOffersTheOldVersionAsAnUpgrade()
+    {
+        var client = CreateClient();
+        var upgradesBefore = await client.ListUpgradesAsync(CancellationToken.None);
+
+        var result = await client.InstallAsync(
+            new OperationRequest("Git.Git", Version: "2.55.0", Force: true), new RecordingProgress(), CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Contains("Found Git [Git.Git] Version 2.55.0", result.Log);
+
+        var installed = await client.ListInstalledAsync(CancellationToken.None);
+        var row = Assert.Single(installed, r => r.Id == "Git.Git");
+        Assert.Equal("2.55.0", row.Version);
+        Assert.Equal("2.55.0.3", row.AvailableVersion);
+
+        var upgrades = await client.ListUpgradesAsync(CancellationToken.None);
+        Assert.Equal(upgradesBefore.Count + 1, upgrades.Count);
+        var upgrade = Assert.Single(upgrades, r => r.Id == "Git.Git");
+        Assert.Equal("2.55.0", upgrade.Version);
+        Assert.Equal("2.55.0.3", upgrade.AvailableVersion);
+    }
+
+    [Fact]
+    public async Task InstallAsync_ForceOlderVersionWithAnUpgradeKnown_KeepsTheKnownAvailableVersion()
+    {
+        var client = CreateClient();
+        var upgradesBefore = await client.ListUpgradesAsync(CancellationToken.None);
+
+        var result = await client.InstallAsync(
+            new OperationRequest("GitHub.cli", Version: "2.97.0", Force: true), new RecordingProgress(), CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+
+        var installed = await client.ListInstalledAsync(CancellationToken.None);
+        var row = Assert.Single(installed, r => r.Id == "GitHub.cli");
+        Assert.Equal("2.97.0", row.Version);
+        Assert.Equal("2.101.0", row.AvailableVersion);
+
+        var upgrades = await client.ListUpgradesAsync(CancellationToken.None);
+        Assert.Equal(upgradesBefore.Count, upgrades.Count);
+        var upgrade = Assert.Single(upgrades, r => r.Id == "GitHub.cli");
+        Assert.Equal("2.97.0", upgrade.Version);
+        Assert.Equal("2.101.0", upgrade.AvailableVersion);
+    }
+
+    [Fact]
+    public async Task InstallAsync_OlderVersionWithoutForce_LeavesTheInstalledVersion()
+    {
+        var client = CreateClient();
+
+        await client.InstallAsync(new OperationRequest("Git.Git", Version: "2.55.0"), new RecordingProgress(), CancellationToken.None);
+
+        var installed = await client.ListInstalledAsync(CancellationToken.None);
+        Assert.Equal("2.55.0.3", Assert.Single(installed, r => r.Id == "Git.Git").Version);
+    }
 }
