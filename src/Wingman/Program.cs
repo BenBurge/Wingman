@@ -1,3 +1,4 @@
+using Wingman.Cli;
 using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Wingman.Tui;
@@ -17,13 +18,27 @@ if (args is ["--elevated-worker", var pipeName])
     return 2;
 }
 
+if (CliRunner.IsHeadless(args))
+{
+    using var cancel = new CancellationTokenSource();
+
+    // The first Ctrl+C cancels the command so it can stop cleanly; a second one ends the process.
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = !cancel.IsCancellationRequested;
+        cancel.Cancel();
+    };
+
+    return await CliRunner.RunAsync(args, Console.Out, Console.Error, cancel.Token);
+}
+
 var isFake = args.Contains("--fake");
 var unrecognizedArgs = args.Where(a => a != "--fake").ToArray();
 
 if (unrecognizedArgs.Length > 0)
 {
-    Console.Error.WriteLine("wingman: headless commands are not implemented yet");
-    return 2;
+    Console.Error.WriteLine($"wingman: unexpected argument '{unrecognizedArgs[0]}'; run 'wingman --help'");
+    return ExitCodes.Usage;
 }
 
 IWingetClient client = isFake ? new FakeWingetClient() : new WingetCliClient(new ProcessRunner());

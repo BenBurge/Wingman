@@ -16,6 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Wingman.Cli\Wingman.Cli.csproj" />
     <ProjectReference Include="..\..\src\Wingman.Core\Wingman.Core.csproj" />
   </ItemGroup>
 
