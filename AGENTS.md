@@ -84,3 +84,9 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - `BatchRunner` does not return the history entries it writes; the TUI finds an operation's `.log` afterward by listing history and matching `BatchId`, verb, and `PackageId`.
 - On Windows `Task.Delay(40)` takes about 46 ms, so fake operations run longer than steps × delay; harness timings must allow for it.
 - `BatchRunnerScreen` replaces the whole content area of a tab (table and right pane hidden, tab strip and key bar kept); editors and dialogs follow the same pattern rather than opening modal `Dialog`s.
+- There is no `RadioGroup` in 2.5; the built-in `OptionSelector` and `CheckBox` (`Value`, not `CheckedState`) draw global glyphs, so `FormFields` draws radio rows and checkboxes by hand in theme colors.
+- `TextField` has no placeholder; `FormTextField` draws one in `OnDrawingContent` when empty and unfocused. `OnKeyDown` is the earliest hook for Tab, Enter, and Esc, ahead of the field's own bindings.
+- `IApplication.Begin` installs a `MainLoopSyncContext`, so an `await` started on the UI thread resumes on the UI thread; `Shell.ApplyPolicyAsync` relies on this to keep the stores single-threaded.
+- `Key.R.ToString()` is `r`; use `KeyLabel` to show an uppercase letter, and remember `new Key('E')` is Shift+E and does not match a `Key.E` hint.
+- Harness checks next to an overlay should cover only the box, because rows under it change while a batch streams.
+- `python3` is not installed on the development machine; use PowerShell or a small C# script for scripted checks.
