@@ -100,3 +100,8 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - The install options editor fills all 23 content rows at 96x30 and its Updates row ends at the last column; a new row needs the form to scroll and the label column cannot grow.
 - The shell handles `m` (context menu) only after the key bar hints, so a screen can bind `m` to its own action.
 - To retype a prefilled `FormTextField` in the harness, press End, then Backspace once per character.
+- The clone uses `core.autocrlf=true`, so checked-out files are CRLF in the working tree while the repo stores LF; a "0 carriage returns" check on a file you did not touch is meaningless, and git normalizes on commit either way.
+- A settings form that is hidden and shown again focuses its first field, not the last one; harness steps after that should click rather than Tab.
+- The queue pane is 37 columns at 96x30, so its summary lines wrap; harness checks use `RightPaneFlowed()` to read them.
+- `OperationPlan.RequiresElevation` means "needs admin rights at all" (resolved under `Auto`); the mode and the process's own elevation are applied later by `ElevationPolicy.UsesHelper`, so the batch runner can report `off` or `running as administrator` correctly.
+- Background `winget show` lookups for queued rows run one at a time and only when the details are not cached and the plan does not already need elevation, so `a` on Updates does not spawn a winget process per row.
