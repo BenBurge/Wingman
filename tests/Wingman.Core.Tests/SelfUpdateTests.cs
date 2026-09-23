@@ -6,6 +6,9 @@ namespace Wingman.Core.Tests;
 
 public class SelfUpdateTests
 {
+    private const string SystemDirectory = @"C:\Windows\System32";
+    private const string ExePath = @"C:\Program Files\Wingman\wingman.exe";
+
     // --- SelfUpdateChecker.CheckAsync ---
 
     [Fact]
@@ -92,13 +95,43 @@ public class SelfUpdateTests
     // --- SelfUpdateCommand ---
 
     [Fact]
-    public void DetachedUpgradeArgv_ContainsPackageIdAndExactFlag()
+    public void DetachedUpgradeArguments_ContainsPackageIdAndExactFlag()
     {
-        var argv = SelfUpdateCommand.DetachedUpgradeArgv();
+        var arguments = SelfUpdateCommand.DetachedUpgradeArguments(SystemDirectory, ExePath, restartTray: false);
 
-        var payload = Assert.Single(argv, arg => arg.Contains("winget upgrade", StringComparison.Ordinal));
-        Assert.Contains(SelfUpdateChecker.PackageId, payload);
-        Assert.Contains("--exact", payload);
+        Assert.Contains($"winget upgrade --id {SelfUpdateChecker.PackageId} --exact", arguments, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DetachedUpgradeArguments_WaitsWithTheSystemTimeoutBeforeWinget()
+    {
+        var arguments = SelfUpdateCommand.DetachedUpgradeArguments(SystemDirectory, ExePath, restartTray: false);
+
+        Assert.StartsWith(
+            "/d /s /c \"\"C:\\Windows\\System32\\timeout.exe\" /t 2 /nobreak >nul & winget upgrade ",
+            arguments,
+            StringComparison.Ordinal);
+        Assert.EndsWith("--disable-interactivity\"", arguments, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DetachedUpgradeArguments_WithoutTrayRestart_StartsNothingAfterWinget()
+    {
+        var arguments = SelfUpdateCommand.DetachedUpgradeArguments(SystemDirectory, ExePath, restartTray: false);
+
+        Assert.DoesNotContain("conhost.exe", arguments, StringComparison.Ordinal);
+        Assert.DoesNotContain(" tray", arguments, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DetachedUpgradeArguments_WithTrayRestart_StartsTheTrayHeadlessAfterWinget()
+    {
+        var arguments = SelfUpdateCommand.DetachedUpgradeArguments(SystemDirectory, ExePath, restartTray: true);
+
+        Assert.EndsWith(
+            $"--disable-interactivity & start \"\" \"C:\\Windows\\System32\\conhost.exe\" --headless \"{ExePath}\" tray\"",
+            arguments,
+            StringComparison.Ordinal);
     }
 
     [Fact]

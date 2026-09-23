@@ -6,56 +6,68 @@ namespace Wingman.Core.Tests;
 public class SetupPlanTests
 {
     private const string ExePath = @"C:\Program Files\Wingman\wingman.exe";
-    private const string HeadlessPrefix = "conhost.exe --headless ";
+    private const string SystemDirectory = @"C:\Windows\System32";
+    private const string Conhost = @"C:\Windows\System32\conhost.exe";
 
     [Fact]
-    public void Build_DefaultSettings_CreatesCheckTaskWithExactArgv()
+    public void Build_DefaultSettings_CreatesCheckTaskEverySixHours()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
-        var command = $"{HeadlessPrefix}\"{ExePath}\" check --notify";
         var checkTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\Check");
-        Assert.Equal(command, checkTask.Command);
-        Assert.Equal(
-            new[]
-            {
-                "/Create", "/TN", @"Wingman\Check", "/TR", command,
-                "/SC", "HOURLY", "/MO", "6", "/F", "/RL", "LIMITED",
-            },
-            checkTask.SchtasksCreateArgs);
-        Assert.Equal(["/Delete", "/TN", @"Wingman\Check", "/F"], checkTask.SchtasksDeleteArgs);
+        Assert.Equal(TaskTriggerKind.Interval, checkTask.TriggerKind);
+        Assert.Equal(6, checkTask.IntervalHours);
+        Assert.Equal(Conhost, checkTask.Executable);
+        Assert.Equal($"--headless \"{ExePath}\" check --notify", checkTask.Arguments);
+        Assert.False(string.IsNullOrWhiteSpace(checkTask.Description));
     }
 
     [Fact]
-    public void Build_CheckIntervalHours_LandsInCreateArgv()
+    public void Tasks_RegisterFromXmlAndDeleteByName()
     {
-        var settings = new WingmanSettings { CheckIntervalHours = 12 };
-
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         var checkTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\Check");
-        Assert.Equal("12", ArgAfter(checkTask.SchtasksCreateArgs, "/MO"));
+        Assert.Equal(
+            ["/Create", "/TN", @"Wingman\Check", "/XML", @"C:\Temp\task.xml", "/F"],
+            checkTask.SchtasksRegisterArgs(@"C:\Temp\task.xml"));
+        Assert.Equal(["/Delete", "/TN", @"Wingman\Check", "/F"], checkTask.SchtasksDeleteArgs);
+    }
+
+    [Theory]
+    [InlineData(12)]
+    [InlineData(24)]
+    [InlineData(168)]
+    public void Build_CheckIntervalHours_LandsInTheSpec(int hours)
+    {
+        var settings = new WingmanSettings { CheckIntervalHours = hours };
+
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
+
+        var checkTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\Check");
+        Assert.Equal(hours, checkTask.IntervalHours);
     }
 
     [Fact]
     public void Build_DefaultSettings_CheckTaskIsAlwaysEnabled()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         var checkTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\Check");
         Assert.True(checkTask.Enabled);
     }
 
     [Fact]
-    public void Build_CheckAtLoginTrue_EnablesOnLogonTask()
+    public void Build_CheckAtLoginTrue_EnablesLogonTask()
     {
         var settings = new WingmanSettings { CheckAtLogin = true };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
 
         var logonTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\CheckAtLogon");
         Assert.True(logonTask.Enabled);
-        Assert.Equal("ONLOGON", ArgAfter(logonTask.SchtasksCreateArgs, "/SC"));
+        Assert.Equal(TaskTriggerKind.Logon, logonTask.TriggerKind);
+        Assert.Equal($"--headless \"{ExePath}\" check --notify", logonTask.Arguments);
         Assert.Equal(["/Delete", "/TN", @"Wingman\CheckAtLogon", "/F"], logonTask.SchtasksDeleteArgs);
     }
 
@@ -64,7 +76,7 @@ public class SetupPlanTests
     {
         var settings = new WingmanSettings { CheckAtLogin = false };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
 
         var logonTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\CheckAtLogon");
         Assert.False(logonTask.Enabled);
@@ -76,13 +88,14 @@ public class SetupPlanTests
     {
         var settings = new WingmanSettings { AutoInstall = true, AutoInstallTime = "14:30" };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
 
         var autoInstallTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\AutoInstall");
         Assert.True(autoInstallTask.Enabled);
-        Assert.Equal($"{HeadlessPrefix}\"{ExePath}\" upgrade --all --yes --auto --notify", autoInstallTask.Command);
-        Assert.Equal("DAILY", ArgAfter(autoInstallTask.SchtasksCreateArgs, "/SC"));
-        Assert.Equal("14:30", ArgAfter(autoInstallTask.SchtasksCreateArgs, "/ST"));
+        Assert.Equal(TaskTriggerKind.Daily, autoInstallTask.TriggerKind);
+        Assert.Equal(new TimeOnly(14, 30), autoInstallTask.DailyTime);
+        Assert.Equal(Conhost, autoInstallTask.Executable);
+        Assert.Equal($"--headless \"{ExePath}\" upgrade --all --yes --auto --notify", autoInstallTask.Arguments);
         Assert.Equal(["/Delete", "/TN", @"Wingman\AutoInstall", "/F"], autoInstallTask.SchtasksDeleteArgs);
     }
 
@@ -91,7 +104,7 @@ public class SetupPlanTests
     {
         var settings = new WingmanSettings { AutoInstall = false };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
 
         var autoInstallTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\AutoInstall");
         Assert.False(autoInstallTask.Enabled);
@@ -102,12 +115,12 @@ public class SetupPlanTests
     {
         var settings = new WingmanSettings { StartTrayAtLogin = true, ShowTrayIcon = true };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
 
         Assert.True(plan.StartupEntry.Enabled);
         Assert.Equal(@"Software\Microsoft\Windows\CurrentVersion\Run", plan.StartupEntry.KeyPath);
         Assert.Equal("Wingman", plan.StartupEntry.ValueName);
-        Assert.Equal($"{HeadlessPrefix}\"{ExePath}\" tray", plan.StartupEntry.Value);
+        Assert.Equal($"\"{Conhost}\" --headless \"{ExePath}\" tray", plan.StartupEntry.Value);
     }
 
     [Fact]
@@ -115,7 +128,7 @@ public class SetupPlanTests
     {
         var settings = new WingmanSettings { StartTrayAtLogin = false, ShowTrayIcon = true };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
 
         Assert.False(plan.StartupEntry.Enabled);
         Assert.Equal("Wingman", plan.StartupEntry.ValueName);
@@ -126,7 +139,7 @@ public class SetupPlanTests
     {
         var settings = new WingmanSettings { StartTrayAtLogin = true, ShowTrayIcon = false };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
 
         Assert.False(plan.StartupEntry.Enabled);
     }
@@ -134,7 +147,7 @@ public class SetupPlanTests
     [Fact]
     public void Build_Shortcut_MatchesSpec()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         Assert.Equal("Wingman.lnk", plan.Shortcut.LinkName);
         Assert.Equal(ExePath, plan.Shortcut.TargetPath);
@@ -146,7 +159,7 @@ public class SetupPlanTests
     [Fact]
     public void Build_ProtocolValues_MatchesSpec()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         Assert.Equal(3, plan.ProtocolValues.Count);
         Assert.All(plan.ProtocolValues, value => Assert.True(value.Enabled));
@@ -168,31 +181,56 @@ public class SetupPlanTests
     }
 
     [Fact]
-    public void Build_AllTaskCommands_RunThroughHeadlessConhost()
+    public void Build_AllTasks_RunThroughHeadlessConhostFromSystem32()
     {
         var settings = new WingmanSettings { CheckAtLogin = true, AutoInstall = true };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
 
-        Assert.All(plan.Tasks, task => Assert.StartsWith(HeadlessPrefix, task.Command, StringComparison.Ordinal));
+        Assert.All(plan.Tasks, task =>
+        {
+            Assert.Equal(Conhost, task.Executable);
+            Assert.StartsWith("--headless ", task.Arguments, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void Build_SystemDirectoryWithTrailingBackslash_JoinsOnce()
+    {
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory + "\\");
+
+        Assert.Equal(Conhost, plan.Tasks[0].Executable);
     }
 
     [Fact]
     public void Describe_TaskLines_ShowPlainCommandWithoutHeadlessPrefix()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         var items = SetupPlanner.Describe(plan);
 
         var checkItem = Assert.Single(items, item => item.Name == @"Wingman\Check");
-        Assert.Contains($"Runs \"{ExePath}\" check --notify", checkItem.Description, StringComparison.Ordinal);
+        Assert.Equal($"Runs \"{ExePath}\" check --notify every 6 hour(s)", checkItem.Description);
         Assert.DoesNotContain("conhost.exe", checkItem.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Describe_LogonAndDailyTasks_NameTheirTrigger()
+    {
+        var settings = new WingmanSettings { AutoInstall = true, AutoInstallTime = "14:30" };
+
+        var items = SetupPlanner.Describe(SetupPlanner.Build(settings, ExePath, SystemDirectory));
+
+        var logonItem = Assert.Single(items, item => item.Name == @"Wingman\CheckAtLogon");
+        Assert.EndsWith(" at login", logonItem.Description, StringComparison.Ordinal);
+        var autoInstallItem = Assert.Single(items, item => item.Name == @"Wingman\AutoInstall");
+        Assert.EndsWith(" daily at 14:30", autoInstallItem.Description, StringComparison.Ordinal);
     }
 
     [Fact]
     public void Describe_StartupEntryLine_ShowsPlainCommandWithoutHeadlessPrefix()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         var items = SetupPlanner.Describe(plan);
 
@@ -204,7 +242,7 @@ public class SetupPlanTests
     [Fact]
     public void Describe_HasOneLinePerItem_DefaultSettings()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         var items = SetupPlanner.Describe(plan);
 
@@ -216,7 +254,7 @@ public class SetupPlanTests
     [Fact]
     public void Describe_DefaultSettings_MarksOnlyAutoInstallOff()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         var items = SetupPlanner.Describe(plan);
 
@@ -229,7 +267,7 @@ public class SetupPlanTests
     {
         var settings = new WingmanSettings { AutoInstall = true, StartTrayAtLogin = false };
 
-        var plan = SetupPlanner.Build(settings, ExePath);
+        var plan = SetupPlanner.Build(settings, ExePath, SystemDirectory);
         var items = SetupPlanner.Describe(plan);
 
         Assert.Equal(8, items.Count);
@@ -242,24 +280,11 @@ public class SetupPlanTests
     [Fact]
     public void Describe_TaskItems_UseTaskKindAndName()
     {
-        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath, SystemDirectory);
 
         var items = SetupPlanner.Describe(plan);
 
         var checkItem = Assert.Single(items, item => item.Name == @"Wingman\Check");
         Assert.Equal("task", checkItem.Kind);
-    }
-
-    private static string ArgAfter(IReadOnlyList<string> args, string flag)
-    {
-        for (var i = 0; i < args.Count - 1; i++)
-        {
-            if (args[i] == flag)
-            {
-                return args[i + 1];
-            }
-        }
-
-        return "";
     }
 }

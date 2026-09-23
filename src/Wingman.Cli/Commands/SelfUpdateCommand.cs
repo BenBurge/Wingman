@@ -16,7 +16,8 @@ internal sealed class SelfUpdateCommand : ICliCommand
         Usage: wingman self-update [--check]
 
         Looks up the latest Wingman release in winget and, when it is newer than this one, starts
-        winget upgrading it in the background. Restart Wingman once winget finishes.
+        winget upgrading it in the background. A running tray icon closes first and comes back
+        once winget finishes; restart the TUI yourself.
 
           --check  Only report whether an update is available; exits 10 when one is
         """;

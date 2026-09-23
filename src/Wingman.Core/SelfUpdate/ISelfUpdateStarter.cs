@@ -1,7 +1,7 @@
 namespace Wingman.Core.SelfUpdate;
 
 /// <summary>
-/// Starts <see cref="SelfUpdateCommand.DetachedUpgradeArgv"/> in a process that outlives this
+/// Starts <see cref="SelfUpdateCommand.DetachedUpgradeArguments"/> in a process that outlives this
 /// one. The implementation is Windows-only.
 /// </summary>
 public interface ISelfUpdateStarter

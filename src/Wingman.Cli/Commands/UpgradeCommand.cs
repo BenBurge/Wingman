@@ -11,7 +11,8 @@ internal sealed class UpgradeCommand : ICliCommand
         Usage: wingman upgrade [--all | <id>...] [--yes] [--dry-run] [--json] [--notify]
 
         Upgrades the named packages, or with --all every available update except held, excluded,
-        and skipped ones. Prints the plan and asks before running it.
+        and skipped ones and Wingman itself, which wingman self-update upgrades. Prints the plan
+        and asks before running it.
 
           --all      Upgrade everything that has an update
           --yes      Run without asking; required when stdin is not a terminal
