@@ -8,28 +8,39 @@ namespace Wingman.Core.Setup;
 public sealed record SetupItem(string Kind, string Name, string Description);
 
 /// <summary>
-/// A Task Scheduler entry <see cref="SetupPlanner"/> wants registered.
+/// A Task Scheduler entry <see cref="SetupPlanner"/> wants registered, or removed when
+/// <paramref name="Enabled"/> is false because its setting is off.
 /// </summary>
 /// <param name="SchtasksCreateArgs">
 /// Argv for <c>schtasks /Create</c>, as separate tokens; <see cref="Command"/> appears here
 /// already quoted as the single <c>/TR</c> token, since schtasks needs the whole command
 /// double-quoted and the process runner must not quote it again.
 /// </param>
-public sealed record ScheduledTaskSpec(string Name, string[] SchtasksCreateArgs, string[] SchtasksDeleteArgs, string Command);
+/// <param name="Enabled">
+/// False when the setting behind the task is off, so applying the plan removes the task if an
+/// earlier setup registered it.
+/// </param>
+public sealed record ScheduledTaskSpec(
+    string Name, string[] SchtasksCreateArgs, string[] SchtasksDeleteArgs, string Command, bool Enabled);
 
-/// <summary>An HKCU value <see cref="SetupPlanner"/> wants written. <paramref name="ValueName"/> of <c>""</c> targets the key's default value.</summary>
-public sealed record RegistryValueSpec(string KeyPath, string ValueName, string Value);
+/// <summary>
+/// An HKCU value <see cref="SetupPlanner"/> wants written. <paramref name="ValueName"/> of <c>""</c>
+/// targets the key's default value. <paramref name="Enabled"/> false means the setting behind it is
+/// off, so applying the plan removes the value if an earlier setup wrote it.
+/// </summary>
+public sealed record RegistryValueSpec(string KeyPath, string ValueName, string Value, bool Enabled);
 
 /// <summary>A Start Menu shortcut <see cref="SetupPlanner"/> wants created, carrying the AppUserModelID that unpackaged apps need for toasts.</summary>
 public sealed record ShortcutSpec(string LinkName, string TargetPath, string Arguments, string AppUserModelId, string Description);
 
 /// <summary>
 /// Everything <c>wingman setup</c> registers, built once from
-/// <see cref="Wingman.Core.Settings.WingmanSettings"/> so the Windows-only side (a later issue)
-/// only has to execute it.
+/// <see cref="Wingman.Core.Settings.WingmanSettings"/> so the Windows-only side only has to
+/// execute it. Every task and the startup entry are always listed, disabled ones included, so a
+/// second setup after a setting was turned off cleans up what the first one registered.
 /// </summary>
 public sealed record SetupPlan(
     IReadOnlyList<ScheduledTaskSpec> Tasks,
-    RegistryValueSpec? StartupEntry,
+    RegistryValueSpec StartupEntry,
     ShortcutSpec Shortcut,
     IReadOnlyList<RegistryValueSpec> ProtocolValues);

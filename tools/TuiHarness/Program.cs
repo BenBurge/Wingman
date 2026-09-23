@@ -12,15 +12,20 @@ using Wingman.Tui;
 
 if (args.Length < 2 || !int.TryParse(args[0], out var width) || !int.TryParse(args[1], out var height))
 {
-    Console.Error.WriteLine("usage: TuiHarness <width> <height> [Midnight|Daylight|Nord|Dracula] [--elevated]");
+    Console.Error.WriteLine("usage: TuiHarness <width> <height> [Midnight|Daylight|Nord|Dracula] [--elevated | --route <route>]");
     return 2;
 }
 
-// The normal run ends by launching the harness again with --elevated, which plays a short scenario
-// with the shell told it already runs as administrator and appends its frames to the same out.txt.
+// The normal run ends by launching the harness again once per child scenario, each appending its
+// frames to the same out.txt: --elevated tells the shell it already runs as administrator, and
+// --route opens the shell on a start route.
 const string ElevatedFlag = "--elevated";
+const string RouteFlag = "--route";
 var isElevatedRun = args.Contains(ElevatedFlag);
-var themeName = args.Length > 2 && args[2] != ElevatedFlag ? args[2] : null;
+var routeIndex = Array.IndexOf(args, RouteFlag);
+var startRoute = routeIndex >= 0 && routeIndex + 1 < args.Length ? args[routeIndex + 1] : null;
+var isChildRun = isElevatedRun || startRoute is not null;
+var themeName = args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null;
 
 var themeDetector = new DefaultThemeDetector();
 var theme = Theme.ByName(themeName, themeDetector);
@@ -47,7 +52,7 @@ var app = Application.Create();
 app.Init(DriverRegistry.Names.ANSI);
 
 var screen = new Screen(app, width, height);
-if (!isElevatedRun)
+if (!isChildRun)
 {
     screen.Reset();
 }
@@ -62,12 +67,31 @@ bool RecordRestart(IReadOnlyList<string> restartArgs)
     return false;
 }
 
+// Stand-ins for the host's setup executor and self-update starter. The route runs leave the
+// self-update check out, since its status would replace the one a route posts at startup, and the
+// unknown-route run gets no services at all, so its Settings frame shows what such a host draws.
+var setupExecutor = new RecordingSetupExecutor();
+var selfUpdate = new RecordingSelfUpdateStarter();
+ShellServices services;
+if (startRoute is null)
+{
+    services = new ShellServices(setupExecutor, selfUpdate, null, "1.0.0");
+}
+else if (startRoute is "update-all" or "history")
+{
+    services = new ShellServices(setupExecutor, null, null, "1.0.0");
+}
+else
+{
+    services = ShellServices.None;
+}
+
 // A short step delay so an operation streams its nine lines in under half a second.
 var client = new SlowClient(new FakeWingetClient(TimeSpan.FromMilliseconds(40)));
 var elevation = new HarnessElevation(client);
 var shell = WingmanApp.CreateShell(
     app, theme, client, settingsStore, settings, themeDetector, elevation.StartAsync, new FakeCommandRunner(),
-    processIsElevated: isElevatedRun, restartAsAdministrator: RecordRestart);
+    processIsElevated: isElevatedRun, restartAsAdministrator: RecordRestart, services: services, startRoute: startRoute);
 var historyDirectory = Path.Combine(dataDirectory, "history");
 string Focused() => shell.Window.MostFocused?.GetType().Name ?? "none";
 
@@ -163,6 +187,25 @@ int MarkedRowCount() => screen.Rows().Skip(FirstRowY).Take(height - FirstRowY - 
 bool AnyMarkedRow(char ownMarker) => screen.Rows().Skip(FirstRowY).Take(height - FirstRowY - 4).Any(row => row[1] == '●' && row[2] == ownMarker);
 bool IsHelpOpen() => ScreenHas("┌─ Keys ");
 
+// The message line sits above the key bar, inside the bottom border.
+int MessageY() => height - 3;
+const string SelfUpdateStatus = "Wingman 9.9.9 is available · Settings → Update Wingman";
+
+// Clicks the first cell after the first on-screen occurrence of text, such as the box after "every [ ".
+void ClickAfter(string text)
+{
+    var rows = screen.Rows();
+    for (var y = 0; y < rows.Count; y++)
+    {
+        var x = rows[y].IndexOf(text, StringComparison.Ordinal);
+        if (x >= 0)
+        {
+            screen.Click(x + DisplayWidth.Of(text), y);
+            return;
+        }
+    }
+}
+
 // The batch screen draws each operation as " ✓ Id …" from the window border, so the glyph is at column 2 and the Id starts at 4.
 int BatchRowY(string id) => screen.Rows().ToList().FindIndex(row => row.Length > 4 && row[4..].StartsWith(id + " ", StringComparison.Ordinal));
 string BatchRow(string id) => BatchRowY(id) is var y && y >= 0 ? screen.Rows()[y] : "";
@@ -245,6 +288,9 @@ Step[] mainSteps =
     {
         Check("tab strip shows Installed 213 as soon as it loads", ScreenHas(" Installed 213 "));
         Check("tab strip already shows Updates 17, loaded in the background before Updates was ever shown", ScreenHas(" Updates 17 "));
+        Check("the startup self-update status", screen.Rows()[MessageY()].Contains(SelfUpdateStatus, StringComparison.Ordinal));
+        Check("in the info color", screen.AttributeAt(2, MessageY()) == theme.On(theme.Info).ToString());
+        Check("the check compared the harness version", shell.SelfUpdateResult is { InstalledVersion: "1.0.0", AvailableVersion: SlowClient.PublishedWingmanVersion, IsNewerAvailable: true });
     }),
     new(50, "3, r, 1, 3: force a reload on Updates, then leave and come straight back while it is in flight", () =>
     {
@@ -1089,8 +1135,18 @@ Step[] mainSteps =
         Check("elevation radio and continue on failure", ScreenHas("   " + "Elevation".PadRight(26) + "(•) Auto  ( ) Always  ( ) Never   [x] Continue on failure"));
         Check("restart action", ScreenHas("   ⏎ Restart as administrator") && !ScreenHas("Windows only") && !ScreenHas("already administrator"));
         Check("theme row", ScreenHas("   Theme                     (•) Midnight  ( ) Daylight  ( ) Nord  ( ) Dracula  ( ) Auto"));
-        Check("phase 3 groups", ScreenHas(" Updates") && ScreenHas(" Tray") && ScreenHas("phase 3"));
-        Check("tools", ScreenHas("   ⏎ Import bundle…   ⏎ Export bundle…   ⏎ Register scheduled tasks"));
+        Check("no phase 3 placeholders", !ScreenHas("phase 3"));
+        Check("check row", ScreenHas("   " + "Check for updates".PadRight(26) + "every [ 6   ] hours   [x] and at login"));
+        Check("auto-install row", ScreenHas("   " + "Auto-install".PadRight(26) + "[ ] packages marked auto-update  at [ 03:00 ]"));
+        Check("toast row", ScreenHas("   " + "".PadRight(26) + "[x] Toast when updates are found  [x] Toast when a batch finishes"));
+        Check("tray row", ScreenHas(" Tray") && ScreenHas("   " + "".PadRight(26) + "[x] Show tray icon   [x] Start at login"));
+        Check("tools", ScreenHas("   ⏎ Import bundle…   ⏎ Export bundle…   ⏎ Register scheduled tasks (wingman setup)"));
+        Check("remove and update", ScreenHas("   ⏎ Remove scheduled tasks   ⏎ Update Wingman   9.9.9 available"));
+        var updatesHeaderY = screen.Rows().ToList().FindIndex(row => row.StartsWith("│ Updates", StringComparison.Ordinal));
+        Check("the Updates group title in the header color", updatesHeaderY >= 0 && screen.AttributeAt(2, updatesHeaderY) == theme.On(theme.Header).ToString());
+        var registerY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Register scheduled tasks", StringComparison.Ordinal));
+        var registerX = registerY >= 0 ? screen.Rows()[registerY].IndexOf("⏎ Register", StringComparison.Ordinal) : -1;
+        Check("register live, its ⏎ in accent", registerY >= 0 && screen.AttributeAt(registerX, registerY) == theme.On(theme.Accent, Terminal.Gui.Drawing.TextStyle.Bold).ToString());
         Check("footer", ScreenHas(" Saved to "));
         Check("settings key bar", ScreenHas(" Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "));
         Check("scope has focus", Focused() == nameof(OptionRow));
@@ -1138,7 +1194,7 @@ Step[] mainSteps =
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationMode\": \"auto\"", StringComparison.Ordinal));
         Check("continue on failure has focus", Focused() == nameof(CheckField));
     }),
-    new(50, "Tab x2, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Tab, 2); screen.Press(Key.Enter); }, Verify: () =>
+    new(50, "Tab x10, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Tab, 10); screen.Press(Key.Enter); }, Verify: () =>
     {
         Check("import title", ScreenHas(" Import bundle  choose a .ubundle file"));
         Check("settings hidden", !ScreenHas(" Defaults"));
@@ -1184,6 +1240,50 @@ Step[] mainSteps =
         Check("Midnight picked", ScreenHas("(•) Midnight"));
         Check("Midnight ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Midnight.Background);
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"theme\": \"Midnight\"", StringComparison.Ordinal));
+    }),
+    new(50, "click the interval box, retype it as 12, Tab: saved", () =>
+    {
+        ClickAfter("every [ ");
+        screen.Press(Key.End);
+        screen.Press(Key.Backspace);
+        screen.Type("12");
+        screen.Press(Key.Tab);
+    }, WithColors: true, Verify: () =>
+    {
+        Check("shows 12", ScreenHas("every [ 12  ] hours"));
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"checkIntervalHours\": 12", StringComparison.Ordinal));
+        Check("in effect", shell.Settings.CheckIntervalHours == 12);
+        Check("focus moved on to and at login", Focused() == nameof(CheckField));
+    }),
+    new(50, "Shift+Tab, retype it as 999, Enter: refused", () =>
+    {
+        screen.Press(Key.Tab.WithShift);
+        screen.Press(Key.End);
+        screen.Press(Key.Backspace, 2);
+        screen.Type("999");
+        screen.Press(Key.Enter);
+    }, Verify: () =>
+    {
+        Check("error", ScreenHas("Check for updates every 1 to 168 hours"));
+        Check("the saved value back", ScreenHas("every [ 12  ] hours") && shell.Settings.CheckIntervalHours == 12);
+    }),
+    new(50, "click Register scheduled tasks: the question", () => ClickText("⏎ Register scheduled tasks"), Verify: () =>
+        Check("question", ScreenHas("Register Wingman's scheduled tasks, startup entry, and shortcut? (y/n)"))),
+    new(50, "y: registered through the executor", () => screen.Press(Key.Y)),
+    new(100, "the outcome on the message line", () => { }, Verify: () =>
+    {
+        Check("status", screen.Rows()[MessageY()].Contains("Registered: 8 created", StringComparison.Ordinal));
+        Check("one register call", setupExecutor.Calls.Count == 1 && !setupExecutor.Calls[0].Remove);
+        var checkTask = setupExecutor.Calls[0].Plan.Tasks[0];
+        Check("the plan uses the new interval", checkTask.SchtasksCreateArgs.SkipWhile(arg => arg != "/MO").ElementAtOrDefault(1) == "12");
+        Check("the plan runs this executable", checkTask.Command.StartsWith($"\"{Environment.ProcessPath}\"", StringComparison.Ordinal));
+        Check("auto-install planned off", !setupExecutor.Calls[0].Plan.Tasks[2].Enabled);
+    }),
+    new(50, "click Remove scheduled tasks, y: removed", () => { ClickText("⏎ Remove scheduled tasks"); screen.Press(Key.Y); }),
+    new(100, "the removal on the message line", () => { }, Verify: () =>
+    {
+        Check("status", screen.Rows()[MessageY()].Contains("Removed: 8 removed", StringComparison.Ordinal));
+        Check("a remove call", setupExecutor.Calls.Count == 2 && setupExecutor.Calls[1].Remove);
     }),
 
     new(50, "3, clear the filter, Ctrl+Home, m: Upgrade to version… in the menu", () =>
@@ -1315,10 +1415,88 @@ Step[] mainSteps =
         Check("nothing saved", shell.Options.GetInstallOptions(PolicyId).IsDefault());
     }),
 
-    new(50, "q quits", () => screen.Press(Key.Q)),
+    new(50, "5: Settings, the time box unscrolled after Tab passed through it", () => screen.Press(new Key('5')), Verify: () =>
+        Check("time row", ScreenHas("at [ 03:00 ]"))),
+    new(50, "click Update Wingman: the question", () => ClickText("⏎ Update Wingman"), Verify: () =>
+    {
+        Check("question", ScreenHas("Quit Wingman and update it through winget? (y/n)"));
+        Check("nothing started yet", selfUpdate.Calls == 0);
+    }),
+    new(50, "y: the upgrade starts and Wingman quits", () => screen.Press(Key.Y), Verify: () =>
+        Check("the starter was called once", selfUpdate.Calls == 1)),
 ];
 
-var steps = isElevatedRun ? elevatedSteps : mainSteps;
+// Opened on update-all: Updates marks what a would and asks to run it, and y runs the batch.
+Step[] updateAllSteps =
+[
+    new(1500, "update-all: Updates loaded and marked", () => { }, WithColors: true, Verify: () =>
+    {
+        var queued = shell.Queue.Count;
+        Check("all 17 but the explicit-targeting one queued", queued == 16);
+        Check("the question", ScreenHas($"Run {queued} updates now? (y/n)"));
+        Check("the rows marked", ScreenHas($"17 available · {queued} marked"));
+        Check("the explicit-targeting row not marked", !AnyMarkedRow('!'));
+        Check("prompt keys", ScreenHas(" y Yes   n No "));
+    }),
+    new(50, "update-all: y runs the batch", () => screen.Press(Key.Y), Verify: () =>
+        Check("running title", ScreenHas($" Running batch  1 of {shell.Queue.Count}"))),
+    new(50, "update-all: q, y: quit and cancel", () => { screen.Press(Key.Q); screen.Press(Key.Y); }),
+];
+
+// Opened on history: the History tab shows first, with its own keys.
+Step[] historySteps =
+[
+    new(600, "history route: History shown", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("history key bar", ScreenHas(" ⏎ Open log   R Retry   o Options   / Filter   Del Forget   ? Help   q Quit "));
+        Check("no route error", !ScreenHas("Unknown route"));
+    }),
+    new(50, "history route: q quits", () => screen.Press(Key.Q)),
+];
+
+// Opened on a route that does not exist: the first tab, with a status saying so.
+Step[] unknownRouteSteps =
+[
+    new(300, "unknown route: Installed with the status", () => { }, Verify: () =>
+    {
+        Check("status", screen.Rows()[MessageY()].Contains($"Unknown route '{startRoute}'", StringComparison.Ordinal));
+        Check("Installed keys", ScreenHas(" x Uninstall "));
+    }),
+    new(50, "unknown route: 5, Settings without host services", () => screen.Press(new Key('5')), WithColors: true, Verify: () =>
+    {
+        Check("register dim with the reason", ScreenHas("   ⏎ Import bundle…   ⏎ Export bundle…   ⏎ Register scheduled tasks   Windows only"));
+        Check("remove and update dim with the reason", ScreenHas("   ⏎ Remove scheduled tasks   Windows only   ⏎ Update Wingman   Windows only"));
+        var registerY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Register scheduled tasks", StringComparison.Ordinal));
+        var registerX = registerY >= 0 ? screen.Rows()[registerY].IndexOf("⏎ Register", StringComparison.Ordinal) : -1;
+        Check("drawn dim", registerY >= 0 && screen.AttributeAt(registerX, registerY) == theme.On(theme.Dim).ToString());
+    }),
+    new(50, "unknown route: Tab x16 from Install scope skips the dim actions", () => screen.Press(Key.Tab, 16), Verify: () =>
+    {
+        var restartY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Restart as administrator", StringComparison.Ordinal));
+        Check("Export, then Restart as administrator", restartY >= 0 && screen.AttributeAt(4, restartY) == theme.Selected.ToString());
+    }),
+    new(50, "unknown route: q quits", () => screen.Press(Key.Q)),
+];
+
+Step[] steps;
+if (isElevatedRun)
+{
+    steps = elevatedSteps;
+}
+else if (startRoute is null)
+{
+    steps = mainSteps;
+}
+else
+{
+    steps = startRoute switch
+    {
+        "update-all" => updateAllSteps,
+        "history" => historySteps,
+        _ => unknownRouteSteps,
+    };
+}
+
 var next = 0;
 void RunStep()
 {
@@ -1330,6 +1508,16 @@ void RunStep()
     if (next < steps.Length && shell.Window.IsRunning)
     {
         app.AddTimeout(TimeSpan.FromMilliseconds(steps[next].DelayMs), () => { RunStep(); return false; });
+    }
+    else if (next == steps.Length)
+    {
+        // Every scenario's last step quits; a run still going after that has a quit that did not stop it.
+        app.AddTimeout(TimeSpan.FromSeconds(3), () =>
+        {
+            Check("the last step stopped the app", false);
+            app.RequestStop();
+            return false;
+        });
     }
 }
 
@@ -1346,32 +1534,64 @@ catch (IOException)
 {
 }
 
-var runName = isElevatedRun ? "elevated run" : "main run";
+if (!isChildRun)
+{
+    Check("Update Wingman stopped the app after starting the upgrade", next == steps.Length && selfUpdate.Calls == 1);
+}
+
+string runName;
+if (isElevatedRun)
+{
+    runName = "elevated run";
+}
+else if (startRoute is not null)
+{
+    runName = $"route {startRoute} run";
+}
+else
+{
+    runName = "main run";
+}
+
 screen.Log($"{runName} exited normally, {failedChecks} failed checks");
 Console.WriteLine($"{runName}: wrote {screen.OutputPath}, {failedChecks} failed checks");
 
-if (isElevatedRun)
+if (isChildRun)
 {
     return failedChecks == 0 ? 0 : 1;
 }
 
-var elevatedRun = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+string[][] childRuns =
+[
+    [ElevatedFlag],
+    [RouteFlag, "update-all"],
+    [RouteFlag, "history"],
+    [RouteFlag, "no-such-tab"],
+];
 
-// Under `dotnet TuiHarness.dll` the process is dotnet itself, which needs the assembly first.
-if (Path.GetFileNameWithoutExtension(Environment.ProcessPath) == "dotnet")
+var childrenPassed = true;
+foreach (var childArgs in childRuns)
 {
-    elevatedRun.ArgumentList.Add(typeof(Screen).Assembly.Location);
+    var childRun = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+
+    // Under `dotnet TuiHarness.dll` the process is dotnet itself, which needs the assembly first.
+    if (Path.GetFileNameWithoutExtension(Environment.ProcessPath) == "dotnet")
+    {
+        childRun.ArgumentList.Add(typeof(Screen).Assembly.Location);
+    }
+
+    foreach (var arg in args.Concat(childArgs))
+    {
+        childRun.ArgumentList.Add(arg);
+    }
+
+    using var childProcess = Process.Start(childRun)!;
+    childProcess.WaitForExit();
+    var childPassed = childProcess.ExitCode == 0;
+    childrenPassed &= childPassed;
+    screen.Log($"check {(childPassed ? "ok" : "FAILED")}: the {string.Join(' ', childArgs)} run exited with {childProcess.ExitCode}");
 }
 
-foreach (var arg in args.Append(ElevatedFlag))
-{
-    elevatedRun.ArgumentList.Add(arg);
-}
-
-using var elevatedProcess = Process.Start(elevatedRun)!;
-elevatedProcess.WaitForExit();
-var elevatedPassed = elevatedProcess.ExitCode == 0;
-screen.Log($"check {(elevatedPassed ? "ok" : "FAILED")}: the elevated run exited with {elevatedProcess.ExitCode}");
-return failedChecks == 0 && elevatedPassed ? 0 : 1;
+return failedChecks == 0 && childrenPassed ? 0 : 1;
 
 internal sealed record Step(int DelayMs, string Label, Action Act, bool WithColors = false, Action? Verify = null);

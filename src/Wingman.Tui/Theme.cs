@@ -127,6 +127,8 @@ public sealed record Theme(
 
     public Scheme OkScheme => Uniform(Ok);
 
+    public Scheme InfoScheme => Uniform(Info);
+
     /// <summary>Typed text in accent whether or not the field has focus, as in the mockups' filter box.</summary>
     public Scheme InputScheme => Uniform(Accent);
 

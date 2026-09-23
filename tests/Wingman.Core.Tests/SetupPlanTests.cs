@@ -37,26 +37,37 @@ public class SetupPlanTests
     }
 
     [Fact]
-    public void Build_CheckAtLoginTrue_AddsOnLogonTask()
+    public void Build_DefaultSettings_CheckTaskIsAlwaysEnabled()
+    {
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+
+        var checkTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\Check");
+        Assert.True(checkTask.Enabled);
+    }
+
+    [Fact]
+    public void Build_CheckAtLoginTrue_EnablesOnLogonTask()
     {
         var settings = new WingmanSettings { CheckAtLogin = true };
 
         var plan = SetupPlanner.Build(settings, ExePath);
 
         var logonTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\CheckAtLogon");
+        Assert.True(logonTask.Enabled);
         Assert.Equal("ONLOGON", ArgAfter(logonTask.SchtasksCreateArgs, "/SC"));
         Assert.Equal(["/Delete", "/TN", @"Wingman\CheckAtLogon", "/F"], logonTask.SchtasksDeleteArgs);
     }
 
     [Fact]
-    public void Build_CheckAtLoginFalse_DropsLogonTask()
+    public void Build_CheckAtLoginFalse_KeepsLogonTaskDisabled()
     {
         var settings = new WingmanSettings { CheckAtLogin = false };
 
         var plan = SetupPlanner.Build(settings, ExePath);
 
-        Assert.DoesNotContain(plan.Tasks, task => task.Name == @"Wingman\CheckAtLogon");
-        Assert.Single(plan.Tasks);
+        var logonTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\CheckAtLogon");
+        Assert.False(logonTask.Enabled);
+        Assert.Equal(3, plan.Tasks.Count);
     }
 
     [Fact]
@@ -67,6 +78,7 @@ public class SetupPlanTests
         var plan = SetupPlanner.Build(settings, ExePath);
 
         var autoInstallTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\AutoInstall");
+        Assert.True(autoInstallTask.Enabled);
         Assert.Equal($"\"{ExePath}\" upgrade --all --yes --auto --notify", autoInstallTask.Command);
         Assert.Equal("DAILY", ArgAfter(autoInstallTask.SchtasksCreateArgs, "/SC"));
         Assert.Equal("14:30", ArgAfter(autoInstallTask.SchtasksCreateArgs, "/ST"));
@@ -74,46 +86,48 @@ public class SetupPlanTests
     }
 
     [Fact]
-    public void Build_AutoInstallFalse_DropsAutoInstallTask()
+    public void Build_AutoInstallFalse_KeepsAutoInstallTaskDisabled()
     {
         var settings = new WingmanSettings { AutoInstall = false };
 
         var plan = SetupPlanner.Build(settings, ExePath);
 
-        Assert.DoesNotContain(plan.Tasks, task => task.Name == @"Wingman\AutoInstall");
+        var autoInstallTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\AutoInstall");
+        Assert.False(autoInstallTask.Enabled);
     }
 
     [Fact]
-    public void Build_StartTrayAtLoginAndShowTrayIconTrue_ReturnsStartupEntry()
+    public void Build_StartTrayAtLoginAndShowTrayIconTrue_EnablesStartupEntry()
     {
         var settings = new WingmanSettings { StartTrayAtLogin = true, ShowTrayIcon = true };
 
         var plan = SetupPlanner.Build(settings, ExePath);
 
-        Assert.NotNull(plan.StartupEntry);
+        Assert.True(plan.StartupEntry.Enabled);
         Assert.Equal(@"Software\Microsoft\Windows\CurrentVersion\Run", plan.StartupEntry.KeyPath);
         Assert.Equal("Wingman", plan.StartupEntry.ValueName);
         Assert.Equal($"\"{ExePath}\" tray", plan.StartupEntry.Value);
     }
 
     [Fact]
-    public void Build_StartTrayAtLoginFalse_YieldsNullStartupEntry()
+    public void Build_StartTrayAtLoginFalse_KeepsStartupEntryDisabled()
     {
         var settings = new WingmanSettings { StartTrayAtLogin = false, ShowTrayIcon = true };
 
         var plan = SetupPlanner.Build(settings, ExePath);
 
-        Assert.Null(plan.StartupEntry);
+        Assert.False(plan.StartupEntry.Enabled);
+        Assert.Equal("Wingman", plan.StartupEntry.ValueName);
     }
 
     [Fact]
-    public void Build_ShowTrayIconFalse_YieldsNullStartupEntry()
+    public void Build_ShowTrayIconFalse_KeepsStartupEntryDisabled()
     {
         var settings = new WingmanSettings { StartTrayAtLogin = true, ShowTrayIcon = false };
 
         var plan = SetupPlanner.Build(settings, ExePath);
 
-        Assert.Null(plan.StartupEntry);
+        Assert.False(plan.StartupEntry.Enabled);
     }
 
     [Fact]
@@ -134,6 +148,7 @@ public class SetupPlanTests
         var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
 
         Assert.Equal(3, plan.ProtocolValues.Count);
+        Assert.All(plan.ProtocolValues, value => Assert.True(value.Enabled));
 
         var classRoot = plan.ProtocolValues[0];
         Assert.Equal(@"Software\Classes\wingman", classRoot.KeyPath);
@@ -158,22 +173,35 @@ public class SetupPlanTests
 
         var items = SetupPlanner.Describe(plan);
 
-        // 2 tasks (check, logon) + 1 startup entry + 1 shortcut + 3 protocol values.
-        Assert.Equal(7, items.Count);
+        // 3 tasks (check, logon, auto-install) + 1 startup entry + 1 shortcut + 3 protocol values.
+        Assert.Equal(8, items.Count);
         Assert.All(items, item => Assert.False(string.IsNullOrWhiteSpace(item.Description)));
     }
 
     [Fact]
-    public void Describe_HasOneLinePerItem_AutoInstallAndNoStartupEntry()
+    public void Describe_DefaultSettings_MarksOnlyAutoInstallOff()
+    {
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+
+        var items = SetupPlanner.Describe(plan);
+
+        var offItem = Assert.Single(items, item => item.Description.EndsWith(" (off)", StringComparison.Ordinal));
+        Assert.Equal(@"Wingman\AutoInstall", offItem.Name);
+    }
+
+    [Fact]
+    public void Describe_AutoInstallOnAndStartupEntryOff_MarksStartupEntryOff()
     {
         var settings = new WingmanSettings { AutoInstall = true, StartTrayAtLogin = false };
 
         var plan = SetupPlanner.Build(settings, ExePath);
         var items = SetupPlanner.Describe(plan);
 
-        // 3 tasks (check, logon, auto-install) + 0 startup entry + 1 shortcut + 3 protocol values.
-        Assert.Equal(7, items.Count);
-        Assert.DoesNotContain(items, item => item.Kind == "registry");
+        Assert.Equal(8, items.Count);
+        var registryItem = Assert.Single(items, item => item.Kind == "registry");
+        Assert.EndsWith(" (off)", registryItem.Description, StringComparison.Ordinal);
+        var autoInstallItem = Assert.Single(items, item => item.Name == @"Wingman\AutoInstall");
+        Assert.DoesNotContain("(off)", autoInstallItem.Description, StringComparison.Ordinal);
     }
 
     [Fact]

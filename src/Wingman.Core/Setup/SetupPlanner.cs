@@ -5,34 +5,30 @@ namespace Wingman.Core.Setup;
 
 /// <summary>
 /// Builds the pure description of what <c>wingman setup</c> should register from the user's
-/// settings. Nothing here touches the registry, Task Scheduler, or the filesystem; a later,
-/// Windows-only issue executes the plan this produces.
+/// settings. Nothing here touches the registry, Task Scheduler, or the filesystem; an
+/// <see cref="ISetupExecutor"/> executes the plan this produces.
 /// </summary>
 public static class SetupPlanner
 {
     private const string CheckTaskName = @"Wingman\Check";
     private const string CheckAtLogonTaskName = @"Wingman\CheckAtLogon";
     private const string AutoInstallTaskName = @"Wingman\AutoInstall";
+    private const string DisabledSuffix = " (off)";
 
     public static SetupPlan Build(WingmanSettings settings, string exePath)
     {
         var quotedExe = $"\"{exePath}\"";
 
-        var tasks = new List<ScheduledTaskSpec> { BuildCheckTask(settings, quotedExe) };
-
-        if (settings.CheckAtLogin)
+        var tasks = new List<ScheduledTaskSpec>
         {
-            tasks.Add(BuildCheckAtLogonTask(quotedExe));
-        }
+            BuildCheckTask(settings, quotedExe),
+            BuildCheckAtLogonTask(quotedExe, enabled: settings.CheckAtLogin),
+            BuildAutoInstallTask(settings, quotedExe, enabled: settings.AutoInstall),
+        };
 
-        if (settings.AutoInstall)
-        {
-            tasks.Add(BuildAutoInstallTask(settings, quotedExe));
-        }
-
-        var startupEntry = settings.StartTrayAtLogin && settings.ShowTrayIcon
-            ? new RegistryValueSpec(@"Software\Microsoft\Windows\CurrentVersion\Run", "Wingman", $"{quotedExe} tray")
-            : null;
+        var startsTrayAtLogin = settings.StartTrayAtLogin && settings.ShowTrayIcon;
+        var startupEntry = new RegistryValueSpec(
+            @"Software\Microsoft\Windows\CurrentVersion\Run", "Wingman", $"{quotedExe} tray", startsTrayAtLogin);
 
         var shortcut = new ShortcutSpec(
             "Wingman.lnk", exePath, "", "BenBurge.Wingman", "Wingman, a terminal UI for winget");
@@ -46,16 +42,15 @@ public static class SetupPlanner
 
         foreach (var task in plan.Tasks)
         {
-            items.Add(new SetupItem("task", task.Name, DescribeTask(task)));
+            items.Add(new SetupItem("task", task.Name, DescribeTask(task) + OffSuffix(task.Enabled)));
         }
 
-        if (plan.StartupEntry is { } startupEntry)
-        {
-            items.Add(new SetupItem(
-                "registry",
-                "Startup entry",
-                $"Starts the tray at login: {startupEntry.KeyPath}\\{startupEntry.ValueName} = {startupEntry.Value}"));
-        }
+        var startupEntry = plan.StartupEntry;
+        items.Add(new SetupItem(
+            "registry",
+            "Startup entry",
+            $"Starts the tray at login: {startupEntry.KeyPath}\\{startupEntry.ValueName} = {startupEntry.Value}"
+                + OffSuffix(startupEntry.Enabled)));
 
         items.Add(new SetupItem(
             "shortcut",
@@ -74,6 +69,8 @@ public static class SetupPlanner
         return items;
     }
 
+    private static string OffSuffix(bool enabled) => enabled ? "" : DisabledSuffix;
+
     private static ScheduledTaskSpec BuildCheckTask(WingmanSettings settings, string quotedExe)
     {
         var command = $"{quotedExe} check --notify";
@@ -85,12 +82,12 @@ public static class SetupPlanner
         };
         var deleteArgs = new[] { "/Delete", "/TN", CheckTaskName, "/F" };
 
-        return new ScheduledTaskSpec(CheckTaskName, createArgs, deleteArgs, command);
+        return new ScheduledTaskSpec(CheckTaskName, createArgs, deleteArgs, command, Enabled: true);
     }
 
     // schtasks cannot combine an interval trigger with a logon trigger in one command line, so
     // "check at login" is a second, honest task rather than one task with two triggers.
-    private static ScheduledTaskSpec BuildCheckAtLogonTask(string quotedExe)
+    private static ScheduledTaskSpec BuildCheckAtLogonTask(string quotedExe, bool enabled)
     {
         var command = $"{quotedExe} check --notify";
         var createArgs = new[]
@@ -100,10 +97,10 @@ public static class SetupPlanner
         };
         var deleteArgs = new[] { "/Delete", "/TN", CheckAtLogonTaskName, "/F" };
 
-        return new ScheduledTaskSpec(CheckAtLogonTaskName, createArgs, deleteArgs, command);
+        return new ScheduledTaskSpec(CheckAtLogonTaskName, createArgs, deleteArgs, command, enabled);
     }
 
-    private static ScheduledTaskSpec BuildAutoInstallTask(WingmanSettings settings, string quotedExe)
+    private static ScheduledTaskSpec BuildAutoInstallTask(WingmanSettings settings, string quotedExe, bool enabled)
     {
         var command = $"{quotedExe} upgrade --all --yes --auto --notify";
         var time = settings.AutoInstallTimeOfDay.ToString("HH:mm", CultureInfo.InvariantCulture);
@@ -114,14 +111,14 @@ public static class SetupPlanner
         };
         var deleteArgs = new[] { "/Delete", "/TN", AutoInstallTaskName, "/F" };
 
-        return new ScheduledTaskSpec(AutoInstallTaskName, createArgs, deleteArgs, command);
+        return new ScheduledTaskSpec(AutoInstallTaskName, createArgs, deleteArgs, command, enabled);
     }
 
     private static IReadOnlyList<RegistryValueSpec> BuildProtocolValues(string quotedExe) =>
     [
-        new(@"Software\Classes\wingman", "", "URL:Wingman Protocol"),
-        new(@"Software\Classes\wingman", "URL Protocol", ""),
-        new(@"Software\Classes\wingman\shell\open\command", "", $"{quotedExe} open \"%1\""),
+        new(@"Software\Classes\wingman", "", "URL:Wingman Protocol", Enabled: true),
+        new(@"Software\Classes\wingman", "URL Protocol", "", Enabled: true),
+        new(@"Software\Classes\wingman\shell\open\command", "", $"{quotedExe} open \"%1\"", Enabled: true),
     ];
 
     private static string DescribeTask(ScheduledTaskSpec task)

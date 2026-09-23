@@ -52,6 +52,10 @@ internal sealed class UpdatesTab : PackageListTab
     private IReadOnlyList<PackageRow> _rows = [];
     private UpdatesView _view = new([], 0, 0, 0);
     private bool _hasStartedLoading;
+    private bool _hasLoaded;
+
+    // Set by the update-all start route until the first load and the pins are both in.
+    private bool _offersUpdateAll;
 
     public UpdatesTab(Shell shell, IWingetClient client)
         : base(shell, client, "Updates", Columns)
@@ -66,6 +70,7 @@ internal sealed class UpdatesTab : PackageListTab
         AddExtraPane(_excludedPane);
 
         _hints = BuildHints();
+        shell.PinsLoaded += OfferUpdateAllIfReady;
     }
 
     protected override IReadOnlyList<KeyHint> TableHints => _hints;
@@ -101,7 +106,43 @@ internal sealed class UpdatesTab : PackageListTab
         return Filter();
     }
 
-    protected override void OnLoaded(IReadOnlyList<PackageRow> rows) => ShowCounts();
+    /// <summary>
+    /// For the <c>update-all</c> start route: once the first load and the pins are in, marks what
+    /// <c>a</c> marks and asks whether to run them as a batch.
+    /// </summary>
+    public void OfferUpdateAllWhenLoaded()
+    {
+        _offersUpdateAll = true;
+        OfferUpdateAllIfReady();
+    }
+
+    protected override void OnLoaded(IReadOnlyList<PackageRow> rows)
+    {
+        _hasLoaded = true;
+        ShowCounts();
+        OfferUpdateAllIfReady();
+    }
+
+    // Both are needed: held rows are only known once the pins are in.
+    private void OfferUpdateAllIfReady()
+    {
+        if (!_offersUpdateAll || !_hasLoaded || !Shell.HasLoadedPins)
+        {
+            return;
+        }
+
+        _offersUpdateAll = false;
+        MarkAll();
+        var count = Shell.Queue.Count;
+        if (count == 0)
+        {
+            Shell.SetStatus("No updates to run");
+            return;
+        }
+
+        var noun = count == 1 ? "update" : "updates";
+        Shell.AskConfirm($"Run {count} {noun} now? (y/n)", () => Shell.RunQueue(this));
+    }
 
     protected override void OnPinsChanged()
     {

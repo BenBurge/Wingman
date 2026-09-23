@@ -13,6 +13,7 @@ using Wingman.Core.History;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
 using Wingman.Core.Options;
+using Wingman.Core.SelfUpdate;
 using Wingman.Core.Settings;
 using Wingman.Core.Updates;
 using Wingman.Core.Winget;
@@ -42,7 +43,19 @@ internal sealed class Shell
     public const string AlreadyElevatedText = "Already running as administrator";
 
     private const string AppTitle = "Wingman";
+    private const string UpdateAllRoute = "update-all";
     private static readonly TimeSpan StatusLifetime = TimeSpan.FromSeconds(5);
+
+    // The start routes a toast button or the wingman: protocol opens Wingman on, and the tab each shows.
+    private static readonly Dictionary<string, Predicate<ShellTab>> StartRouteTabs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [UpdateAllRoute] = tab => tab is UpdatesTab,
+        ["updates"] = tab => tab is UpdatesTab,
+        ["history"] = tab => tab is HistoryTab,
+        ["settings"] = tab => tab is SettingsTab,
+        ["installed"] = tab => tab is InstalledTab,
+        ["discover"] = tab => tab is DiscoverTab,
+    };
 
     private static readonly HelpGroup GlobalHelp = new("Global",
     [
@@ -73,6 +86,7 @@ internal sealed class Shell
     private readonly ContextMenu _menu;
     private readonly HelpOverlay _help;
     private readonly VersionPicker _versionPicker;
+    private readonly string? _startRoute;
 
     private List<ShellTab> _tabs = [];
     private TabStrip? _tabStrip;
@@ -111,6 +125,9 @@ internal sealed class Shell
     /// <param name="processIsElevated">Whether this process already runs as administrator.</param>
     /// <param name="restartAsAdministrator">Starts Wingman again elevated with the given arguments,
     /// false when the prompt was declined; null where that is not possible.</param>
+    /// <param name="services">The host's platform services; none when null.</param>
+    /// <param name="startRoute">The tab to open on instead of the first, such as <c>updates</c>, or
+    /// <c>update-all</c> to also mark every update and offer to run them; null opens the first tab.</param>
     public Shell(
         IApplication app,
         Theme theme,
@@ -122,9 +139,13 @@ internal sealed class Shell
         HistoryStore history,
         bool canElevate,
         bool processIsElevated = false,
-        Func<IReadOnlyList<string>, bool>? restartAsAdministrator = null)
+        Func<IReadOnlyList<string>, bool>? restartAsAdministrator = null,
+        ShellServices? services = null,
+        string? startRoute = null)
     {
         App = app;
+        Services = services ?? ShellServices.None;
+        _startRoute = startRoute;
         Theme = theme;
         SettingsStore = settingsStore;
         Settings = settings;
@@ -205,9 +226,27 @@ internal sealed class Shell
         _versionPicker = new VersionPicker(theme);
 
         Window.Add(_tabSeparator, _content, _footerSeparator, _message, _keyBar, _menu, _help, _versionPicker);
+
+        // After the pins, so the startup check does not compete with the loads every tab waits on.
+        PinsLoaded += CheckForSelfUpdate;
     }
 
     public IApplication App { get; }
+
+    /// <summary>The host's setup executor, self-update starter, toast sender, and version; each service may be null.</summary>
+    public ShellServices Services { get; }
+
+    /// <summary>What the startup check found about a newer Wingman; null until it finishes, and always without a self-update starter.</summary>
+    public SelfUpdateCheck? SelfUpdateResult { get; private set; }
+
+    /// <summary>Raised on the UI thread once <see cref="SelfUpdateResult"/> is set.</summary>
+    public event Action? SelfUpdateChecked;
+
+    /// <summary>Whether the first pin load has finished, whether or not it succeeded.</summary>
+    public bool HasLoadedPins { get; private set; }
+
+    /// <summary>Raised once, when the first pin load finishes, after <see cref="PinsChanged"/> when it succeeded.</summary>
+    public event Action? PinsLoaded;
 
     /// <summary>The theme every view draws with; <see cref="ApplyTheme"/> switches it.</summary>
     public Theme Theme { get; private set; }
@@ -475,11 +514,19 @@ internal sealed class Shell
             try
             {
                 var pins = await _client.ListPinsAsync(CancellationToken.None);
-                App.Invoke(() => SetPins(pins));
+                App.Invoke(() =>
+                {
+                    SetPins(pins);
+                    MarkPinsLoaded();
+                });
             }
             catch (Exception ex)
             {
-                App.Invoke(() => SetError($"winget: {ex.Message}"));
+                App.Invoke(() =>
+                {
+                    SetError($"winget: {ex.Message}");
+                    MarkPinsLoaded();
+                });
             }
         });
     }
@@ -860,6 +907,7 @@ internal sealed class Shell
     {
         MessageTone.Ok => Theme.OkScheme,
         MessageTone.Error => Theme.ErrorScheme,
+        MessageTone.Info => Theme.InfoScheme,
         _ => Theme.Normal,
     };
 
@@ -1414,9 +1462,80 @@ internal sealed class Shell
         // Deferred to here because focus and timers need the running application.
         if (isRunning && _activeTab is null && _tabs.Count > 0)
         {
-            ShowTab(0);
+            ShowStartTab();
             StartBackgroundLoads();
         }
+    }
+
+    /// <summary>
+    /// Shows the tab the start route names, or the first one without a route; an unknown route
+    /// says so and shows the first. <c>update-all</c> also has Updates mark its rows once loaded.
+    /// </summary>
+    private void ShowStartTab()
+    {
+        var index = 0;
+        if (_startRoute is { Length: > 0 } route)
+        {
+            index = StartRouteTabs.TryGetValue(route, out var isRouteTab) ? _tabs.FindIndex(isRouteTab) : -1;
+            if (index < 0)
+            {
+                index = 0;
+                SetStatus($"Unknown route '{route}'");
+            }
+        }
+
+        if (_tabStrip is { } strip && strip.SelectedIndex != index)
+        {
+            SelectTab(index);
+        }
+        else
+        {
+            ShowTab(index);
+        }
+
+        var isUpdateAll = string.Equals(_startRoute, UpdateAllRoute, StringComparison.OrdinalIgnoreCase);
+        if (isUpdateAll && _tabs[index] is UpdatesTab updates)
+        {
+            updates.OfferUpdateAllWhenLoaded();
+        }
+    }
+
+    private void MarkPinsLoaded()
+    {
+        if (HasLoadedPins)
+        {
+            return;
+        }
+
+        HasLoadedPins = true;
+        PinsLoaded?.Invoke();
+    }
+
+    /// <summary>
+    /// Asks winget on a background task whether a newer Wingman is published, when the host can
+    /// start the upgrade, and says so on the message line until the next message if one is.
+    /// </summary>
+    private void CheckForSelfUpdate()
+    {
+        if (Services.SelfUpdate is null)
+        {
+            return;
+        }
+
+        var version = Services.Version;
+        _ = Task.Run(async () =>
+        {
+            var check = await SelfUpdateChecker.CheckAsync(_client, version, CancellationToken.None);
+            App.Invoke(() =>
+            {
+                SelfUpdateResult = check;
+                SelfUpdateChecked?.Invoke();
+                if (check.IsNewerAvailable)
+                {
+                    PostMessage($"Wingman {check.AvailableVersion} is available · Settings → Update Wingman", MessageTone.Info, isTransient: false);
+                }
+            });
+        });
     }
 
     /// <summary>
@@ -1603,6 +1722,7 @@ internal sealed class Shell
         Normal,
         Ok,
         Error,
+        Info,
     }
 
     /// <summary>A batch the shell started: its screen, the tab showing it, and what it runs.</summary>
