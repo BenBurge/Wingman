@@ -30,12 +30,20 @@ public static class WingmanApp
     /// start the helper and the title bar says so.</param>
     /// <param name="restartAsAdministrator">Starts Wingman again elevated with the given arguments,
     /// returning false when the prompt was declined; null where that is not possible.</param>
+    /// <param name="services">The host's setup executor, self-update starter, toast sender, and
+    /// version; null where the platform has none of them.</param>
+    /// <param name="startRoute">Opens on <c>updates</c>, <c>history</c>, <c>settings</c>,
+    /// <c>installed</c>, or <c>discover</c> instead of the first tab; <c>update-all</c> opens
+    /// Updates, marks every update winget would take, and asks to run them. An unknown route says so
+    /// and opens the first tab.</param>
     public static void Run(
         IWingetClient client,
         Func<CancellationToken, Task<IElevatedOperationChannel>>? elevation,
         IThemeDetector? themeDetector = null,
         bool processIsElevated = false,
-        Func<IReadOnlyList<string>, bool>? restartAsAdministrator = null)
+        Func<IReadOnlyList<string>, bool>? restartAsAdministrator = null,
+        ShellServices? services = null,
+        string? startRoute = null)
     {
         var settingsStore = CreateSettingsStore();
         var settings = settingsStore.Load();
@@ -46,7 +54,8 @@ public static class WingmanApp
         app.Init();
 
         var shell = CreateShell(
-            app, theme, client, settingsStore, settings, detector, elevation, new ProcessRunner(), processIsElevated, restartAsAdministrator);
+            app, theme, client, settingsStore, settings, detector, elevation, new ProcessRunner(), processIsElevated, restartAsAdministrator,
+            services, startRoute);
         app.Run(shell.Window);
         shell.Window.Dispose();
     }
@@ -75,13 +84,15 @@ public static class WingmanApp
         Func<CancellationToken, Task<IElevatedOperationChannel>>? elevation,
         IProcessRunner commandRunner,
         bool processIsElevated = false,
-        Func<IReadOnlyList<string>, bool>? restartAsAdministrator = null)
+        Func<IReadOnlyList<string>, bool>? restartAsAdministrator = null,
+        ShellServices? services = null,
+        string? startRoute = null)
     {
         var history = CreateHistoryStore();
         var batchRunner = new BatchRunner(client, new PrePostCommandRunner(commandRunner), history, elevation);
         var shell = new Shell(
             app, theme, client, settingsStore, settings, themeDetector, batchRunner, history,
-            canElevate: elevation is not null, processIsElevated, restartAsAdministrator);
+            canElevate: elevation is not null, processIsElevated, restartAsAdministrator, services, startRoute);
         shell.SetTabs(
         [
             new InstalledTab(shell, client),

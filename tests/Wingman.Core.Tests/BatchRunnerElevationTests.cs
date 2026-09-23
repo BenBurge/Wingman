@@ -193,14 +193,25 @@ public sealed class BatchRunnerElevationTests : IDisposable
     [Fact]
     public async Task RunAsync_SlowFactory_ReportsWaitingTicksBeforeConnected()
     {
+        // Waits on ticks rather than a fixed delay: under CI load a wall-clock delay can let the
+        // 50 ms timer fire fewer than two times before the factory returns.
+        var progress = new RecordingBatchProgress();
         var runner = CreateRunner(
             async ct =>
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+                try
+                {
+                    await progress.SecondWaitingTick.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                }
+                catch (TimeoutException)
+                {
+                    throw new TimeoutException(
+                        "Expected at least two ElevationWaiting reports before the factory returned, but they never arrived.");
+                }
+
                 return await OpenFakeChannel(ct);
             },
             waitingInterval: TimeSpan.FromMilliseconds(50));
-        var progress = new RecordingBatchProgress();
 
         await runner.RunAsync(ElevatedThenUnelevated(), new BatchOptions(), progress, CancellationToken.None);
 
@@ -382,6 +393,9 @@ public sealed class BatchRunnerElevationTests : IDisposable
     {
         private readonly Lock _lock = new();
         private readonly List<BatchProgress> _events = [];
+        private readonly TaskCompletionSource _secondWaitingTick =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _waitingCount;
 
         public List<BatchProgress> Events
         {
@@ -394,11 +408,22 @@ public sealed class BatchRunnerElevationTests : IDisposable
             }
         }
 
+        /// <summary>Completes as soon as the second <see cref="ElevationWaiting"/> is reported, so a
+        /// slow-factory test can wait for real ticks instead of a fixed delay.</summary>
+        public Task SecondWaitingTick => _secondWaitingTick.Task;
+
         public void Report(BatchProgress value)
         {
+            bool becameSecondTick;
             lock (_lock)
             {
                 _events.Add(value);
+                becameSecondTick = value is ElevationWaiting && ++_waitingCount == 2;
+            }
+
+            if (becameSecondTick)
+            {
+                _secondWaitingTick.TrySetResult();
             }
         }
     }

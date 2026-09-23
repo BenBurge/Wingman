@@ -6,6 +6,14 @@
     OperatingSystem.IsWindows() guard at every call site outside this project.
   -->
 
+  <!--
+    A single-file publish bundles Content files into the exe, so nothing lands beside it; the
+    tray reads its icons from these resources instead.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\assets\tray\*.ico" LogicalName="Wingman.Windows.Tray.%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Wingman.Core\Wingman.Core.csproj" />
   </ItemGroup>

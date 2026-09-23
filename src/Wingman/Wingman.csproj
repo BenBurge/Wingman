@@ -3,6 +3,10 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AssemblyName>wingman</AssemblyName>
+    <Version>0.0.0-dev</Version>
+    <!-- The version flag prints the plain version, not version+commit hash. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <ApplicationIcon>..\..\assets\wingman.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!--
@@ -21,6 +25,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Wingman.Cli\Wingman.Cli.csproj" />
     <ProjectReference Include="..\Wingman.Core\Wingman.Core.csproj" />
     <ProjectReference Include="..\Wingman.Tui\Wingman.Tui.csproj" />
     <ProjectReference Include="..\Wingman.Windows\Wingman.Windows.csproj" />

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Wingman.Core.Settings;
 
 namespace Wingman.Core.Tests;
@@ -29,6 +30,16 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal(ElevationMode.Auto, settings.ElevationMode);
         Assert.True(settings.ContinueOnFailure);
         Assert.Equal("Midnight", settings.Theme);
+        Assert.Equal(6, settings.CheckIntervalHours);
+        Assert.True(settings.CheckAtLogin);
+        Assert.False(settings.AutoInstall);
+        Assert.Equal("03:00", settings.AutoInstallTime);
+        Assert.Equal(new TimeOnly(3, 0), settings.AutoInstallTimeOfDay);
+        Assert.True(settings.ToastOnUpdates);
+        Assert.True(settings.ToastOnBatch);
+        Assert.True(settings.ShowTrayIcon);
+        Assert.True(settings.StartTrayAtLogin);
+        Assert.False(settings.NotificationsPaused);
         Assert.False(File.Exists(store.FilePath));
     }
 
@@ -44,6 +55,15 @@ public class SettingsStoreTests : IDisposable
             ElevationMode = ElevationMode.Always,
             ContinueOnFailure = false,
             Theme = "Auto",
+            CheckIntervalHours = 12,
+            CheckAtLogin = false,
+            AutoInstall = true,
+            AutoInstallTime = "23:45",
+            ToastOnUpdates = false,
+            ToastOnBatch = false,
+            ShowTrayIcon = false,
+            StartTrayAtLogin = false,
+            NotificationsPaused = true,
         };
 
         store.Save(settings);
@@ -55,6 +75,54 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal(ElevationMode.Always, loaded.ElevationMode);
         Assert.False(loaded.ContinueOnFailure);
         Assert.Equal("Auto", loaded.Theme);
+        Assert.Equal(12, loaded.CheckIntervalHours);
+        Assert.False(loaded.CheckAtLogin);
+        Assert.True(loaded.AutoInstall);
+        Assert.Equal("23:45", loaded.AutoInstallTime);
+        Assert.Equal(new TimeOnly(23, 45), loaded.AutoInstallTimeOfDay);
+        Assert.False(loaded.ToastOnUpdates);
+        Assert.False(loaded.ToastOnBatch);
+        Assert.False(loaded.ShowTrayIcon);
+        Assert.False(loaded.StartTrayAtLogin);
+        Assert.True(loaded.NotificationsPaused);
+    }
+
+    [Theory]
+    [InlineData("25:99")]
+    [InlineData("3pm")]
+    [InlineData("")]
+    public void Load_WithInvalidAutoInstallTime_FallsBackToDefault(string invalidTime)
+    {
+        var store = new SettingsStore(_directoryPath);
+        Directory.CreateDirectory(_directoryPath);
+        File.WriteAllText(store.FilePath, $$"""
+            {
+              "autoInstallTime": {{JsonSerializer.Serialize(invalidTime)}}
+            }
+            """);
+
+        var settings = store.Load();
+
+        Assert.Equal("03:00", settings.AutoInstallTime);
+        Assert.Equal(new TimeOnly(3, 0), settings.AutoInstallTimeOfDay);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(999, 168)]
+    public void Load_WithOutOfRangeCheckIntervalHours_ClampsToValidRange(int stored, int expected)
+    {
+        var store = new SettingsStore(_directoryPath);
+        Directory.CreateDirectory(_directoryPath);
+        File.WriteAllText(store.FilePath, $$"""
+            {
+              "checkIntervalHours": {{stored}}
+            }
+            """);
+
+        var settings = store.Load();
+
+        Assert.Equal(expected, settings.CheckIntervalHours);
     }
 
     [Fact]

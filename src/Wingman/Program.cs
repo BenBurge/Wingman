@@ -1,8 +1,11 @@
+using System.Text;
+using Wingman.Cli;
 using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Wingman.Tui;
 using Wingman.Windows;
 using Wingman.Windows.Elevation;
+using Wingman.Windows.Tray;
 
 // The elevated helper is this same executable relaunched by ElevatedHelperLauncher, so its
 // arguments are handled before anything that would start the TUI.
@@ -18,22 +21,91 @@ if (args is ["--elevated-worker", var pipeName])
 }
 
 var isFake = args.Contains("--fake");
+
+if (CliRunner.IsHeadless(args))
+{
+    UseUtf8Output();
+
+    using var cancel = new CancellationTokenSource();
+
+    // The first Ctrl+C cancels the command so it can stop cleanly; a second one ends the process.
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = !cancel.IsCancellationRequested;
+        cancel.Cancel();
+    };
+
+    var processRunner = new ProcessRunner();
+    var services = new CliHostServices
+    {
+        SetupExecutor = HostServices.SetupExecutor(processRunner),
+        ToastSender = HostServices.ToastSender(processRunner),
+        SelfUpdateStarter = HostServices.SelfUpdateStarter(),
+        TrayRunner = TrayHost.Run,
+        TuiLauncher = (route, _) => Task.FromResult(RunTui(isFake, route)),
+        WindowSpawner = HostServices.WindowSpawner,
+        ElevationFactory = ElevationSupport.Factory,
+        ProcessIsElevated = ElevationSupport.IsElevated ?? false,
+        HasConsole = HostServices.HasConsoleWindow ?? true,
+    };
+
+    return await CliRunner.RunAsync(args, Console.Out, Console.Error, cancel.Token, services);
+}
+
 var unrecognizedArgs = args.Where(a => a != "--fake").ToArray();
 
 if (unrecognizedArgs.Length > 0)
 {
-    Console.Error.WriteLine("wingman: headless commands are not implemented yet");
-    return 2;
+    Console.Error.WriteLine($"wingman: unexpected argument '{unrecognizedArgs[0]}'; run 'wingman --help'");
+    return ExitCodes.Usage;
 }
 
-IWingetClient client = isFake ? new FakeWingetClient() : new WingetCliClient(new ProcessRunner());
+return RunTui(isFake, startRoute: null);
 
-// The fake never needs the elevated helper or a restart, and either would show a real UAC prompt.
-var elevation = isFake ? null : ElevationSupport.Factory;
-var restartAsAdministrator = isFake ? null : ElevationSupport.RestartAsAdministrator;
-var isElevated = !isFake && (ElevationSupport.IsElevated ?? false);
+static int RunTui(bool isFake, string? startRoute)
+{
+    IWingetClient client = isFake ? new FakeWingetClient() : new WingetCliClient(new ProcessRunner());
 
-// The fake leaves Auto on the dark theme, so its screens never depend on the machine's mode.
-IThemeDetector? themeDetector = !isFake && OperatingSystem.IsWindows() ? new WindowsThemeDetector() : null;
-WingmanApp.Run(client, elevation, themeDetector, isElevated, restartAsAdministrator);
-return 0;
+    // The fake never needs the elevated helper or a restart, and either would show a real UAC prompt.
+    var elevation = isFake ? null : ElevationSupport.Factory;
+    var restartAsAdministrator = isFake ? null : ElevationSupport.RestartAsAdministrator;
+    var isElevated = !isFake && (ElevationSupport.IsElevated ?? false);
+
+    // The fake leaves Auto on the dark theme, so its screens never depend on the machine's mode.
+    IThemeDetector? themeDetector = !isFake && OperatingSystem.IsWindows() ? new WindowsThemeDetector() : null;
+
+    // Setup, self-update, and toasts from the fake would touch the real machine.
+    ShellServices services;
+    if (isFake)
+    {
+        services = new ShellServices(null, null, null, CliRunner.Version);
+    }
+    else
+    {
+        var runner = new ProcessRunner();
+        services = new ShellServices(
+            HostServices.SetupExecutor(runner), HostServices.SelfUpdateStarter(), HostServices.ToastSender(runner), CliRunner.Version);
+    }
+
+    WingmanApp.Run(client, elevation, themeDetector, isElevated, restartAsAdministrator, services, startRoute);
+    return 0;
+}
+
+// Windows consoles start on the OEM code page, which cannot print the ✓ ✗ ⊘ ⚡ markers the
+// commands use. Setting it fails when the process has no console at all, and then nothing reads
+// the output anyway.
+static void UseUtf8Output()
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        return;
+    }
+
+    try
+    {
+        Console.OutputEncoding = Encoding.UTF8;
+    }
+    catch (IOException)
+    {
+    }
+}
