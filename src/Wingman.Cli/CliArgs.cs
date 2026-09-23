@@ -8,7 +8,7 @@ namespace Wingman.Cli;
 public sealed class CliArgs
 {
     // Global switches that never take a value, so "wingman --fake check" keeps "check" as the command.
-    private static readonly HashSet<string> BooleanFlags = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> GlobalFlags = new(StringComparer.OrdinalIgnoreCase)
     {
         "fake",
         "json",
@@ -33,8 +33,18 @@ public sealed class CliArgs
     /// <summary>Option values by name without the leading dashes, compared case-insensitively.</summary>
     public IReadOnlyDictionary<string, string> Options => _options;
 
-    public static CliArgs Parse(string[] args)
+    /// <param name="flags">
+    /// Option names that never take a value, on top of the global <c>--fake</c>, <c>--json</c>, and
+    /// <c>--help</c>, so <c>upgrade --yes Git.Git</c> keeps <c>Git.Git</c> as a positional.
+    /// </param>
+    public static CliArgs Parse(string[] args, IReadOnlyCollection<string>? flags = null)
     {
+        var booleanFlags = new HashSet<string>(GlobalFlags, StringComparer.OrdinalIgnoreCase);
+        if (flags is not null)
+        {
+            booleanFlags.UnionWith(flags);
+        }
+
         string? command = null;
         var positionals = new List<string>();
         var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -71,7 +81,7 @@ public sealed class CliArgs
                 continue;
             }
 
-            var nextIsValue = !BooleanFlags.Contains(name) && i + 1 < args.Length && !IsOption(args[i + 1]);
+            var nextIsValue = !booleanFlags.Contains(name) && i + 1 < args.Length && !IsOption(args[i + 1]);
             if (nextIsValue)
             {
                 options[name] = args[i + 1];

@@ -171,14 +171,26 @@ public class CliRunnerTests : IDisposable
     [Fact]
     public async Task Placeholder_ReportsNotImplementedAndReturnsUsage()
     {
-        var check = CliCommands.All.Single(c => c.Name == "check");
+        var tray = CliCommands.All.Single(c => c.Name == "tray");
 
-        var exitCode = await RunAsync(["check", "--fake"], check);
+        var exitCode = await RunAsync(["tray", "--fake"], tray);
 
         Assert.Equal(ExitCodes.Usage, exitCode);
         Assert.Equal(
-            $"wingman check: not implemented yet (see the Phase 3 issues){Environment.NewLine}",
+            $"wingman tray: not implemented yet (see the Phase 3 issues){Environment.NewLine}",
             _error.ToString());
+    }
+
+    [Fact]
+    public async Task Dispatch_ReparsesWithTheCommandsFlags()
+    {
+        var command = new RecordingCommand();
+
+        await RunAsync(["boom", "--yes", "Git.Git", "--last", "5"], command);
+
+        Assert.Equal(["Git.Git"], command.Args!.Positionals);
+        Assert.Equal("", command.Args.GetOption("yes"));
+        Assert.Equal("5", command.Args.GetOption("last"));
     }
 
     [Theory]
@@ -224,6 +236,8 @@ public class CliRunnerTests : IDisposable
         public string Summary => "Records what it was given";
 
         public string Usage => "Usage: wingman boom";
+
+        public IReadOnlyCollection<string> Flags => ["yes"];
 
         public Task<int> RunAsync(CliArgs args, CliContext context)
         {

@@ -108,4 +108,32 @@ public class CliArgsTests
         Assert.False(args.HasFlag("json"));
         Assert.Null(args.GetOption("json"));
     }
+
+    [Fact]
+    public void Parse_CommandFlags_NeverTakeAValue()
+    {
+        var args = CliArgs.Parse(["upgrade", "--yes", "Git.Git"], ["yes"]);
+
+        Assert.Equal("upgrade", args.Command);
+        Assert.Equal(["Git.Git"], args.Positionals);
+        Assert.Equal("", args.GetOption("yes"));
+    }
+
+    [Fact]
+    public void Parse_CommandFlags_AreCaseInsensitive()
+    {
+        var args = CliArgs.Parse(["upgrade", "--YES", "Git.Git"], ["yes"]);
+
+        Assert.Equal(["Git.Git"], args.Positionals);
+        Assert.True(args.HasFlag("yes"));
+    }
+
+    [Fact]
+    public void Parse_WithoutCommandFlags_AnUnknownOptionTakesTheNextToken()
+    {
+        var args = CliArgs.Parse(["upgrade", "--yes", "Git.Git"]);
+
+        Assert.Empty(args.Positionals);
+        Assert.Equal("Git.Git", args.GetOption("yes"));
+    }
 }

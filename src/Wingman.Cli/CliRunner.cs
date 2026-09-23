@@ -87,10 +87,13 @@ public static class CliRunner
             return ExitCodes.Usage;
         }
 
+        // The first parse only has to find the command; its own flags decide which options take values.
+        var commandArgs = CliArgs.Parse(args, command.Flags);
+
         try
         {
-            var context = createContext(parsed);
-            return await command.RunAsync(parsed, context);
+            var context = createContext(commandArgs);
+            return await command.RunAsync(commandArgs, context);
         }
         catch (OperationCanceledException)
         {
