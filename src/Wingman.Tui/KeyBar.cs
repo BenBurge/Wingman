@@ -5,10 +5,13 @@ using Wingman.Core.Winget;
 
 namespace Wingman.Tui;
 
-/// <summary>A key the key bar shows and the shell dispatches: pressing <see cref="Key"/> runs <see cref="Action"/>.</summary>
-internal sealed record KeyHint(Key Key, string Label, Action Action)
+/// <summary>
+/// A key the key bar shows and the shell dispatches: pressing <see cref="Key"/> runs <see cref="Action"/>.
+/// <paramref name="KeyLabel"/> replaces the key's own name on the bar, such as <c>⏎</c> for Enter.
+/// </summary>
+internal sealed record KeyHint(Key Key, string Label, Action Action, string? KeyLabel = null)
 {
-    public string KeyText => Key.ToString();
+    public string KeyText => KeyLabel ?? Key.ToString();
 
     /// <summary>
     /// Printable keys match on the character alone, so <c>?</c> matches however the driver reports

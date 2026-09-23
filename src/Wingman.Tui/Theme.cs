@@ -83,6 +83,14 @@ public sealed record Theme(
     /// <summary>Typed text in accent whether or not the field has focus, as in the mockups' filter box.</summary>
     public Scheme InputScheme => Uniform(Accent);
 
+    /// <summary>Table cell text in <paramref name="foreground"/> that turns background-on-accent on the cursor row like the rest of the row.</summary>
+    public Scheme CellScheme(Color foreground) => new(On(foreground))
+    {
+        Focus = Selected,
+        Active = Selected,
+        Disabled = On(Dim),
+    };
+
     public Attribute Selected => new(Background, Accent);
 
     public Attribute SelectedBold => new(Background, Accent, TextStyle.Bold);

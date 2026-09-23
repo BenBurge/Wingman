@@ -3,6 +3,7 @@ using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
+using Wingman.Core.Models;
 using Wingman.Core.Winget;
 using Wingman.Tui.Tabs;
 
@@ -22,6 +23,7 @@ internal sealed class Shell
     private readonly Label _message;
     private readonly KeyBar _keyBar;
     private readonly KeyHint[] _globalHints;
+    private readonly HashSet<string> _installedIds = new(StringComparer.OrdinalIgnoreCase);
 
     private List<ShellTab> _tabs = [];
     private TabStrip? _tabStrip;
@@ -92,6 +94,15 @@ internal sealed class Shell
 
     public Theme Theme { get; }
 
+    /// <summary>Raised after <see cref="InstalledIds"/> changes.</summary>
+    public event Action? InstalledChanged;
+
+    /// <summary>Ids of the installed packages as of the Installed tab's last load, ignoring case; empty before it.</summary>
+    public IReadOnlySet<string> InstalledIds => _installedIds;
+
+    /// <summary><c>ShowAsync</c> results by Id for the session, shared by every tab's details pane.</summary>
+    public Dictionary<string, PackageDetails?> DetailsCache { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public Window Window { get; }
 
     /// <summary>Winget's version as <c>GetVersionAsync</c> reports it, shown at the right of the title bar.</summary>
@@ -138,6 +149,30 @@ internal sealed class Shell
         if (_tabStrip is not null && index >= 0)
         {
             _tabStrip.SetCount(index, count);
+        }
+    }
+
+    /// <summary>Replaces <see cref="InstalledIds"/> with the Ids of <paramref name="rows"/>.</summary>
+    public void SetInstalled(IReadOnlyList<PackageRow> rows)
+    {
+        _installedIds.Clear();
+        foreach (var row in rows)
+        {
+            _installedIds.Add(row.Id);
+        }
+
+        InstalledChanged?.Invoke();
+    }
+
+    /// <summary>Starts the Installed tab's first load, for a tab that needs <see cref="InstalledIds"/> before Installed was shown.</summary>
+    public void EnsureInstalledLoaded()
+    {
+        foreach (var tab in _tabs)
+        {
+            if (tab is InstalledTab installed)
+            {
+                installed.EnsureLoaded();
+            }
         }
     }
 

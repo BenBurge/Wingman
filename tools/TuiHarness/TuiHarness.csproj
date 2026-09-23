@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiles the Wingman.Tui sources directly instead of referencing the project, so the harness
+    can reach its internal types (Shell, the tabs) without InternalsVisibleTo.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Terminal.Gui" Version="2.5.0" />
+    <ProjectReference Include="..\..\src\Wingman.Core\Wingman.Core.csproj" />
+    <Compile Include="..\..\src\Wingman.Tui\**\*.cs" Exclude="..\..\src\Wingman.Tui\obj\**;..\..\src\Wingman.Tui\bin\**" />
+  </ItemGroup>
+
+</Project>

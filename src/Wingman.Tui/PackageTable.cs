@@ -1,16 +1,16 @@
 using System.Drawing;
-using System.Text;
+using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Wingman.Core.Models;
-using Wingman.Core.Winget;
 
 namespace Wingman.Tui;
 
 /// <summary>
-/// A filterable, sortable list of packages: a filter box and count on the first row, a blank row,
-/// then a table with a header row and a background-on-accent cursor row. Every list tab uses it.
+/// A filterable, sortable list of packages: a text box and count on the first row, a blank row,
+/// then a table with a header row and a background-on-accent cursor row, and an optional footer
+/// line. Every list tab uses it; Discover turns the filter box into a search box.
 /// </summary>
 internal sealed class PackageTable : View
 {
@@ -21,12 +21,18 @@ internal sealed class PackageTable : View
     // The header is a single row because the header overline and underline are turned off.
     private const int HeaderRows = 1;
 
+    // A blank row and the footer line itself.
+    private const int FooterRows = 2;
+
     private static readonly string[] SpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     private readonly IReadOnlyList<PackageColumn> _columns;
+    private readonly Label _promptLabel;
     private readonly TextField _filterField;
     private readonly Label _countLabel;
     private readonly TableView _tableView;
+    private readonly Label _emptyLabel;
+    private readonly Label _footerLabel;
 
     // Text width of each table column, marker first, excluding the gap TableView draws after it.
     private readonly int[] _textWidths;
@@ -37,6 +43,10 @@ internal sealed class PackageTable : View
     private bool _sortDescending;
     private int _columnLayoutWidth = -1;
     private PackageRow? _lastCursorRow;
+    private string _prompt = "Filter:";
+    private string? _countText;
+    private string? _emptyText;
+    private string? _footer;
 
     private bool _isLoading;
     private object? _spinnerTimer;
@@ -47,16 +57,16 @@ internal sealed class PackageTable : View
         _columns = columns;
         CanFocus = true;
 
-        var filterLabel = new Label { X = 0, Y = 0, Text = " Filter: " };
+        _promptLabel = new Label { X = 0, Y = 0, Text = $" {_prompt} " };
 
         _filterField = new TextField
         {
-            X = Pos.Right(filterLabel),
+            X = Pos.Right(_promptLabel),
             Y = 0,
             Width = Dim.Fill(CountWidth + 1),
         };
         _filterField.SetScheme(theme.InputScheme);
-        _filterField.TextChanged += (_, _) => ApplyView();
+        _filterField.TextChanged += (_, _) => OnFilterTextChanged();
         _filterField.KeyDown += OnFilterKeyDown;
 
         _countLabel = new Label
@@ -69,7 +79,7 @@ internal sealed class PackageTable : View
 
         _textWidths = new int[columns.Count + 1];
         _source = new PackageTableSource(columns, [], null, null, false, _textWidths);
-        _tableView = new TableView(_source)
+        _tableView = new KeyPassingTableView(_source)
         {
             X = 0,
             Y = 2,
@@ -91,13 +101,21 @@ internal sealed class PackageTable : View
         style.ExpandLastColumn = true;
         style.AlwaysShowHeaders = true;
         style.HeaderScheme = theme.HeaderScheme;
+        style.GetOrCreateColumnStyle(0).ColorGetter = _ => MarkerScheme;
 
         _tableView.ValueChanged += (_, _) => RaiseCursorChangedIfMoved();
         _tableView.Accepting += OnTableAccepting;
         _tableView.MouseEvent += OnTableMouse;
         _tableView.KeyDownNotHandled += OnTableKeyDownNotHandled;
 
-        Add(filterLabel, _filterField, _countLabel, _tableView);
+        // Added after the table so it draws over the table's empty rows.
+        _emptyLabel = new Label { X = Pos.Center(), Y = Pos.Center(), Visible = false };
+        _emptyLabel.SetScheme(theme.DimScheme);
+
+        _footerLabel = new Label { X = 1, Y = Pos.AnchorEnd(1), Width = Dim.Fill(1), Visible = false };
+        _footerLabel.SetScheme(theme.DimScheme);
+
+        Add(_promptLabel, _filterField, _countLabel, _tableView, _emptyLabel, _footerLabel);
         UpdateCountLabel();
     }
 
@@ -107,8 +125,67 @@ internal sealed class PackageTable : View
     /// <summary>Raised on Enter or double-click on a row.</summary>
     public event Action<PackageRow>? RowActivated;
 
+    /// <summary>Raised with the box's text when Enter is pressed in it while <see cref="FiltersRows"/> is false.</summary>
+    public event Action<string>? QuerySubmitted;
+
     /// <summary>Text for the leading marker column, such as <c>✓</c>; the column stays blank when null.</summary>
     public Func<PackageRow, string>? Marker { get; set; }
+
+    /// <summary>Colors of the marker column; the row's own colors when null.</summary>
+    public Scheme? MarkerScheme { get; set; }
+
+    /// <summary>The label before the text box, such as <c>Filter:</c> or <c>Search:</c>.</summary>
+    public string Prompt
+    {
+        get => _prompt;
+        set
+        {
+            _prompt = value;
+            _promptLabel.Text = $" {value} ";
+        }
+    }
+
+    /// <summary>
+    /// True: typing in the box filters the rows as you type. False: the box is a search box that
+    /// leaves the rows alone, and Enter raises <see cref="QuerySubmitted"/>.
+    /// </summary>
+    public bool FiltersRows { get; set; } = true;
+
+    /// <summary>What the count label shows when not loading; <c>12 of 142</c> when null.</summary>
+    public string? CountText
+    {
+        get => _countText;
+        set
+        {
+            _countText = value;
+            UpdateCountLabel();
+        }
+    }
+
+    /// <summary>A dim line centered over the table while it has no rows and is not loading; nothing when null.</summary>
+    public string? EmptyText
+    {
+        get => _emptyText;
+        set
+        {
+            _emptyText = value;
+            _emptyLabel.Text = value ?? "";
+            UpdateEmptyLabel();
+        }
+    }
+
+    /// <summary>A dim line below the table, after a blank row. Null gives the table those rows back; empty keeps them blank.</summary>
+    public string? Footer
+    {
+        get => _footer;
+        set
+        {
+            _footer = value;
+            _footerLabel.Text = value ?? "";
+            _footerLabel.Visible = value is not null;
+            _tableView.Height = value is null ? Dim.Fill() : Dim.Fill(FooterRows);
+        }
+    }
 
     public PackageRow? CurrentRow
     {
@@ -120,7 +197,7 @@ internal sealed class PackageTable : View
         }
     }
 
-    /// <summary>Case-insensitive substring matched against each row's Name and Id.</summary>
+    /// <summary>The text box's contents: the filter, matched against each row's Name and Id, or the search query.</summary>
     public string Filter
     {
         get => _filterField.Text;
@@ -151,6 +228,7 @@ internal sealed class PackageTable : View
             }
 
             UpdateCountLabel();
+            UpdateEmptyLabel();
         }
     }
 
@@ -160,6 +238,9 @@ internal sealed class PackageTable : View
         _allRows = rows;
         ApplyView();
     }
+
+    /// <summary>Redraws the rows so <see cref="Marker"/> is asked again, for when what it reads has changed.</summary>
+    public void RefreshMarkers() => _tableView.SetNeedsDraw();
 
     public void FocusFilter() => _filterField.SetFocus();
 
@@ -186,10 +267,18 @@ internal sealed class PackageTable : View
         }
     }
 
+    private void OnFilterTextChanged()
+    {
+        if (FiltersRows)
+        {
+            ApplyView();
+        }
+    }
+
     private void ApplyView()
     {
         var keepId = CurrentRow?.Id;
-        var filter = _filterField.Text;
+        var filter = FiltersRows ? _filterField.Text : "";
 
         var visible = new List<PackageRow>();
         foreach (var row in _allRows)
@@ -219,6 +308,7 @@ internal sealed class PackageTable : View
         _tableView.EnsureCursorIsVisible();
 
         UpdateCountLabel();
+        UpdateEmptyLabel();
         RaiseCursorChangedIfMoved();
     }
 
@@ -266,18 +356,33 @@ internal sealed class PackageTable : View
         style.MinWidth = textWidth;
         style.MaxWidth = textWidth;
         _textWidths[tableColumn] = textWidth;
-        style.RepresentationGetter = value => Fit(value?.ToString() ?? "", textWidth);
+        style.RepresentationGetter = value => CellText.Fit(value?.ToString() ?? "", textWidth);
     }
 
     private void OnFilterKeyDown(object? sender, Key key)
     {
         if (key == Key.Esc)
         {
-            _filterField.Text = "";
+            // A search box keeps its query so the results stay explained.
+            if (FiltersRows)
+            {
+                _filterField.Text = "";
+            }
+
             FocusTable();
             key.Handled = true;
         }
-        else if (key == Key.Enter || key == Key.Tab)
+        else if (key == Key.Enter)
+        {
+            if (!FiltersRows)
+            {
+                QuerySubmitted?.Invoke(_filterField.Text);
+            }
+
+            FocusTable();
+            key.Handled = true;
+        }
+        else if (key == Key.Tab)
         {
             FocusTable();
             key.Handled = true;
@@ -391,9 +496,20 @@ internal sealed class PackageTable : View
 
     private void UpdateCountLabel()
     {
-        _countLabel.Text = _isLoading
-            ? $"{SpinnerFrames[_spinnerFrame]} Loading"
-            : $"{_source.Rows} of {_allRows.Count}";
+        if (_isLoading)
+        {
+            var activity = FiltersRows ? "Loading" : "Searching";
+            _countLabel.Text = $"{SpinnerFrames[_spinnerFrame]} {activity}";
+        }
+        else
+        {
+            _countLabel.Text = _countText ?? $"{_source.Rows} of {_allRows.Count}";
+        }
+    }
+
+    private void UpdateEmptyLabel()
+    {
+        _emptyLabel.Visible = !string.IsNullOrEmpty(_emptyText) && _source.Rows == 0 && !_isLoading;
     }
 
     private void RaiseCursorChangedIfMoved()
@@ -408,29 +524,13 @@ internal sealed class PackageTable : View
         CursorChanged?.Invoke(current);
     }
 
-    private static string Fit(string text, int width)
+    /// <summary>
+    /// A <see cref="TableView"/> that lets printable keys go up to the window while it has no rows.
+    /// TableView swallows them then, as type-to-search with nothing to search, which would leave the
+    /// tab keys, the key bar, and <c>q</c> dead on an empty list.
+    /// </summary>
+    private sealed class KeyPassingTableView(ITableSource source) : TableView(source)
     {
-        if (DisplayWidth.Of(text) <= width)
-        {
-            return text;
-        }
-
-        const string Ellipsis = "…";
-        var budget = width - DisplayWidth.Of(Ellipsis);
-        var builder = new StringBuilder();
-        var used = 0;
-        foreach (var rune in text.EnumerateRunes())
-        {
-            var runeWidth = DisplayWidth.Of(rune);
-            if (used + runeWidth > budget)
-            {
-                break;
-            }
-
-            builder.Append(rune.ToString());
-            used += runeWidth;
-        }
-
-        return builder.Append(Ellipsis).ToString();
+        protected override bool OnKeyDownNotHandled(Key key) => Table is { Rows: > 0 } && base.OnKeyDownNotHandled(key);
     }
 }
