@@ -6,11 +6,13 @@ using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
+using Wingman.Core.Bundles;
 using Wingman.Core.History;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
 using Wingman.Core.Options;
 using Wingman.Core.Settings;
+using Wingman.Core.Updates;
 using Wingman.Core.Winget;
 using Wingman.Tui.Tabs;
 
@@ -20,13 +22,14 @@ namespace Wingman.Tui;
 /// The window chrome every tab shares: title bar, tab strip, message line, and key bar, plus the
 /// key routing that sends <c>1</c>-<c>5</c> and key bar keys to the right place, the y/n prompt on
 /// the message line, the row context menu and the help overlay, which take every key while open,
-/// the one batch allowed to run at a time, the batch <see cref="Queue"/>, and the pins every tab marks. Every
+/// the one batch allowed to run at a time, the batch <see cref="Queue"/>, the pins every tab marks, and
+/// the update policy and install option changes every tab follows. Every
 /// member must be called on the UI thread; background work marshals back with <c>App.Invoke</c>.
 /// </summary>
 internal sealed class Shell
 {
     public const string BatchRunningText = "A batch is already running";
-    public const string PinChangingText = "A pin change is already running";
+    public const string PolicyChangingText = "A policy change is already running";
     public const string QueueClearedText = "Queue cleared";
     public const string QueueEmptyText = "The queue is empty; press Space to mark rows";
 
@@ -67,7 +70,7 @@ internal sealed class Shell
     private object? _statusTimer;
 
     private IReadOnlyList<Pin> _pins = [];
-    private bool _isChangingPin;
+    private bool _isApplyingPolicy;
 
     // The running batch, or the finished one whose screen is still up; null once that is dismissed.
     private ActiveBatch? _batch;
@@ -193,11 +196,20 @@ internal sealed class Shell
     /// <summary>Raised after <see cref="Pins"/> changes.</summary>
     public event Action? PinsChanged;
 
+    /// <summary>Raised after a package's install or update options change in <see cref="Options"/>.</summary>
+    public event Action? OptionsChanged;
+
     /// <summary>Winget's pins as of the last load or pin change; empty until the first load finishes.</summary>
     public IReadOnlyList<Pin> Pins => _pins;
 
     /// <summary><c>ShowAsync</c> results by Id for the session, shared by every tab's details pane.</summary>
     public Dictionary<string, PackageDetails?> DetailsCache { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The note last saved in the update policy dialog, by Id, for the session only: UniGetUI's
+    /// <c>UpdatesOptions</c> has no field to store it in.
+    /// </summary>
+    public Dictionary<string, string> PolicyNotes { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Window Window { get; }
 
@@ -372,12 +384,47 @@ internal sealed class Shell
         });
     }
 
+    /// <summary>How Wingman treats <paramref name="row"/>'s updates, from winget's pins and the package's update options.</summary>
+    public UpdatePolicyKind ResolvePolicy(PackageRow row) =>
+        UpdatePolicyResolver.Resolve(row, _pins, Options.GetUpdatesOptions(row.Id));
+
+    /// <summary>Whether the package is excluded from Wingman's updates because it updates itself.</summary>
+    public bool IsExcluded(string id) => Options.GetUpdatesOptions(id).UpdatesIgnored;
+
     /// <summary>
-    /// Removes the package's pin, or adds a blocking one when it has none, on a background task,
-    /// then reloads <see cref="Pins"/> and reports the result on the message line. Refused while a
-    /// batch or another pin change is running.
+    /// Stores both option sets for <paramref name="id"/>, raises <see cref="OptionsChanged"/>, and
+    /// says so on the message line; false, with the error shown, when the file could not be written.
     /// </summary>
-    public void TogglePin(string id)
+    public bool SaveOptions(string id, InstallOptions install, UpdatesOptions updates)
+    {
+        try
+        {
+            Options.SetInstallOptions(id, install);
+            Options.SetUpdatesOptions(id, updates);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetError($"Could not save options for {id}: {ex.Message}");
+            return false;
+        }
+
+        OptionsChanged?.Invoke();
+        SetStatus($"Saved options for {id}");
+        return true;
+    }
+
+    /// <summary>
+    /// Gives <paramref name="row"/> the update policy <paramref name="kind"/> through
+    /// <see cref="UpdatePolicyApplier"/>, which pins or unpins it with winget as needed and stores
+    /// its update options, then reloads <see cref="Pins"/> and reports the result on the message
+    /// line. Refused while a batch or another policy change is running.
+    /// </summary>
+    /// <remarks>
+    /// Awaited on the UI thread rather than run on a background task: Terminal.Gui's
+    /// synchronization context brings each await back to the UI thread, so the store, which is
+    /// not thread-safe, is only ever touched there.
+    /// </remarks>
+    public async Task ApplyPolicyAsync(PackageRow row, UpdatePolicyKind kind, string? note)
     {
         if (IsBatchRunning)
         {
@@ -385,32 +432,66 @@ internal sealed class Shell
             return;
         }
 
-        if (_isChangingPin)
+        if (_isApplyingPolicy)
         {
-            SetStatus(PinChangingText);
+            SetStatus(PolicyChangingText);
             return;
         }
 
-        _isChangingPin = true;
-        var wasPinned = IsPinned(id);
-        _ = Task.Run(async () =>
+        _isApplyingPolicy = true;
+        try
         {
-            OperationResult? result = null;
-            IReadOnlyList<Pin>? pins = null;
-            Exception? error = null;
+            var applier = new UpdatePolicyApplier(_client, Options);
+            var result = await applier.ApplyAsync(row, kind, note, _pins, CancellationToken.None);
+            SetPins(await _client.ListPinsAsync(CancellationToken.None));
+            OptionsChanged?.Invoke();
+            if (result.Succeeded)
+            {
+                SetStatus(PolicyAppliedText(row, kind));
+            }
+            else
+            {
+                SetError($"winget: {FailureText(result)}");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"winget: {ex.Message}");
+        }
+        finally
+        {
+            _isApplyingPolicy = false;
+        }
+    }
+
+    /// <summary>
+    /// Reads the history on a background task and calls <paramref name="onLoaded"/> on the UI thread
+    /// with what the package's last operation's exit code means when that operation failed, or null
+    /// when it succeeded or there is none.
+    /// </summary>
+    public void LoadLastFailure(string id, Action<ErrorExplanation?> onLoaded)
+    {
+        _ = Task.Run(() =>
+        {
+            ErrorExplanation? explanation = null;
             try
             {
-                result = wasPinned
-                    ? await _client.UnpinAsync(id, CancellationToken.None)
-                    : await _client.PinAsync(id, blocking: true, version: null, CancellationToken.None);
-                pins = await _client.ListPinsAsync(CancellationToken.None);
+                foreach (var entry in _history.List())
+                {
+                    var isOperation = entry.Operation != "batch"
+                        && string.Equals(entry.PackageId, id, StringComparison.OrdinalIgnoreCase);
+                    if (isOperation)
+                    {
+                        explanation = entry.Succeeded ? null : WingetErrorCodes.Explain(entry.ExitCode);
+                        break;
+                    }
+                }
             }
-            catch (Exception ex)
+            catch (IOException)
             {
-                error = ex;
             }
 
-            App.Invoke(() => FinishPinChange(id, wasPinned, result, pins, error));
+            App.Invoke(() => onLoaded(explanation));
         });
     }
 
@@ -728,6 +809,9 @@ internal sealed class Shell
         _batch = batch;
         screen.CancelRequested += () => AskCancelBatch(batch);
         screen.BackRequested += CloseBatch;
+        screen.RetryRequested += operation => RunOperation(operation, origin);
+        screen.PolicyRequested += (row, kind) => _ = ApplyPolicyAsync(row, kind, note: null);
+        screen.HintsChanged += () => RefreshHints(origin);
         origin.ShowBatchScreen(screen);
         RefreshHints(origin);
 
@@ -864,27 +948,13 @@ internal sealed class Shell
         PinsChanged?.Invoke();
     }
 
-    private void FinishPinChange(string id, bool wasPinned, OperationResult? result, IReadOnlyList<Pin>? pins, Exception? error)
+    private static string PolicyAppliedText(PackageRow row, UpdatePolicyKind kind) => kind switch
     {
-        _isChangingPin = false;
-        if (pins is not null)
-        {
-            SetPins(pins);
-        }
-
-        if (error is not null)
-        {
-            SetError($"winget: {error.Message}");
-        }
-        else if (result is { Succeeded: false })
-        {
-            SetError($"winget: {FailureText(result)}");
-        }
-        else
-        {
-            SetStatus(wasPinned ? $"Unpinned {id}" : $"Pinned {id} (blocking)");
-        }
-    }
+        UpdatePolicyKind.Hold => $"Held {row.Id}",
+        UpdatePolicyKind.SkipVersion => $"Skipping {row.AvailableVersion} of {row.Id}",
+        UpdatePolicyKind.Exclude => $"Excluded {row.Id} from Wingman updates",
+        _ => $"{row.Id} updates with Wingman",
+    };
 
     /// <summary>Winget's last line of output, which names the problem, or the exit code when it printed nothing.</summary>
     private static string FailureText(OperationResult result)

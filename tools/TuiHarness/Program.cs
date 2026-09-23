@@ -20,6 +20,9 @@ var theme = Theme.ByName(args.Length > 2 ? args[2] : null);
 // options. Azd gets machine scope, which needs elevation, and a post-update command.
 const string ElevatedId = "Microsoft.Azd";
 const string ElevatedPostCommand = "azd config set defaults.location eastus2";
+
+// The Updates row the update policy steps exclude and restore.
+const string PolicyId = "JanDeDobbeleer.OhMyPosh";
 var dataDirectory = Path.Combine(Path.GetTempPath(), "wingman-harness-" + Guid.NewGuid().ToString("N"));
 Environment.SetEnvironmentVariable(WingmanApp.DataDirectoryVariable, dataDirectory);
 new PackageOptionsStore(dataDirectory).SetInstallOptions(ElevatedId, new InstallOptions
@@ -118,7 +121,11 @@ string HelpBoxArea(IReadOnlyList<string> rows)
 
     var left = rows[top].IndexOf("┌─ Keys ", StringComparison.Ordinal);
     var right = rows[top].IndexOf('┐', left);
-    return string.Join("\n", rows.Skip(top).Take(rows.Count - 4 - top).Select(row => row[left..(right + 1)]));
+
+    // Only the box: the rows under it keep changing while a batch streams and finishes.
+    var bottom = rows.ToList().FindIndex(top, row => row.Length > left && row[left] == '└');
+    var boxRows = bottom < 0 ? rows.Count - 4 - top : bottom - top + 1;
+    return string.Join("\n", rows.Skip(top).Take(boxRows).Select(row => row[left..(right + 1)]));
 }
 
 // Each step waits DelayMs after the previous one, acts, dumps the screen, then runs its checks.
@@ -186,32 +193,65 @@ Step[] steps =
         Check("bar or spinner", HasBarOrSpinner(BatchRow(SlowClient.FailingId)));
         Check("log follows the running one", ScreenHas(" ─ Log · " + SlowClient.FailingId + " ─"));
     }),
-    new(900, "batch finished", () => { }, WithColors: true, Verify: () =>
+    new(900, "batch finished: the one failed row is selected and diagnosed", () => { }, WithColors: true, Verify: () =>
     {
         Check("finished title", ScreenHas(" Batch finished  2 of 2 · 1 failed"));
         Check("failed row", BatchGlyph(SlowClient.FailingId) == '✗' && BatchRow(SlowClient.FailingId).Contains("failed  exit 1603"));
-        Check("finished key bar", ScreenHas(" ⏎ Back   ↑↓ Select   l Full log   q Quit "));
+        Check("failed row selected", IsCursorRow(BatchRowY(SlowClient.FailingId)));
+        Check("failure rule", ScreenHas(" ─ " + SlowClient.FailingId + " failed ─"));
+        Check("failure key bar", ScreenHas(" R Retry   I Interactive   S Skip hash check   H Hold   E Exclude   l Log   ⏎ Back   q Quit "));
+    }),
+    new(50, "Up: the done row and its log", () => screen.Press(Key.CursorUp), Verify: () =>
+    {
         Check("first row selected", IsCursorRow(BatchRowY("AutoHotkey.AutoHotkey")));
+        Check("finished key bar", ScreenHas(" ⏎ Back   ↑↓ Select   l Full log   q Quit "));
+        Check("its log", ScreenHas(" ─ Log · AutoHotkey.AutoHotkey ─"));
         Check("its log saved", ScreenHas(" Log is saved to history/") && ScreenHas("-upgrade-AutoHotkey.AutoHotkey.log"));
     }),
-    new(50, "Down: the failed row and its log", () => screen.Press(Key.CursorDown), Verify: () =>
+    new(50, "Down to the failed row: the failure panel", () => screen.Press(Key.CursorDown), WithColors: true, Verify: () =>
     {
         Check("failed row selected", IsCursorRow(BatchRowY(SlowClient.FailingId)));
-        Check("its log", ScreenHas(" ─ Log · " + SlowClient.FailingId + " ─"));
-        Check("installer failure line", ScreenHas("Installer failed with exit code: 1603"));
+        Check("winget said", ScreenHas(" winget said     Fatal error during installation."));
+        Check("code and name", ScreenHas(" Code            1603  ERROR_INSTALL_FAILURE"));
+        Check("usually means", ScreenHas(" Usually means   Usually the app is running, or a previous install is broken."));
+        Check("suggestion", ScreenHas(" Suggestion      Close it and retry interactive."));
+        Check("last log lines", ScreenHas(" Last log lines") && ScreenHas(" Installer failed with exit code: 1603"));
+        Check("no log rule", !ScreenHas(" ─ Log · "));
         Check("its history file", ScreenHas("-install-" + SlowClient.FailingId + ".log"));
+        Check("failure key bar", ScreenHas(" R Retry   I Interactive "));
+    }),
+    new(50, "l: the whole log fills the screen", () => screen.Press(Key.L), Verify: () =>
+    {
+        Check("title and rows hidden", !ScreenHas("Batch finished") && BatchRow(SlowClient.FailingId).Length == 0);
+        Check("rule on the first row", screen.Rows()[3].Contains(" ─ Log · " + SlowClient.FailingId));
+        Check("installer failure line", ScreenHas("Installer failed with exit code: 1603"));
     }),
     new(50, "wheel up over the log: older lines", () => screen.Wheel(width / 2, height - 8, down: false), Verify: () =>
         Check("failure line scrolled out of view", !ScreenHas("Installer failed with exit code: 1603"))),
     new(50, "wheel down over the log: newest lines", () => screen.Wheel(width / 2, height - 8, down: true), Verify: () =>
         Check("failure line back in view", ScreenHas("Installer failed with exit code: 1603"))),
-    new(50, "l: the log fills the screen", () => screen.Press(Key.L), Verify: () =>
+    new(50, "l again: rows and the failure panel back", () => screen.Press(Key.L), Verify: () =>
     {
-        Check("title and rows hidden", !ScreenHas("Batch finished") && BatchRow(SlowClient.FailingId).Length == 0);
-        Check("rule on the first row", screen.Rows()[3].Contains(" ─ Log · " + SlowClient.FailingId));
+        Check("title back", ScreenHas(" Batch finished  2 of 2 · 1 failed"));
+        Check("failure panel back", ScreenHas(" Code            1603"));
     }),
-    new(50, "l again: rows back", () => screen.Press(Key.L), Verify: () =>
-        Check("title back", ScreenHas(" Batch finished  2 of 2 · 1 failed"))),
+    new(50, "S: retry skipping the hash check", () => screen.Press(Key.S), Verify: () =>
+    {
+        Check("a new batch of one", ScreenHas(" Running batch  1 of 1") && BatchRow(SlowClient.FailingId).Contains("install  → latest"));
+        Check("the old batch's done row gone", BatchRow("AutoHotkey.AutoHotkey").Length == 0);
+    }),
+    new(1200, "the retry failed too", () => { }, Verify: () =>
+    {
+        Check("finished title", ScreenHas(" Batch finished  1 of 1 · 1 failed"));
+        Check("failure panel", ScreenHas(" Code            1603  ERROR_INSTALL_FAILURE"));
+        var retry = new HistoryStore(historyDirectory).List().First(entry => entry.PackageId == SlowClient.FailingId);
+        Check("the retry passed --ignore-security-hash", retry.Arguments.Contains("--ignore-security-hash"));
+    }),
+    new(50, "Shift+E: exclude the failed package", () => screen.Press(new Key('E')), Verify: () =>
+    {
+        Check("excluded status", ScreenHas("Excluded " + SlowClient.FailingId + " from Wingman updates"));
+        Check("stored as UpdatesIgnored", shell.Options.GetUpdatesOptions(SlowClient.FailingId).UpdatesIgnored);
+    }),
     new(50, "Enter: the list is back", () => screen.Press(Key.Enter), Verify: () =>
     {
         Check("table back", ScreenHas("Filter:"));
@@ -221,11 +261,12 @@ Step[] steps =
     {
         Check("tab strip reads Updates 16", ScreenHas(" Updates 16 "));
         Check("AutoHotkey.AutoHotkey gone from the table", !LeftPaneHas("AutoHotkey.AutoHotkey"));
-        Check("details pane back", ScreenHas(" Pinned     no"));
+        Check("details pane back", ScreenHas(" Policy     update"));
+        Check("seeded options for Azd", ScreenHas(" Options    custom (o to edit)"));
         var entries = new HistoryStore(historyDirectory).List();
-        Check("two operation entries and one batch entry", Directory.GetFiles(historyDirectory, "*.json").Length == 3
-            && entries.Count(entry => entry.Operation == "batch") == 1
-            && entries.Count(entry => entry.Operation != "batch") == 2);
+        Check("three operation entries and two batch entries", Directory.GetFiles(historyDirectory, "*.json").Length == 5
+            && entries.Count(entry => entry.Operation == "batch") == 2
+            && entries.Count(entry => entry.Operation != "batch") == 3);
     }),
 
     new(50, "Space on Microsoft.Azd, Down, Space, g", () => { screen.Press(Key.Space); screen.Press(Key.CursorDown); screen.Press(Key.Space); screen.Press(Key.G); }, Verify: () =>
@@ -264,7 +305,7 @@ Step[] steps =
     new(50, "g on Installed while running: refused", () => screen.Press(Key.G), Verify: () =>
         Check("refusal message", ScreenHas(Shell.BatchRunningText))),
     new(50, "2: back to the running batch", () => screen.Press(new Key('2')), Verify: () =>
-        Check("batch screen back", ScreenHas(" ─ Log · " + SlowClient.FailingId + " ─"))),
+        Check("batch screen back", ScreenHas(" ─ Log · " + SlowClient.FailingId + " ─") || ScreenHas(" ─ " + SlowClient.FailingId + " failed ─"))),
     new(1200, "install failed", () => { }, WithColors: true, Verify: () =>
     {
         Check("finished title", ScreenHas(" Batch finished  1 of 1 · 1 failed"));
@@ -275,26 +316,36 @@ Step[] steps =
         Check("table back", ScreenHas("Search:"))),
 
     new(50, "1, filter GitHub.cli", () => { screen.Press(new Key('1')); screen.Press(new Key('/')); screen.Type("GitHub.cli"); screen.Press(Key.Enter); }),
-    new(600, "p: pin GitHub.cli", () => screen.Press(Key.P)),
-    new(150, "GitHub.cli pinned", () => { }, WithColors: true, Verify: () =>
+    new(600, "p: the update policy dialog for GitHub.cli", () => screen.Press(Key.P), Verify: () =>
     {
-        Check("pinned message", ScreenHas("Pinned GitHub.cli (blocking)"));
-        Check("Pinned field", ScreenHas(" Pinned     yes (blocking)"));
+        Check("dialog title", ScreenHas(" Update policy  GitHub.cli · installed 2.98.0 · available 2.101.0"));
+        Check("update chosen", ScreenHas(" (•) Update with Wingman"));
+        Check("hold level", ScreenHas(" ( ) Hold at 2.98.0"));
+        Check("dialog key bar", ScreenHas(" ⏎ Save   Esc Cancel   ↑↓ Choose   Tab Note   ? Help   q Quit "));
+        Check("table hidden", !ScreenHas("Filter:"));
+    }),
+    new(50, "Down, Enter: hold GitHub.cli", () => { screen.Press(Key.CursorDown); screen.Press(Key.Enter); }),
+    new(150, "GitHub.cli held", () => { }, WithColors: true, Verify: () =>
+    {
+        Check("held message", ScreenHas("Held GitHub.cli"));
+        Check("Policy field", ScreenHas(" Policy     hold (blocking)"));
         Check("pin marker", LeftPaneHas("⊘"));
-        Check("key bar offers Unpin", ScreenHas(" p Unpin "));
+        Check("key bar offers Policy", ScreenHas(" p Policy "));
     }),
     new(50, "3: Updates with GitHub.cli held", () => screen.Press(new Key('3')), WithColors: true, Verify: () =>
     {
         Check("held marker", LeftPaneHas("⊘ GitHub CLI"));
         Check("held legend first", ScreenHas("⊘ held (winget pin --blocking)  ! needs explicit"));
     }),
-    new(50, "1, p: unpin GitHub.cli", () => { screen.Press(new Key('1')); screen.Press(Key.P); }),
-    new(150, "GitHub.cli unpinned", () => { }, Verify: () =>
+    new(50, "1, p: the dialog chooses Hold", () => { screen.Press(new Key('1')); screen.Press(Key.P); }, Verify: () =>
+        Check("hold chosen", ScreenHas(" (•) Hold at 2.98.0"))),
+    new(50, "Up, Enter: GitHub.cli updates with Wingman again", () => { screen.Press(Key.CursorUp); screen.Press(Key.Enter); }),
+    new(150, "GitHub.cli released", () => { }, Verify: () =>
     {
-        Check("unpinned message", ScreenHas("Unpinned GitHub.cli"));
-        Check("Pinned field", ScreenHas(" Pinned     no"));
+        Check("released message", ScreenHas("GitHub.cli updates with Wingman"));
+        Check("Policy field", ScreenHas(" Policy     update"));
         Check("no pin marker", !LeftPaneHas("⊘"));
-        Check("key bar offers Pin", ScreenHas(" p Pin "));
+        Check("key bar offers Policy", ScreenHas(" p Policy "));
     }),
     new(50, "clear the filter", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); }),
 
@@ -329,7 +380,8 @@ Step[] steps =
     {
         Check("menu title", ScreenHas("│ GitHub CLI "));
         Check("upgrade entry", ScreenHas("│ Upgrade to 2.101.0 "));
-        Check("pin entry", ScreenHas("│ Pin "));
+        Check("policy entry", ScreenHas("│ Update policy… "));
+        Check("options entry", ScreenHas("│ Install options… "));
         Check("copy id entry", IsMenuOpen());
         Check("menu corner at the click", screen.Rows()[FirstRowY][20] == '┌');
     }),
@@ -379,7 +431,7 @@ Step[] steps =
     {
         Check("help open", IsHelpOpen());
         Check("global group", ScreenHas("context menu"));
-        Check("Installed group", ScreenHas("pin / unpin"));
+        Check("Installed group", ScreenHas("install options") && ScreenHas("uninstall"));
     }),
     new(50, "x and 2 while help is open are ignored", () => { screen.Press(Key.X); screen.Press(new Key('2')); }, Verify: () =>
     {
@@ -416,14 +468,14 @@ Step[] steps =
     new(50, "3, ?: help on Updates", () => { screen.Press(new Key('3')); screen.Press(new Key('?')); }, Verify: () =>
     {
         Check("help open", IsHelpOpen());
-        Check("Updates group", ScreenHas("hold / release"));
+        Check("Updates group", ScreenHas("list excluded packages"));
     }),
     new(50, "Enter: help closed", () => screen.Press(Key.Enter), Verify: () =>
         Check("help closed", !IsHelpOpen())),
     new(50, "filter GitHub.cli, m", () => { screen.Press(new Key('/')); screen.Type("GitHub.cli"); screen.Press(Key.Enter); screen.Press(Key.M); }, Verify: () =>
     {
         Check("upgrade entry", ScreenHas("│ Upgrade to 2.101.0 "));
-        Check("hold entry", ScreenHas("│ Hold "));
+        Check("policy entry", ScreenHas("│ Update policy… "));
     }),
     new(50, "Enter on Upgrade: the question", () => screen.Press(Key.Enter), Verify: () =>
         Check("upgrade question", ScreenHas("Upgrade GitHub.cli to 2.101.0? (y/n)"))),
@@ -463,7 +515,7 @@ Step[] steps =
 
     new(50, "3, clear the filter, filter Azure", () => { screen.Press(new Key('3')); screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(new Key('/')); screen.Type("Azure"); screen.Press(Key.Enter); }, Verify: () =>
     {
-        Check("batch keys on the Updates bar", ScreenHas(" u Upgrade   ␣ Mark   a Mark all   c Clear   g Run   p Hold   r Refresh   ? Help   q Quit "));
+        Check("batch keys on the Updates bar", ScreenHas(" u Upgrade   ␣ Mark   a Mark all   c Clear   g Run   p Policy   r Refresh   ? Help   q Quit "));
         Check("three rows, nothing marked", ScreenHas("3 of 15 available") && MarkedRowCount() == 0);
     }),
     new(50, "Ctrl+Home, Space, Down, Space: two rows marked", () => { screen.Press(Key.Home.WithCtrl); screen.Press(Key.Space); screen.Press(Key.CursorDown); screen.Press(Key.Space); }, Verify: () =>
@@ -476,7 +528,7 @@ Step[] steps =
         Check("post command", ScreenHas("    post: azd config set"));
         Check("elevation summary", ScreenHas(" 1 of 2 need elevation."));
         Check("queue keys", ScreenHas(" g run queue   c clear"));
-        Check("details pane gone", !ScreenHas(" Pinned     "));
+        Check("details pane gone", !ScreenHas(" Policy     "));
     }),
     new(50, "a: marks the third", () => screen.Press(Key.A), WithColors: true, Verify: () =>
     {
@@ -492,7 +544,7 @@ Step[] steps =
         Check("count for the whole list", ScreenHas("15 available · 3 marked"));
         Check("three marked rows", MarkedRowCount() == 3);
     }),
-    new(50, "filter Docker, p: hold it", () => { screen.Press(new Key('/')); screen.Type("Docker"); screen.Press(Key.Enter); screen.Press(Key.P); }),
+    new(50, "filter Docker, p, Down, Enter: hold it", () => { screen.Press(new Key('/')); screen.Type("Docker"); screen.Press(Key.Enter); screen.Press(Key.P); screen.Press(Key.CursorDown); screen.Press(Key.Enter); }),
     new(150, "clear the filter, a: marks all but held and explicit", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(Key.A); }, Verify: () =>
     {
         Check("count with held", ScreenHas("15 available · 13 marked · 1 held"));
@@ -511,7 +563,7 @@ Step[] steps =
     {
         Check("cleared message", ScreenHas(Shell.QueueClearedText));
         Check("no marked rows", MarkedRowCount() == 0);
-        Check("details pane back", ScreenHas(" Pinned     "));
+        Check("details pane back", ScreenHas(" Policy     "));
         Check("count without marks", ScreenHas("15 available · 1 held"));
     }),
     new(50, "g with an empty queue", () => screen.Press(Key.G), Verify: () =>
@@ -547,6 +599,144 @@ Step[] steps =
     {
         Check("no marked rows", MarkedRowCount() == 0);
         Check("queue pane title", ScreenHas(" Queue  1 operation"));
+    }),
+
+    new(50, "c, 1, filter AutoHotkey, o: the install options editor", () =>
+    {
+        screen.Press(Key.C);
+        screen.Press(new Key('1'));
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(new Key('/'));
+        screen.Type("AutoHotkey");
+        screen.Press(Key.Enter);
+        screen.Press(Key.O);
+    }, Verify: () =>
+    {
+        Check("editor title", ScreenHas(" Install options  AutoHotkey.AutoHotkey · saved per package, used on every upgrade"));
+        Check("scope default", ScreenHas(" Scope                 (•) default  ( ) machine  ( ) user"));
+        Check("architecture default", ScreenHas(" Architecture          (•) default  ( ) x64  ( ) arm64"));
+        Check("version placeholder", ScreenHas(" Version to install    [ latest"));
+        Check("flag rows", ScreenHas("[ ] Interactive install   [ ] Skip hash check   [ ] Pre-release")
+            && ScreenHas("[ ] Run as administrator  [ ] Remove data on uninstall"));
+        Check("updates row", ScreenHas(" Updates               [ ] Auto-update   [ ] Ignore all updates   Ignored version [ "));
+        Check("footer", ScreenHas(" Stored in package-options.json · exported into bundles as InstallationOptions"));
+        Check("editor key bar", ScreenHas(" ⏎ Save   Esc Cancel   Tab Next field   ␣ Toggle   Ctrl+R Reset   ? Help   q Quit "));
+        Check("table hidden", !ScreenHas("Filter:"));
+        Check("scope has focus", Focused() == nameof(OptionRow));
+    }),
+    new(50, "Right, Space: machine scope", () => { screen.Press(Key.CursorRight); screen.Press(Key.Space); }, Verify: () =>
+        Check("machine picked", ScreenHas("( ) default  (•) machine  ( ) user"))),
+    new(50, "click Pre-release: checked and focused", () => screen.Click(1 + 71 + 1, 3 + 5), Verify: () =>
+    {
+        Check("pre-release checked", ScreenHas("[x] Pre-release"));
+        Check("checkbox has focus", Focused() == nameof(CheckField));
+    }),
+    new(50, "Space: unchecked again", () => screen.Press(Key.Space), Verify: () =>
+        Check("pre-release unchecked", ScreenHas("[ ] Pre-release"))),
+    new(50, "Enter: saved", () => screen.Press(Key.Enter), Verify: () =>
+    {
+        Check("saved message", ScreenHas("Saved options for AutoHotkey.AutoHotkey"));
+        Check("table back", ScreenHas("Filter:"));
+        var saved = File.ReadAllText(Path.Combine(dataDirectory, "package-options.json"));
+        Check("scope in package-options.json", saved.Contains("\"InstallationScope\": \"machine\"", StringComparison.Ordinal));
+    }),
+    new(600, "details show custom options", () => { }, Verify: () =>
+        Check("options row", ScreenHas(" Options    custom (o to edit)"))),
+    new(50, "o again: machine is picked", () => screen.Press(Key.O), WithColors: true, Verify: () =>
+        Check("machine picked", ScreenHas("( ) default  (•) machine  ( ) user"))),
+    new(50, "Tab x2, type a version, Esc: asks first", () => { screen.Press(Key.Tab, 2); screen.Type("2.0.1"); screen.Press(Key.Esc); }, Verify: () =>
+    {
+        Check("typed into the version box", ScreenHas("[ 2.0.1"));
+        Check("discard question", ScreenHas("Discard changes to AutoHotkey.AutoHotkey? (y/n)"));
+    }),
+    new(50, "n, Ctrl+R: reset to defaults", () => { screen.Press(Key.N); screen.Press(Key.R.WithCtrl); }, Verify: () =>
+    {
+        Check("still open", ScreenHas(" Install options  AutoHotkey.AutoHotkey"));
+        Check("scope back to default", ScreenHas("(•) default  ( ) machine  ( ) user"));
+        Check("version cleared", !ScreenHas("[ 2.0.1"));
+    }),
+    new(50, "Esc, y: discarded", () => { screen.Press(Key.Esc); screen.Press(Key.Y); }, Verify: () =>
+    {
+        Check("table back", ScreenHas("Filter:"));
+        Check("still machine on disk", shell.Options.GetInstallOptions("AutoHotkey.AutoHotkey").InstallationScope == "machine");
+    }),
+
+    new(50, "3, filter OhMyPosh, p: the update policy dialog", () =>
+    {
+        // A hash mismatch as the package's last operation, so the dialog suggests excluding it.
+        new HistoryStore(historyDirectory).Append(
+            DateTimeOffset.Now, "upgrade", PolicyId, "Oh My Posh",
+            new Wingman.Core.Models.OperationResult(-1978335215, false, TimeSpan.Zero, ["Installer hash does not match."]), [], null);
+        screen.Press(new Key('3'));
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(new Key('/'));
+        screen.Type("OhMyPosh");
+        screen.Press(Key.Enter);
+        screen.Press(Key.P);
+    }, Verify: () =>
+    {
+        Check("dialog title", ScreenHas(" Update policy  " + PolicyId + " · installed 30.7.0.0 · available 31.3.0"));
+        Check("update chosen", ScreenHas(" (•) Update with Wingman"));
+        Check("skip level", ScreenHas(" ( ) Skip 31.3.0 only"));
+        Check("exclude level", ScreenHas(" ( ) Exclude: this app updates itself"));
+        Check("note box", ScreenHas(" Note    [ "));
+    }),
+    new(300, "the hash-mismatch suggestion", () => { }, WithColors: true, Verify: () =>
+        Check("suggestion", ScreenHas(" Suggested: Exclude. This app may update itself."))),
+    new(50, "Down x3, Tab, type a note, Enter: excluded", () =>
+    {
+        screen.Press(Key.CursorDown, 3);
+        screen.Press(Key.Tab);
+        screen.Type("updates itself");
+        screen.Press(Key.Enter);
+    }, Verify: () =>
+    {
+        Check("excluded message", ScreenHas("Excluded " + PolicyId + " from Wingman updates"));
+        Check("row left Updates", !LeftPaneHas("Oh My Posh"));
+        Check("count", ScreenHas(" · 1 excluded"));
+        Check("footer", ScreenHas("⟳ 1 excluded"));
+        Check("tab strip reads Updates 14", ScreenHas(" Updates 14 "));
+        Check("note kept for the session", shell.PolicyNotes[PolicyId] == "updates itself");
+    }),
+    new(50, "e: the excluded list", () => screen.Press(Key.E), Verify: () =>
+    {
+        Check("list title", ScreenHas(" Excluded from Wingman"));
+        Check("its entry", ScreenHas(" ⟳ " + PolicyId) && ScreenHas("   self-updating"));
+        Check("hint", ScreenHas(" p change policy for the row"));
+        Check("details hidden", !ScreenHas(" Policy     "));
+    }),
+    new(50, "e again: the details are back", () => screen.Press(Key.E), Verify: () =>
+        Check("list gone", !ScreenHas(" Excluded from Wingman"))),
+    new(50, "1, filter OhMyPosh: ⟳ on the Installed row", () =>
+    {
+        screen.Press(new Key('1'));
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(new Key('/'));
+        screen.Type("OhMyPosh");
+        screen.Press(Key.Enter);
+    }, Verify: () =>
+    {
+        Check("excluded marker", LeftPaneHas(" ⟳ Oh My Posh"));
+        Check("Policy field", ScreenHas(" Policy     excluded"));
+    }),
+    new(50, "p: the dialog chooses Exclude", () => screen.Press(Key.P), Verify: () =>
+    {
+        Check("exclude chosen", ScreenHas(" (•) Exclude: this app updates itself"));
+        Check("note back", ScreenHas("[ updates itself"));
+    }),
+    new(50, "Up x3, Enter: updates with Wingman again", () => { screen.Press(Key.CursorUp, 3); screen.Press(Key.Enter); }, Verify: () =>
+    {
+        Check("restored message", ScreenHas(PolicyId + " updates with Wingman"));
+        Check("no marker", !LeftPaneHas("⟳"));
+        Check("Policy field", ScreenHas(" Policy     update"));
+    }),
+    new(50, "3: the row is back in Updates", () => screen.Press(new Key('3')), Verify: () =>
+    {
+        Check("row back", LeftPaneHas("Oh My Posh"));
+        Check("nothing excluded", !ScreenHas("excluded"));
     }),
     new(50, "q quits", () => screen.Press(Key.Q)),
 ];

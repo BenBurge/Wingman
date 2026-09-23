@@ -30,6 +30,7 @@ internal sealed class DiscoverTab : PackageListTab
         new("␣", "mark for batch"),
         new("c", "clear queue"),
         new("g", "run queue"),
+        new("o", "install options"),
         new("⏎", "on a row: details"),
     ]);
 
@@ -59,6 +60,7 @@ internal sealed class DiscoverTab : PackageListTab
             new(Key.Enter, "Search", () => Search(Table.Filter), "⏎"),
             new(new Key('/'), "Search box", Table.FocusFilter),
             new(Key.M, "Menu", ShowContextMenu),
+            OptionsHint,
         ];
     }
 
@@ -75,7 +77,7 @@ internal sealed class DiscoverTab : PackageListTab
         }
         else
         {
-            FocusTableOrBatch();
+            FocusContent();
         }
     }
 
@@ -118,10 +120,14 @@ internal sealed class DiscoverTab : PackageListTab
             entries.Add(new("Uninstall", () => RunOperation(OperationKind.Uninstall, row)));
         }
 
+        entries.Add(OptionsMenuEntry(row));
         entries.Add(MenuEntry.Rule);
         entries.AddRange(PackageMenuEntries(row));
         return entries;
     }
+
+    /// <summary>A search result has an update policy only once it is installed, and then the installed row carries it.</summary>
+    protected override PackageRow? PolicyRow(PackageRow row) => Shell.FindInstalled(row.Id);
 
     protected override void OnLoaded(IReadOnlyList<PackageRow> rows)
     {

@@ -4,6 +4,7 @@ using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
+using Wingman.Core.Updates;
 using Wingman.Core.Winget;
 
 namespace Wingman.Tui.Tabs;
@@ -12,8 +13,10 @@ namespace Wingman.Tui.Tabs;
 /// A tab with a <see cref="PackageTable"/> on the left and a <see cref="DetailsPane"/> for the
 /// cursor row on the right, filled by a background load. Installed, Discover, and Updates are
 /// these; they differ in their columns, what they load, and their keys. While the batch queue has
-/// entries a <see cref="QueuePane"/> takes the details pane's place. A batch started from the tab
-/// puts its <see cref="BatchRunnerScreen"/> in place of both panes until it is over and dismissed.
+/// entries a <see cref="QueuePane"/> takes the details pane's place, and a tab can add a pane of its
+/// own that takes it while toggled on. A batch started from the tab puts its
+/// <see cref="BatchRunnerScreen"/> in place of both panes until it is over and dismissed, and the
+/// install options editor and update policy dialog do the same until they close.
 /// </summary>
 internal abstract class PackageListTab : ShellTab
 {
@@ -31,10 +34,12 @@ internal abstract class PackageListTab : ShellTab
     private CancellationTokenSource? _loadCancellation;
     private int _leftPaneWidth = WideLeftPaneWidth;
 
-    // Whether the key bar was last given the hints for a pinned cursor row.
-    private bool _hintsAreForPinnedRow;
-
     private BatchRunnerScreen? _batchScreen;
+    private FormView? _form;
+
+    // The tab's own right pane, if it has one, and whether it is toggled on.
+    private View? _extraPane;
+    private bool _showsExtraPane;
 
     protected PackageListTab(Shell shell, IWingetClient client, string title, IReadOnlyList<PackageColumn> columns)
         : base(title)
@@ -68,7 +73,8 @@ internal abstract class PackageListTab : ShellTab
             Y = 0,
             Width = Dim.Fill(),
             Height = Dim.Fill(),
-            PinFor = shell.FindPin,
+            PolicyFor = PolicyText,
+            HasCustomOptions = shell.Options.HasCustomInstallOptions,
         };
 
         _queuePane = new QueuePane(shell.Theme, shell.Queue)
@@ -88,25 +94,38 @@ internal abstract class PackageListTab : ShellTab
         MarkHint = new(Key.Space, "Mark", MarkCursorRow, "␣");
         ClearHint = new(Key.C, "Clear", shell.ClearQueue);
         RunHint = new(Key.G, "Run", RunQueue);
+        OptionsHint = new(Key.O, "Options", OpenOptionsForCursorRow, IsOnBar: false);
 
         Table.CursorChanged += OnCursorChanged;
         Table.RowActivated += _ => OnRowActivated();
         Table.RowMenuRequested += OpenContextMenu;
         shell.PinsChanged += OnPinsChanged;
+        shell.OptionsChanged += OnOptionsChanged;
         shell.Queue.Changed += OnQueueChanged;
 
         Add(Table, _divider, Details, _queuePane);
     }
 
-    public sealed override IReadOnlyList<KeyHint> Hints => _batchScreen?.Hints ?? TableHints;
+    public sealed override IReadOnlyList<KeyHint> Hints => _batchScreen?.Hints ?? _form?.Hints ?? TableHints;
 
     public override bool ShowsHelpHint => !IsBatchShown;
 
-    public sealed override IReadOnlyList<HelpGroup> HelpGroups => IsBatchShown ? [BatchRunnerScreen.Help] : [TabHelp];
+    public sealed override IReadOnlyList<HelpGroup> HelpGroups
+    {
+        get
+        {
+            if (IsBatchShown)
+            {
+                return [BatchRunnerScreen.Help];
+            }
+
+            return _form is { } form ? [form.Help] : [TabHelp];
+        }
+    }
 
     public override void ShowContextMenu()
     {
-        if (IsBatchShown)
+        if (IsBatchShown || IsFormShown)
         {
             return;
         }
@@ -125,10 +144,7 @@ internal abstract class PackageListTab : ShellTab
 
         // Focused first, so hiding the focused table does not leave focus to Terminal.Gui's choice.
         screen.SetFocus();
-        Table.Visible = false;
-        _divider.Visible = false;
-        Details.Visible = false;
-        _queuePane.Visible = false;
+        HideList();
     }
 
     /// <summary>Takes the batch screen down and disposes it, putting the table and the right pane back.</summary>
@@ -140,12 +156,7 @@ internal abstract class PackageListTab : ShellTab
         }
 
         _batchScreen = null;
-        Table.Visible = true;
-        _divider.Visible = true;
-        Table.FocusTable();
-        Remove(screen);
-        screen.Dispose();
-        ShowQueueOrDetails();
+        RestoreList(screen);
     }
 
     protected Shell Shell { get; }
@@ -165,6 +176,9 @@ internal abstract class PackageListTab : ShellTab
     /// <summary><c>g Run</c>, which runs the batch queue.</summary>
     protected KeyHint RunHint { get; }
 
+    /// <summary><c>o Options</c>, which opens the cursor row's install options; off the bar, since no tab has room for it at 96 columns.</summary>
+    protected KeyHint OptionsHint { get; }
+
     /// <summary>The tab's own keys, shown while the table is.</summary>
     protected abstract IReadOnlyList<KeyHint> TableHints { get; }
 
@@ -174,9 +188,13 @@ internal abstract class PackageListTab : ShellTab
     /// <summary>Whether a batch screen has the tab's content area.</summary>
     protected bool IsBatchShown => _batchScreen is not null;
 
-    private bool IsQueueShown => _queuePane.Visible;
+    /// <summary>Whether the install options editor or the update policy dialog has the tab's content area.</summary>
+    protected bool IsFormShown => _form is not null;
 
-    protected bool IsCursorRowPinned => Table.CurrentRow is { } row && Shell.IsPinned(row.Id);
+    /// <summary>Whether the tab's own right pane is toggled on, whether or not the table is showing.</summary>
+    protected bool IsExtraPaneShown => _showsExtraPane;
+
+    private bool IsQueueShown => _queuePane.Visible;
 
     /// <summary>
     /// Called on the UI thread after any batch finishes, from whichever tab. <paramref name="isOrigin"/>
@@ -186,8 +204,8 @@ internal abstract class PackageListTab : ShellTab
 
     /// <summary>
     /// Runs <paramref name="fetch"/> on a background task with the table's spinner showing, then
-    /// shows its rows and calls <see cref="OnLoaded"/>, or puts the error on the message line.
-    /// Starting another load abandons this one.
+    /// shows its rows, as <see cref="RowsToShow"/> picks them, and calls <see cref="OnLoaded"/>, or
+    /// puts the error on the message line. Starting another load abandons this one.
     /// </summary>
     protected void Load(Func<CancellationToken, Task<IReadOnlyList<PackageRow>>> fetch)
     {
@@ -216,7 +234,10 @@ internal abstract class PackageListTab : ShellTab
         });
     }
 
-    /// <summary>Called on the UI thread after a load's rows are in the table.</summary>
+    /// <summary>The rows of a finished load the table shows; all of them unless a tab leaves some out.</summary>
+    protected virtual IReadOnlyList<PackageRow> RowsToShow(IReadOnlyList<PackageRow> loaded) => loaded;
+
+    /// <summary>Called on the UI thread after a load's rows are in the table, with every row the load returned.</summary>
     protected abstract void OnLoaded(IReadOnlyList<PackageRow> rows);
 
     /// <summary>Called on the UI thread after <see cref="Shell.Pins"/> changes.</summary>
@@ -224,8 +245,20 @@ internal abstract class PackageListTab : ShellTab
     {
         Table.RefreshMarkers();
         Details.SetNeedsDraw();
-        UpdateHintsForCursorRow();
     }
+
+    /// <summary>Called on the UI thread after a package's options change, which can change its update policy.</summary>
+    protected virtual void OnOptionsChanged()
+    {
+        Table.RefreshMarkers();
+        Details.SetNeedsDraw();
+    }
+
+    /// <summary>
+    /// The installed row whose update policy the details pane shows for <paramref name="row"/>, or
+    /// null for none; the row itself by default, since Installed and Updates list installed packages.
+    /// </summary>
+    protected virtual PackageRow? PolicyRow(PackageRow row) => row;
 
     /// <summary>Asks to confirm <paramref name="kind"/> on the cursor row, then runs it as a batch of one.</summary>
     protected void RunOperation(OperationKind kind)
@@ -249,13 +282,25 @@ internal abstract class PackageListTab : ShellTab
         Shell.AskConfirm(ConfirmQuestion(kind, row), () => Shell.RunOperation(Shell.BuildOperation(kind, row), this));
     }
 
-    protected void TogglePin()
+    /// <summary>Opens the install options editor for <paramref name="row"/> in place of the table and the right pane.</summary>
+    protected void OpenOptions(PackageRow row) => ShowForm(new InstallOptionsEditor(Shell, row));
+
+    /// <summary>Opens the update policy dialog for <paramref name="row"/> in place of the table and the right pane.</summary>
+    protected void OpenPolicy(PackageRow row) => ShowForm(new UpdatePolicyDialog(Shell, row));
+
+    protected void OpenPolicyForCursorRow()
     {
         if (Table.CurrentRow is { } row)
         {
-            Shell.TogglePin(row.Id);
+            OpenPolicy(row);
         }
     }
+
+    /// <summary><c>Install options…</c>, which opens the editor for <paramref name="row"/>.</summary>
+    protected MenuEntry OptionsMenuEntry(PackageRow row) => new("Install options…", () => OpenOptions(row));
+
+    /// <summary><c>Update policy…</c>, which opens the dialog for <paramref name="row"/>.</summary>
+    protected MenuEntry PolicyMenuEntry(PackageRow row) => new("Update policy…", () => OpenPolicy(row));
 
     /// <summary>
     /// Takes <paramref name="row"/> out of the batch queue when it is there, or adds it with the
@@ -321,12 +366,19 @@ internal abstract class PackageListTab : ShellTab
     protected static string UpgradeLabel(PackageRow row) =>
         string.IsNullOrEmpty(row.AvailableVersion) ? "Upgrade" : $"Upgrade to {row.AvailableVersion}";
 
-    /// <summary>Focuses the batch screen when it is showing, so coming back to the tab keeps the arrows on it, and the table otherwise.</summary>
-    protected void FocusTableOrBatch()
+    /// <summary>
+    /// Focuses the batch screen or the form when one is showing, so coming back to the tab keeps the
+    /// keys on it, and the table otherwise.
+    /// </summary>
+    protected void FocusContent()
     {
         if (_batchScreen is { } screen)
         {
             screen.SetFocus();
+        }
+        else if (_form is { } form)
+        {
+            form.SetFocus();
         }
         else
         {
@@ -347,6 +399,25 @@ internal abstract class PackageListTab : ShellTab
         }
     }
 
+    /// <summary>Adds <paramref name="pane"/> right of the divider, hidden until <see cref="ToggleExtraPane"/> shows it.</summary>
+    protected void AddExtraPane(View pane)
+    {
+        _extraPane = pane;
+        pane.X = _leftPaneWidth + 1;
+        pane.Y = 0;
+        pane.Width = Dim.Fill();
+        pane.Height = Dim.Fill();
+        pane.Visible = false;
+        Add(pane);
+    }
+
+    /// <summary>Shows the tab's own pane in place of the queue or the details, or puts them back.</summary>
+    protected void ToggleExtraPane()
+    {
+        _showsExtraPane = !_showsExtraPane;
+        ShowRightPane();
+    }
+
     /// <summary>
     /// Sizes the panes from this tab's width, which is final by the time its subviews are laid
     /// out; a <c>Dim.Func</c> reading it could see the previous frame's width.
@@ -364,18 +435,23 @@ internal abstract class PackageListTab : ShellTab
             _divider.X = leftWidth;
             Details.X = leftWidth + 1;
             _queuePane.X = leftWidth + 1;
+            if (_extraPane is { } pane)
+            {
+                pane.X = leftWidth + 1;
+            }
         }
     }
 
     /// <summary>
     /// Tab switches panes here rather than through the key bar, because a bar may leave <c>Tab Pane</c>
-    /// off to make room. The batch screen is the only pane while it shows, so Tab does nothing then.
+    /// off to make room. The batch screen and the forms are the only pane while they show, so Tab
+    /// does nothing then; a form moves between its fields before the key gets here.
     /// </summary>
     protected override bool OnKeyDown(Key key)
     {
         if (key == Key.Tab)
         {
-            if (!IsBatchShown)
+            if (!IsBatchShown && !IsFormShown)
             {
                 SwitchPane();
             }
@@ -403,37 +479,134 @@ internal abstract class PackageListTab : ShellTab
             : $"Upgrade {row.Id} to {row.AvailableVersion}? (y/n)";
     }
 
-    private void RunQueue() => Shell.RunQueue(this);
-
-    /// <summary>The pane right of the divider that is showing: the queue or the details.</summary>
-    private View RightPane() => IsQueueShown ? _queuePane : Details;
-
-    /// <summary>Shows the queue while it has entries and the details otherwise, unless the batch screen is showing.</summary>
-    private void ShowQueueOrDetails()
+    /// <summary><c>update</c>, <c>hold (blocking)</c>, <c>skip 1.2.3</c>, or <c>excluded</c>; null for a package with no installed row.</summary>
+    private string? PolicyText(PackageRow row)
     {
-        if (IsBatchShown)
+        if (PolicyRow(row) is not { } installed)
+        {
+            return null;
+        }
+
+        return Shell.ResolvePolicy(installed) switch
+        {
+            UpdatePolicyKind.Hold => "hold (blocking)",
+            UpdatePolicyKind.SkipVersion => $"skip {Shell.Options.GetUpdatesOptions(installed.Id).IgnoredVersion}",
+            UpdatePolicyKind.Exclude => "excluded",
+            _ => "update",
+        };
+    }
+
+    private void OpenOptionsForCursorRow()
+    {
+        if (Table.CurrentRow is { } row)
+        {
+            OpenOptions(row);
+        }
+    }
+
+    /// <summary>Puts <paramref name="form"/> in place of the table and the right pane until it closes, focused on its first field.</summary>
+    private void ShowForm(FormView form)
+    {
+        if (IsBatchShown || IsFormShown)
         {
             return;
         }
 
-        var showsQueue = Shell.Queue.Count > 0;
+        _form = form;
+        form.Closed += () => HideForm(form);
+        Add(form);
+
+        // Focused first, so hiding the focused table does not leave focus to Terminal.Gui's choice.
+        form.FocusFirstField();
+        HideList();
+        Shell.RefreshHints(this);
+    }
+
+    private void HideForm(FormView form)
+    {
+        if (_form != form)
+        {
+            return;
+        }
+
+        _form = null;
+        RestoreList(form);
+        Shell.RefreshHints(this);
+    }
+
+    private void HideList()
+    {
+        Table.Visible = false;
+        _divider.Visible = false;
+        Details.Visible = false;
+        _queuePane.Visible = false;
+        if (_extraPane is { } pane)
+        {
+            pane.Visible = false;
+        }
+    }
+
+    /// <summary>Puts the table and the right pane back in place of <paramref name="screen"/>, then removes and disposes it.</summary>
+    private void RestoreList(View screen)
+    {
+        Table.Visible = true;
+        _divider.Visible = true;
+        Table.FocusTable();
+        Remove(screen);
+        screen.Dispose();
+        ShowRightPane();
+    }
+
+    private void RunQueue() => Shell.RunQueue(this);
+
+    /// <summary>The pane right of the divider that is showing: the tab's own, the queue, or the details.</summary>
+    private View RightPane()
+    {
+        if (_showsExtraPane && _extraPane is { } pane)
+        {
+            return pane;
+        }
+
+        return IsQueueShown ? _queuePane : Details;
+    }
+
+    /// <summary>
+    /// Shows the tab's own pane while it is toggled on, else the queue while it has entries, else
+    /// the details, unless the batch screen or a form is showing.
+    /// </summary>
+    private void ShowRightPane()
+    {
+        if (IsBatchShown || IsFormShown)
+        {
+            return;
+        }
+
+        var showsExtra = _showsExtraPane && _extraPane is not null;
+        var showsQueue = !showsExtra && Shell.Queue.Count > 0;
+        var showsDetails = !showsExtra && !showsQueue;
 
         // Moved first, so hiding the focused pane does not leave focus to Terminal.Gui's choice.
-        var hidesFocusedPane = showsQueue ? Details.HasFocus : _queuePane.HasFocus;
+        var hidesFocusedPane = (!showsDetails && Details.HasFocus)
+            || (!showsQueue && _queuePane.HasFocus)
+            || (!showsExtra && _extraPane is { HasFocus: true });
         if (hidesFocusedPane)
         {
             Table.FocusTable();
         }
 
-        Details.Visible = !showsQueue;
+        Details.Visible = showsDetails;
         _queuePane.Visible = showsQueue;
+        if (_extraPane is { } pane)
+        {
+            pane.Visible = showsExtra;
+        }
     }
 
     private void OnQueueChanged()
     {
         Table.RefreshMarkers();
         Table.RefreshCount();
-        ShowQueueOrDetails();
+        ShowRightPane();
     }
 
     private void MarkCursorRow()
@@ -447,24 +620,9 @@ internal abstract class PackageListTab : ShellTab
     private void OpenContextMenu(PackageRow row, Point screenPosition) =>
         Shell.ShowContextMenu(row.Name, MenuEntries(row), screenPosition);
 
-    private void OnCursorChanged(PackageRow? row)
-    {
-        Details.Show(row);
-        UpdateHintsForCursorRow();
-    }
+    private void OnCursorChanged(PackageRow? row) => Details.Show(row);
 
     private void OnRowActivated() => RightPane().SetFocus();
-
-    /// <summary>Refreshes the key bar when the cursor row's pin state differs from what its hints were built for, such as <c>p Pin</c> against <c>p Unpin</c>.</summary>
-    private void UpdateHintsForCursorRow()
-    {
-        var isPinned = IsCursorRowPinned;
-        if (isPinned != _hintsAreForPinnedRow)
-        {
-            _hintsAreForPinnedRow = isPinned;
-            Shell.RefreshHints(this);
-        }
-    }
 
     private void ShowRows(CancellationTokenSource cancellation, IReadOnlyList<PackageRow> rows)
     {
@@ -473,7 +631,7 @@ internal abstract class PackageListTab : ShellTab
             return;
         }
 
-        Table.SetRows(rows);
+        Table.SetRows(RowsToShow(rows));
         Table.IsLoading = false;
         OnLoaded(rows);
     }

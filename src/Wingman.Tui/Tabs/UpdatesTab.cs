@@ -1,6 +1,7 @@
 using Terminal.Gui.Input;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
+using Wingman.Core.Updates;
 using Wingman.Core.Winget;
 
 namespace Wingman.Tui.Tabs;
@@ -8,9 +9,12 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// Installed packages with an upgrade available, loaded from
 /// <see cref="IWingetClient.ListUpgradesAsync"/> the first time the tab is shown, again on
-/// <c>r</c>, and after every batch once it has loaded. The tab strip shows how many there are
-/// once a load has finished. Held (pinned) packages stay listed, dimmed and marked <c>⊘</c>.
-/// Space marks a row for the batch, and <c>a</c> marks every listed row an upgrade-all would take.
+/// <c>r</c>, and after every batch once it has loaded, then run through
+/// <see cref="UpdatesFilter"/>: packages excluded from Wingman's updates and skipped versions leave
+/// the list, and the count label and footer say how many. The tab strip shows how many are listed
+/// once a load has finished. Held (pinned) packages stay listed, dimmed and marked <c>⊘</c>. Space
+/// marks a row for the batch, <c>a</c> marks every listed row an upgrade-all would take, and
+/// <c>e</c> lists the excluded packages in place of the right pane.
 /// </summary>
 internal sealed class UpdatesTab : PackageListTab
 {
@@ -31,7 +35,9 @@ internal sealed class UpdatesTab : PackageListTab
     private static readonly HelpGroup Help = new("Updates",
     [
         new("u", "upgrade"),
-        new("p", "hold / release"),
+        new("p", "update policy"),
+        new("e", "list excluded packages"),
+        new("o", "install options"),
         new("␣", "mark for batch"),
         new("a", "mark all but held"),
         new("c", "clear queue"),
@@ -39,8 +45,11 @@ internal sealed class UpdatesTab : PackageListTab
     ]);
 
     private readonly KeyHint[] _hints;
-    private readonly KeyHint[] _heldRowHints;
+    private readonly ExcludedPane _excludedPane;
+
+    // Every row the last load returned, before the policy filter.
     private IReadOnlyList<PackageRow> _rows = [];
+    private UpdatesView _view = new([], 0, 0, 0);
     private bool _hasStartedLoading;
 
     public UpdatesTab(Shell shell, IWingetClient client)
@@ -53,17 +62,19 @@ internal sealed class UpdatesTab : PackageListTab
         Table.Footer = "";
         Table.CountFormat = CountText;
 
-        _hints = BuildHints("Hold");
-        _heldRowHints = BuildHints("Release");
+        _excludedPane = new ExcludedPane(shell.Theme);
+        AddExtraPane(_excludedPane);
+
+        _hints = BuildHints();
     }
 
-    protected override IReadOnlyList<KeyHint> TableHints => IsCursorRowPinned ? _heldRowHints : _hints;
+    protected override IReadOnlyList<KeyHint> TableHints => _hints;
 
     protected override HelpGroup TabHelp => Help;
 
     public override void OnShown()
     {
-        FocusTableOrBatch();
+        FocusContent();
         if (!_hasStartedLoading)
         {
             Reload();
@@ -79,23 +90,78 @@ internal sealed class UpdatesTab : PackageListTab
         }
     }
 
-    protected override void OnLoaded(IReadOnlyList<PackageRow> rows)
+    protected override IReadOnlyList<PackageRow> RowsToShow(IReadOnlyList<PackageRow> loaded)
     {
-        _rows = rows;
-        Shell.SetTabCount(this, rows.Count);
-        UpdateFooter();
+        _rows = loaded;
+        return Filter();
     }
+
+    protected override void OnLoaded(IReadOnlyList<PackageRow> rows) => ShowCounts();
 
     protected override void OnPinsChanged()
     {
         base.OnPinsChanged();
-        Table.RefreshCount();
-        UpdateFooter();
+        ApplyPolicies();
+    }
+
+    protected override void OnOptionsChanged()
+    {
+        base.OnOptionsChanged();
+        ApplyPolicies();
     }
 
     protected override void ToggleMark(PackageRow row) => ToggleQueued(OperationKind.Upgrade, row);
 
-    /// <summary><c>6 available · 3 marked · 1 held</c>, or <c>2 of 6 available · …</c> while the filter hides some; zero counts are left out.</summary>
+    protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row) =>
+    [
+        new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)),
+        MarkMenuEntry(row),
+        PolicyMenuEntry(row),
+        OptionsMenuEntry(row),
+        MenuEntry.Rule,
+        .. PackageMenuEntries(row),
+    ];
+
+    /// <summary>The policy filter over the last load's rows; also refreshes the excluded list.</summary>
+    private IReadOnlyList<PackageRow> Filter()
+    {
+        _view = UpdatesFilter.Apply(_rows, Shell.Pins, Shell.Options);
+
+        var excluded = new List<PackageRow>();
+        foreach (var row in _rows)
+        {
+            if (Shell.ResolvePolicy(row) == UpdatePolicyKind.Exclude)
+            {
+                excluded.Add(row);
+            }
+        }
+
+        _excludedPane.SetRows(excluded);
+        return [.. _view.Visible.Select(update => update.Row)];
+    }
+
+    /// <summary>Filters the last load's rows again, for when a pin or a package's options changed.</summary>
+    private void ApplyPolicies()
+    {
+        Table.SetRows(Filter());
+        ShowCounts();
+    }
+
+    private void ShowCounts()
+    {
+        if (_hasStartedLoading && !Table.IsLoading)
+        {
+            Shell.SetTabCount(this, _view.Visible.Count);
+        }
+
+        Table.RefreshCount();
+        UpdateFooter();
+    }
+
+    /// <summary>
+    /// <c>6 available · 3 marked · 1 held · 2 excluded</c>, or <c>2 of 6 available · …</c> while the
+    /// filter hides some; zero counts are left out.
+    /// </summary>
     private string CountText(IReadOnlyList<PackageRow> visible, IReadOnlyList<PackageRow> all)
     {
         var parts = new List<string>
@@ -113,6 +179,16 @@ internal sealed class UpdatesTab : PackageListTab
         if (held > 0)
         {
             parts.Add($"{held} held");
+        }
+
+        if (_view.ExcludedCount > 0)
+        {
+            parts.Add($"{_view.ExcludedCount} excluded");
+        }
+
+        if (_view.SkippedCount > 0)
+        {
+            parts.Add($"{_view.SkippedCount} skipped");
         }
 
         return string.Join(" · ", parts);
@@ -134,6 +210,19 @@ internal sealed class UpdatesTab : PackageListTab
         }
     }
 
+    /// <summary>Opens the policy for the selected excluded package while its list has focus, and for the cursor row otherwise.</summary>
+    private void OpenPolicyForFocusedRow()
+    {
+        if (_excludedPane.HasFocus && _excludedPane.SelectedRow is { } excluded)
+        {
+            OpenPolicy(excluded);
+        }
+        else
+        {
+            OpenPolicyForCursorRow();
+        }
+    }
+
     private string Marker(PackageRow row)
     {
         if (Shell.IsPinned(row.Id))
@@ -144,16 +233,22 @@ internal sealed class UpdatesTab : PackageListTab
         return row.RequiresExplicitTargeting ? ExplicitMarker : "";
     }
 
-    /// <summary>The legend for each marker the rows use, held first, since the pair is wider than the pane.</summary>
+    /// <summary>The legend for each marker the rows use and the excluded count, held first, since together they are wider than the pane.</summary>
     private void UpdateFooter()
     {
+        var shown = _view.Visible.Select(update => update.Row).ToList();
         var legends = new List<string>();
-        if (_rows.Any(row => Shell.IsPinned(row.Id)))
+        if (shown.Any(row => Shell.IsPinned(row.Id)))
         {
             legends.Add(HeldFooter);
         }
 
-        if (_rows.Any(row => row.RequiresExplicitTargeting))
+        if (_view.ExcludedCount > 0)
+        {
+            legends.Add($"⟳ {_view.ExcludedCount} excluded · e to list them");
+        }
+
+        if (shown.Any(row => row.RequiresExplicitTargeting))
         {
             legends.Add(ExplicitFooter);
         }
@@ -161,30 +256,24 @@ internal sealed class UpdatesTab : PackageListTab
         Table.Footer = string.Join(FooterSeparator, legends);
     }
 
-    protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row) =>
-    [
-        new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)),
-        MarkMenuEntry(row),
-        new(Shell.IsPinned(row.Id) ? "Release" : "Hold", () => Shell.TogglePin(row.Id)),
-        MenuEntry.Rule,
-        .. PackageMenuEntries(row),
-    ];
-
     /// <remarks>
     /// <c>/ Filter</c> and <c>s Sort</c> stay off the bar so the batch keys fit at 96 columns, as do
-    /// <c>Tab Pane</c> and <c>m Menu</c>, which the tab and the shell handle by themselves.
+    /// <c>e Excluded</c>, which the footer names, <c>o Options</c>, and <c>Tab Pane</c> and
+    /// <c>m Menu</c>, which the tab and the shell handle by themselves.
     /// </remarks>
-    private KeyHint[] BuildHints(string pinLabel) =>
+    private KeyHint[] BuildHints() =>
     [
         new(Key.U, "Upgrade", () => RunOperation(OperationKind.Upgrade)),
         MarkHint,
         new(Key.A, "Mark all", MarkAll),
         ClearHint,
         RunHint,
-        new(Key.P, pinLabel, TogglePin),
+        new(Key.P, "Policy", OpenPolicyForFocusedRow),
         new(Key.R, "Refresh", Reload),
+        new(Key.E, "Excluded", ToggleExtraPane, IsOnBar: false),
         new(new Key('/'), "Filter", Table.FocusFilter, IsOnBar: false),
         new(Key.S, "Sort", Table.CycleSort, IsOnBar: false),
+        OptionsHint,
     ];
 
     private void Reload()

@@ -8,12 +8,13 @@ namespace Wingman.Tui.Tabs;
 /// <summary>
 /// Every installed package, loaded from <see cref="IWingetClient.ListInstalledAsync"/> the first
 /// time the tab is shown or another tab needs the installed set, again on <c>r</c>, and after
-/// every batch. Pinned packages are marked <c>⊘</c>. Space marks a row with an upgrade
-/// available for the batch.
+/// every batch. Pinned packages are marked <c>⊘</c>, and packages excluded from Wingman's updates
+/// <c>⟳</c>. Space marks a row with an upgrade available for the batch.
 /// </summary>
 internal sealed class InstalledTab : PackageListTab
 {
     private const string PinnedMarker = "⊘";
+    private const string ExcludedMarker = "⟳";
 
     private static readonly PackageColumn[] Columns =
     [
@@ -26,7 +27,8 @@ internal sealed class InstalledTab : PackageListTab
     [
         new("u", "upgrade"),
         new("x", "uninstall"),
-        new("p", "pin / unpin"),
+        new("p", "update policy"),
+        new("o", "install options"),
         new("␣", "mark for batch"),
         new("c", "clear queue"),
         new("g", "run queue"),
@@ -34,27 +36,25 @@ internal sealed class InstalledTab : PackageListTab
     ]);
 
     private readonly KeyHint[] _hints;
-    private readonly KeyHint[] _pinnedRowHints;
     private bool _hasStartedLoading;
 
     public InstalledTab(Shell shell, IWingetClient client)
         : base(shell, client, "Installed", Columns)
     {
-        Table.Marker = row => shell.IsPinned(row.Id) ? PinnedMarker : "";
+        Table.Marker = Marker;
         Table.MarkerScheme = shell.Theme.CellScheme(shell.Theme.Dim);
         Table.CountFormat = (visible, all) => $"{visible.Count} of {all.Count}" + MarkedSuffix(all);
 
-        _hints = BuildHints("Pin");
-        _pinnedRowHints = BuildHints("Unpin");
+        _hints = BuildHints();
     }
 
-    protected override IReadOnlyList<KeyHint> TableHints => IsCursorRowPinned ? _pinnedRowHints : _hints;
+    protected override IReadOnlyList<KeyHint> TableHints => _hints;
 
     protected override HelpGroup TabHelp => Help;
 
     public override void OnShown()
     {
-        FocusTableOrBatch();
+        FocusContent();
         EnsureLoaded();
     }
 
@@ -104,7 +104,8 @@ internal sealed class InstalledTab : PackageListTab
         }
 
         entries.Add(new("Uninstall", () => RunOperation(OperationKind.Uninstall, row)));
-        entries.Add(new(Shell.IsPinned(row.Id) ? "Unpin" : "Pin", () => Shell.TogglePin(row.Id)));
+        entries.Add(PolicyMenuEntry(row));
+        entries.Add(OptionsMenuEntry(row));
         entries.Add(MenuEntry.Rule);
         entries.AddRange(PackageMenuEntries(row));
         return entries;
@@ -112,21 +113,32 @@ internal sealed class InstalledTab : PackageListTab
 
     /// <remarks>
     /// <c>s Sort</c> and <c>r Reload</c> stay off the bar so the batch keys fit at 96 columns, but
-    /// still work; <c>m Menu</c> and <c>Tab Pane</c> are left out too, since the shell handles
-    /// <c>m</c> and the tab handles Tab by themselves.
+    /// still work, as does <c>o Options</c>; <c>m Menu</c> and <c>Tab Pane</c> are left out too, since
+    /// the shell handles <c>m</c> and the tab handles Tab by themselves.
     /// </remarks>
-    private KeyHint[] BuildHints(string pinLabel) =>
+    private KeyHint[] BuildHints() =>
     [
         new(Key.U, "Upgrade", () => RunOperation(OperationKind.Upgrade)),
         new(Key.X, "Uninstall", () => RunOperation(OperationKind.Uninstall)),
-        new(Key.P, pinLabel, TogglePin),
+        new(Key.P, "Policy", OpenPolicyForCursorRow),
         MarkHint,
         ClearHint,
         RunHint,
         new(new Key('/'), "Filter", Table.FocusFilter),
         new(Key.S, "Sort", Table.CycleSort, IsOnBar: false),
         new(Key.R, "Reload", Reload, IsOnBar: false),
+        OptionsHint,
     ];
+
+    private string Marker(PackageRow row)
+    {
+        if (Shell.IsPinned(row.Id))
+        {
+            return PinnedMarker;
+        }
+
+        return Shell.IsExcluded(row.Id) ? ExcludedMarker : "";
+    }
 
     private void Reload()
     {

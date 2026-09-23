@@ -1,4 +1,3 @@
-using System.Text;
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
@@ -54,8 +53,11 @@ internal sealed class DetailsPane : View
         CanFocus = true;
     }
 
-    /// <summary>The pin on a package Id, or null when it has none, for the <c>Pinned</c> row; <c>no</c> for every package when unset.</summary>
-    public Func<string, Pin?>? PinFor { get; set; }
+    /// <summary>The <c>Policy</c> row's text for a row, such as <c>hold (blocking)</c>, or null to show <c>—</c>; <c>—</c> for every row when unset.</summary>
+    public Func<PackageRow, string?>? PolicyFor { get; set; }
+
+    /// <summary>Whether a package Id has saved install options, for the <c>Options</c> row; none has when unset.</summary>
+    public Func<string, bool>? HasCustomOptions { get; set; }
 
     /// <summary>Shows <paramref name="row"/>, or nothing when it is null. Call on every cursor move.</summary>
     public void Show(PackageRow? row)
@@ -110,7 +112,8 @@ internal sealed class DetailsPane : View
 
         string? scope = null;
         details?.AdditionalFields.TryGetValue("Installer.Scope", out scope);
-        var pin = PinFor?.Invoke(row.Id);
+        var hasCustomOptions = HasCustomOptions?.Invoke(row.Id) ?? false;
+        var options = hasCustomOptions ? ("custom (o to edit)", _theme.On(_theme.Accent)) : ("default", dim);
 
         (string Label, (string Text, Attribute Color) Value)[] fields =
         [
@@ -122,7 +125,8 @@ internal sealed class DetailsPane : View
             ("Homepage", FromDetails(details?.Homepage)),
             ("Source", FromRow(row.Source, normal)),
             ("Scope", FromDetails(scope)),
-            ("Pinned", (PinnedText(pin), normal)),
+            ("Policy", FromRow(PolicyFor?.Invoke(row), normal)),
+            ("Options", options),
         ];
 
         var y = 2;
@@ -214,18 +218,6 @@ internal sealed class DetailsPane : View
         return base.OnMouseEvent(mouse);
     }
 
-    /// <summary><c>yes (blocking)</c>, <c>yes (gating 1.2.*)</c>, or <c>no</c>.</summary>
-    private static string PinnedText(Pin? pin)
-    {
-        if (pin is null)
-        {
-            return "no";
-        }
-
-        var type = pin.PinType.ToString().ToLowerInvariant();
-        return pin.PinnedVersion.Length == 0 ? $"yes ({type})" : $"yes ({type} {pin.PinnedVersion})";
-    }
-
     private bool IsCurrent(string id) => string.Equals(_row?.Id, id, StringComparison.OrdinalIgnoreCase);
 
     private void RestartFetchTimer()
@@ -307,7 +299,7 @@ internal sealed class DetailsPane : View
         {
             _wrappedSource = text;
             _wrappedWidth = textWidth;
-            _wrappedLines = Wrap(text, textWidth);
+            _wrappedLines = CellText.Wrap(text, textWidth);
         }
 
         _textRowsShown = Math.Max(0, Viewport.Height - top);
@@ -337,54 +329,5 @@ internal sealed class DetailsPane : View
             _textScroll = clamped;
             SetNeedsDraw();
         }
-    }
-
-    /// <summary>
-    /// Breaks <paramref name="text"/> into lines of at most <paramref name="width"/> cells, at spaces
-    /// where it can and inside a word, such as a long URL, only when the word alone is too wide.
-    /// </summary>
-    private static List<string> Wrap(string text, int width)
-    {
-        var lines = new List<string>();
-        foreach (var paragraph in text.Split('\n'))
-        {
-            var line = new StringBuilder();
-            var used = 0;
-            foreach (var word in paragraph.TrimEnd('\r').Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
-            {
-                var wordWidth = DisplayWidth.Of(word);
-                var fitsOnLine = used == 0 ? wordWidth <= width : used + 1 + wordWidth <= width;
-                if (!fitsOnLine && used > 0)
-                {
-                    lines.Add(line.ToString());
-                    line.Clear();
-                    used = 0;
-                }
-
-                if (used > 0)
-                {
-                    line.Append(' ');
-                    used++;
-                }
-
-                foreach (var rune in word.EnumerateRunes())
-                {
-                    var runeWidth = DisplayWidth.Of(rune);
-                    if (used + runeWidth > width)
-                    {
-                        lines.Add(line.ToString());
-                        line.Clear();
-                        used = 0;
-                    }
-
-                    line.Append(rune.ToString());
-                    used += runeWidth;
-                }
-            }
-
-            lines.Add(line.ToString());
-        }
-
-        return lines;
     }
 }

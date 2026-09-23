@@ -5,6 +5,7 @@ using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Wingman.Core.Models;
 using Wingman.Core.Operations;
+using Wingman.Core.Updates;
 using Wingman.Core.Winget;
 using Attribute = Terminal.Gui.Drawing.Attribute;
 
@@ -15,8 +16,10 @@ namespace Wingman.Tui;
 /// batch's progress and the elevated helper's state, one row per operation with its status, then
 /// the log of the running operation, or of the selected one once the batch is over. While running,
 /// the arrows scroll the log and Esc asks to cancel; afterwards the arrows select an operation,
-/// <c>l</c> gives the log the whole screen, and Enter or Esc go back. The mouse wheel scrolls the
-/// log and a click selects a finished batch's operation.
+/// <c>l</c> gives the log the whole screen, and Enter or Esc go back. A selected operation that
+/// failed shows its decoded exit code in place of the log, with keys to retry it as it was,
+/// interactive, or skipping the hash check, and to hold or exclude the package. The mouse wheel
+/// scrolls the log and a click selects a finished batch's operation.
 /// </summary>
 /// <remarks>
 /// <see cref="Apply"/> takes events in whatever order they come: a line that arrives after its
@@ -35,6 +38,11 @@ internal sealed class BatchRunnerScreen : View
     private const int MinLogRows = 4;
     private const int WheelStep = 3;
 
+    // " winget said     …": a space, the label padded to 15, and a space.
+    private const int FailureLabelWidth = 15;
+    private const int FailureValueLeft = 1 + FailureLabelWidth + 1;
+    private const int FailureLogLines = 5;
+
     private static readonly string[] SpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     private readonly IApplication _app;
@@ -42,6 +50,7 @@ internal sealed class BatchRunnerScreen : View
     private readonly OperationView[] _operations;
     private readonly KeyHint[] _runningHints;
     private readonly KeyHint[] _finishedHints;
+    private readonly KeyHint[] _failureHints;
 
     private string _elevation;
     private bool _isFinished;
@@ -89,6 +98,16 @@ internal sealed class BatchRunnerScreen : View
             new(Key.CursorUp, "Select", () => SetFocus(), "↑↓"),
             new(Key.L, "Full log", ToggleFullLog),
         ];
+        _failureHints =
+        [
+            .. LetterHints('R', "Retry", () => Retry(request => request)),
+            .. LetterHints('I', "Interactive", () => Retry(request => request with { Interactive = true })),
+            .. LetterHints('S', "Skip hash check", () => Retry(request => request with { SkipHashCheck = true })),
+            .. LetterHints('H', "Hold", () => RequestPolicy(UpdatePolicyKind.Hold)),
+            .. LetterHints('E', "Exclude", () => RequestPolicy(UpdatePolicyKind.Exclude)),
+            new(Key.L, "Log", ToggleFullLog),
+            new(Key.Enter, "Back", () => BackRequested?.Invoke(), "⏎"),
+        ];
 
         _spinnerTimer = app.AddTimeout(TimeSpan.FromMilliseconds(100), AdvanceSpinner);
     }
@@ -101,6 +120,11 @@ internal sealed class BatchRunnerScreen : View
         new("PgUp", "scroll log"),
         new("l", "full log"),
         new("⏎", "back when done"),
+        new("R", "retry a failed one"),
+        new("I", "retry interactive"),
+        new("S", "retry skip hash check"),
+        new("H", "hold at installed"),
+        new("E", "exclude from updates"),
     ]);
 
     /// <summary>Raised on Esc while the batch runs.</summary>
@@ -109,10 +133,30 @@ internal sealed class BatchRunnerScreen : View
     /// <summary>Raised on Enter or Esc once the batch is over.</summary>
     public event Action? BackRequested;
 
+    /// <summary>Raised on <c>R</c>, <c>I</c>, or <c>S</c> with a failed operation selected, with that operation changed as the key asks.</summary>
+    public event Action<QueuedOperation>? RetryRequested;
+
+    /// <summary>Raised on <c>H</c> or <c>E</c> with a failed operation selected, with its package and the policy to give it.</summary>
+    public event Action<PackageRow, UpdatePolicyKind>? PolicyRequested;
+
+    /// <summary>Raised when <see cref="Hints"/> changes without the batch changing state, as when a failed operation is selected.</summary>
+    public event Action? HintsChanged;
+
     public bool IsFinished => _isFinished;
 
     /// <summary>The key bar entries for the batch's state, before the shell's <c>q Quit</c>.</summary>
-    public IReadOnlyList<KeyHint> Hints => _isFinished ? _finishedHints : _runningHints;
+    public IReadOnlyList<KeyHint> Hints
+    {
+        get
+        {
+            if (!_isFinished)
+            {
+                return _runningHints;
+            }
+
+            return SelectedFailure is null ? _finishedHints : _failureHints;
+        }
+    }
 
     public void Apply(BatchProgress progress)
     {
@@ -153,8 +197,9 @@ internal sealed class BatchRunnerScreen : View
     public void MarkCancelRequested() => _isCancelRequested = true;
 
     /// <summary>
-    /// Ends the batch: any operation still open is shown canceled, the first operation is selected,
-    /// and each operation's history log name, or null, is shown under its log.
+    /// Ends the batch: any operation still open is shown canceled, the failed operation is selected
+    /// when exactly one failed and the first one otherwise, and each operation's history log name,
+    /// or null, is shown under its log.
     /// </summary>
     public void Finish(IReadOnlyList<string?> logFiles)
     {
@@ -174,7 +219,8 @@ internal sealed class BatchRunnerScreen : View
             }
         }
 
-        _selected = 0;
+        var failed = Array.FindAll(_operations, operation => operation.State == OperationState.Failed);
+        _selected = failed.Length == 1 ? Array.IndexOf(_operations, failed[0]) : 0;
         ResetLogScroll();
         StopSpinner();
         SetNeedsDraw();
@@ -234,10 +280,19 @@ internal sealed class BatchRunnerScreen : View
             y = _operationRowsTop + _operationRowsShown + 1;
         }
 
-        DrawRule(y, width);
         var savedRow = height - 1;
-        _logRowsShown = Math.Max(0, savedRow - y - 1);
-        DrawLog(y + 1, width);
+        if (!_isFullLog && SelectedFailure is { } failure)
+        {
+            _logRowsShown = 0;
+            DrawFailure(y, savedRow, width, failure);
+        }
+        else
+        {
+            DrawRule(y, width);
+            _logRowsShown = Math.Max(0, savedRow - y - 1);
+            DrawLog(y + 1, width);
+        }
+
         DrawSavedLine(savedRow, width);
         return true;
     }
@@ -371,6 +426,46 @@ internal sealed class BatchRunnerScreen : View
     }
 
     private bool IsKnown(int index) => index >= 0 && index < _operations.Length;
+
+    /// <summary>The selected operation once the batch is over, when it failed; null otherwise.</summary>
+    private OperationView? SelectedFailure
+    {
+        get
+        {
+            var isFailure = _isFinished && IsKnown(_selected) && _operations[_selected].State == OperationState.Failed;
+            return isFailure ? _operations[_selected] : null;
+        }
+    }
+
+    /// <summary>
+    /// A hint for the lowercase letter, shown with <paramref name="letter"/> in uppercase as the
+    /// mockup draws it, and another off the bar so the letter works with Shift too.
+    /// </summary>
+    private static KeyHint[] LetterHints(char letter, string label, Action action) =>
+    [
+        new(new Key(char.ToLowerInvariant(letter)), label, action, letter.ToString()),
+        new(new Key(letter), label, action, IsOnBar: false),
+    ];
+
+    private void Retry(Func<OperationRequest, OperationRequest> change)
+    {
+        if (SelectedFailure is not { } failure)
+        {
+            return;
+        }
+
+        var operation = failure.Operation;
+        var plan = operation.Plan with { Request = change(operation.Plan.Request) };
+        RetryRequested?.Invoke(operation with { Plan = plan });
+    }
+
+    private void RequestPolicy(UpdatePolicyKind kind)
+    {
+        if (SelectedFailure is { } failure)
+        {
+            PolicyRequested?.Invoke(failure.Operation.Row, kind);
+        }
+    }
 
     private OperationState FinishedState(OperationFinished finished)
     {
@@ -538,7 +633,8 @@ internal sealed class BatchRunnerScreen : View
                 return [("waiting", _theme.Dim)];
 
             case OperationState.Failed:
-                return [($"failed  exit {operation.Result?.ExitCode}", _theme.Error)];
+                var exitCode = operation.Result is { } result ? WingetErrorCodes.Format(result.ExitCode) : "";
+                return [($"failed  exit {exitCode}", _theme.Error)];
 
             case OperationState.Skipped:
                 return [("skipped", _theme.Dim)];
@@ -593,6 +689,116 @@ internal sealed class BatchRunnerScreen : View
         }
     }
 
+    /// <summary>
+    /// Draws <c> ─ Vendor.Tool failed ───…</c> at <paramref name="top"/>, then what the exit code
+    /// means and the last lines of the log, stopping above <paramref name="bottom"/>.
+    /// </summary>
+    private void DrawFailure(int top, int bottom, int width, OperationView operation)
+    {
+        var border = _theme.On(_theme.Border);
+        var normal = _theme.On(_theme.Foreground);
+        var dim = _theme.On(_theme.Dim);
+
+        var label = CellText.Fit($"{operation.Operation.Row.Id} failed", Math.Max(0, width - 5));
+        var dashes = Math.Max(0, width - 5 - DisplayWidth.Of(label));
+        Move(0, top);
+        SetAttribute(border);
+        AddStr(" ─ ");
+        SetAttribute(_theme.On(_theme.Error));
+        AddStr(label);
+        SetAttribute(border);
+        AddStr(" " + new string('─', dashes));
+
+        var exitCode = operation.Result?.ExitCode ?? 0;
+        var explanation = WingetErrorCodes.Explain(exitCode);
+        var said = explanation.WingetSaid.Length > 0 ? explanation.WingetSaid : LastLines(operation.Lines, 1).FirstOrDefault() ?? "";
+        var valueWidth = Math.Max(1, width - FailureValueLeft - 1);
+
+        var y = top + 1;
+        y = DrawFailureField(y, bottom, "winget said", CellText.Wrap(said, valueWidth), normal);
+        if (y < bottom)
+        {
+            DrawFailureLabel(y, "Code");
+            SetAttribute(normal);
+            var code = WingetErrorCodes.Format(exitCode);
+            AddStr(code);
+            SetAttribute(dim);
+            AddStr(CellText.Fit("  " + explanation.Name, Math.Max(0, valueWidth - DisplayWidth.Of(code))));
+            y++;
+        }
+
+        y = DrawFailureField(y, bottom, "Usually means", CellText.Wrap(explanation.UsuallyMeans, valueWidth), normal);
+        y = DrawFailureField(y, bottom, "Suggestion", CellText.Wrap(explanation.Suggestion, valueWidth), normal);
+
+        y++;
+        if (y >= bottom)
+        {
+            return;
+        }
+
+        Move(1, y);
+        SetAttribute(_theme.On(_theme.Header));
+        AddStr("Last log lines");
+        y++;
+
+        SetAttribute(dim);
+        foreach (var line in LastLines(operation.Lines, FailureLogLines))
+        {
+            if (y >= bottom)
+            {
+                break;
+            }
+
+            Move(1, y);
+            AddStr(CellText.Fit(line, Math.Max(0, width - 2)));
+            y++;
+        }
+    }
+
+    /// <summary>Draws the label on the first of <paramref name="lines"/> and the rest under the value column; returns the row after them.</summary>
+    private int DrawFailureField(int y, int bottom, string label, IReadOnlyList<string> lines, Attribute color)
+    {
+        for (var i = 0; i < lines.Count && y < bottom; i++)
+        {
+            if (i == 0)
+            {
+                DrawFailureLabel(y, label);
+            }
+
+            Move(FailureValueLeft, y);
+            SetAttribute(color);
+            AddStr(lines[i]);
+            y++;
+        }
+
+        return y;
+    }
+
+    /// <summary>Draws <paramref name="label"/> padded to the value column, leaving the cursor there.</summary>
+    private void DrawFailureLabel(int y, string label)
+    {
+        Move(1, y);
+        SetAttribute(_theme.On(_theme.Header));
+        AddStr(label.PadRight(FailureLabelWidth));
+        SetAttribute(_theme.On(_theme.Foreground));
+        AddStr(" ");
+    }
+
+    /// <summary>The last <paramref name="count"/> lines with any text, oldest first.</summary>
+    private static List<string> LastLines(List<string> lines, int count)
+    {
+        var last = new List<string>();
+        for (var i = lines.Count - 1; i >= 0 && last.Count < count; i--)
+        {
+            if (!string.IsNullOrWhiteSpace(lines[i]))
+            {
+                last.Insert(0, lines[i]);
+            }
+        }
+
+        return last;
+    }
+
     private void DrawSavedLine(int y, int width)
     {
         if (_operations.Length == 0 || _operations[DisplayedIndex].LogFile is not { } logFile)
@@ -637,11 +843,18 @@ internal sealed class BatchRunnerScreen : View
     private void Select(int index)
     {
         var clamped = Math.Clamp(index, 0, Math.Max(0, _operations.Length - 1));
-        if (clamped != _selected)
+        if (clamped == _selected)
         {
-            _selected = clamped;
-            ResetLogScroll();
-            SetNeedsDraw();
+            return;
+        }
+
+        var wasFailure = SelectedFailure is not null;
+        _selected = clamped;
+        ResetLogScroll();
+        SetNeedsDraw();
+        if (wasFailure != SelectedFailure is not null)
+        {
+            HintsChanged?.Invoke();
         }
     }
 
