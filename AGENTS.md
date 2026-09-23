@@ -73,3 +73,7 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - `TableStyle.RowColorGetter` colors a whole row, but a column's own `ColorGetter` wins for that column.
 - A `Label` clips overflowing text without an ellipsis; fit it with `CellText.Fit` first.
 - `tools/TuiHarness` steps can assert on their frame and the harness exits 1 on any failed check, so run it after every TUI change.
+- The window's line canvas (pane divider, separators) draws after every subview, so an overlay added as a normal view gets cut through. `ContextMenu` and `HelpOverlay` are painted from `Window.DrawComplete` inside `SetClipToScreen()` / `SetClip(saved)`.
+- `App.Mouse.MouseEvent` fires before any view; setting `Handled` there stops the event. Swallow the press and release too, or the table moves its cursor on a click outside an overlay.
+- `IsSingleDoubleOrTripleClicked` also covers right clicks.
+- The harness's ANSI driver sometimes resets its size between steps, which breaks mouse coordinates; `Screen.HoldSize()` restores it on `IDriver.SizeChanged`. The footer separator's left end is sometimes drawn `│` instead of `├` between steps (a Terminal.Gui glitch), so the harness leaves separator rows out of comparisons.
