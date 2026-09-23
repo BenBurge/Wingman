@@ -14,6 +14,7 @@ public static class SetupPlanner
     private const string CheckAtLogonTaskName = @"Wingman\CheckAtLogon";
     private const string AutoInstallTaskName = @"Wingman\AutoInstall";
     private const string DisabledSuffix = " (off)";
+    private const string HeadlessPrefix = "conhost.exe --headless ";
 
     public static SetupPlan Build(WingmanSettings settings, string exePath)
     {
@@ -28,7 +29,7 @@ public static class SetupPlanner
 
         var startsTrayAtLogin = settings.StartTrayAtLogin && settings.ShowTrayIcon;
         var startupEntry = new RegistryValueSpec(
-            @"Software\Microsoft\Windows\CurrentVersion\Run", "Wingman", $"{quotedExe} tray", startsTrayAtLogin);
+            @"Software\Microsoft\Windows\CurrentVersion\Run", "Wingman", RunHeadless($"{quotedExe} tray"), startsTrayAtLogin);
 
         var shortcut = new ShortcutSpec(
             "Wingman.lnk", exePath, "", "BenBurge.Wingman", "Wingman, a terminal UI for winget");
@@ -49,7 +50,7 @@ public static class SetupPlanner
         items.Add(new SetupItem(
             "registry",
             "Startup entry",
-            $"Starts the tray at login: {startupEntry.KeyPath}\\{startupEntry.ValueName} = {startupEntry.Value}"
+            $"Starts the tray at login: {startupEntry.KeyPath}\\{startupEntry.ValueName} = {StripHeadlessPrefix(startupEntry.Value)}"
                 + OffSuffix(startupEntry.Enabled)));
 
         items.Add(new SetupItem(
@@ -71,9 +72,17 @@ public static class SetupPlanner
 
     private static string OffSuffix(bool enabled) => enabled ? "" : DisabledSuffix;
 
+    // conhost.exe --headless (Windows 10 1809 and later) gives the process a console without a
+    // window, so wingman.exe - a console executable - leaves nothing on the desktop when Task
+    // Scheduler or the Run key launches it.
+    private static string RunHeadless(string command) => HeadlessPrefix + command;
+
+    private static string StripHeadlessPrefix(string value) =>
+        value.StartsWith(HeadlessPrefix, StringComparison.Ordinal) ? value[HeadlessPrefix.Length..] : value;
+
     private static ScheduledTaskSpec BuildCheckTask(WingmanSettings settings, string quotedExe)
     {
-        var command = $"{quotedExe} check --notify";
+        var command = RunHeadless($"{quotedExe} check --notify");
         var createArgs = new[]
         {
             "/Create", "/TN", CheckTaskName, "/TR", command,
@@ -89,7 +98,7 @@ public static class SetupPlanner
     // "check at login" is a second, honest task rather than one task with two triggers.
     private static ScheduledTaskSpec BuildCheckAtLogonTask(string quotedExe, bool enabled)
     {
-        var command = $"{quotedExe} check --notify";
+        var command = RunHeadless($"{quotedExe} check --notify");
         var createArgs = new[]
         {
             "/Create", "/TN", CheckAtLogonTaskName, "/TR", command,
@@ -102,7 +111,7 @@ public static class SetupPlanner
 
     private static ScheduledTaskSpec BuildAutoInstallTask(WingmanSettings settings, string quotedExe, bool enabled)
     {
-        var command = $"{quotedExe} upgrade --all --yes --auto --notify";
+        var command = RunHeadless($"{quotedExe} upgrade --all --yes --auto --notify");
         var time = settings.AutoInstallTimeOfDay.ToString("HH:mm", CultureInfo.InvariantCulture);
         var createArgs = new[]
         {
@@ -132,7 +141,7 @@ public static class SetupPlanner
             _ => schedule,
         };
 
-        return $"Runs {task.Command} {detail}";
+        return $"Runs {StripHeadlessPrefix(task.Command)} {detail}";
     }
 
     private static string ArgAfter(IReadOnlyList<string> args, string flag)

@@ -23,6 +23,14 @@ public static class TrayApp
             return 0;
         }
 
+        // Setup launches the tray through conhost --headless, so it has no console to free. A
+        // manual launch from a shortcut or a terminal still runs as the console exe wingman.exe
+        // is, so detach here or its console window stays on the desktop.
+        if (NativeMethods.GetConsoleWindow() != 0)
+        {
+            NativeMethods.FreeConsole();
+        }
+
         try
         {
             using var window = new TrayWindow(exePath, dataDirectory);

@@ -6,13 +6,14 @@ namespace Wingman.Core.Tests;
 public class SetupPlanTests
 {
     private const string ExePath = @"C:\Program Files\Wingman\wingman.exe";
+    private const string HeadlessPrefix = "conhost.exe --headless ";
 
     [Fact]
     public void Build_DefaultSettings_CreatesCheckTaskWithExactArgv()
     {
         var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
 
-        var command = $"\"{ExePath}\" check --notify";
+        var command = $"{HeadlessPrefix}\"{ExePath}\" check --notify";
         var checkTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\Check");
         Assert.Equal(command, checkTask.Command);
         Assert.Equal(
@@ -79,7 +80,7 @@ public class SetupPlanTests
 
         var autoInstallTask = Assert.Single(plan.Tasks, task => task.Name == @"Wingman\AutoInstall");
         Assert.True(autoInstallTask.Enabled);
-        Assert.Equal($"\"{ExePath}\" upgrade --all --yes --auto --notify", autoInstallTask.Command);
+        Assert.Equal($"{HeadlessPrefix}\"{ExePath}\" upgrade --all --yes --auto --notify", autoInstallTask.Command);
         Assert.Equal("DAILY", ArgAfter(autoInstallTask.SchtasksCreateArgs, "/SC"));
         Assert.Equal("14:30", ArgAfter(autoInstallTask.SchtasksCreateArgs, "/ST"));
         Assert.Equal(["/Delete", "/TN", @"Wingman\AutoInstall", "/F"], autoInstallTask.SchtasksDeleteArgs);
@@ -106,7 +107,7 @@ public class SetupPlanTests
         Assert.True(plan.StartupEntry.Enabled);
         Assert.Equal(@"Software\Microsoft\Windows\CurrentVersion\Run", plan.StartupEntry.KeyPath);
         Assert.Equal("Wingman", plan.StartupEntry.ValueName);
-        Assert.Equal($"\"{ExePath}\" tray", plan.StartupEntry.Value);
+        Assert.Equal($"{HeadlessPrefix}\"{ExePath}\" tray", plan.StartupEntry.Value);
     }
 
     [Fact]
@@ -164,6 +165,40 @@ public class SetupPlanTests
         Assert.Equal(@"Software\Classes\wingman\shell\open\command", openCommand.KeyPath);
         Assert.Equal("", openCommand.ValueName);
         Assert.Equal($"\"{ExePath}\" open \"%1\"", openCommand.Value);
+    }
+
+    [Fact]
+    public void Build_AllTaskCommands_RunThroughHeadlessConhost()
+    {
+        var settings = new WingmanSettings { CheckAtLogin = true, AutoInstall = true };
+
+        var plan = SetupPlanner.Build(settings, ExePath);
+
+        Assert.All(plan.Tasks, task => Assert.StartsWith(HeadlessPrefix, task.Command, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Describe_TaskLines_ShowPlainCommandWithoutHeadlessPrefix()
+    {
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+
+        var items = SetupPlanner.Describe(plan);
+
+        var checkItem = Assert.Single(items, item => item.Name == @"Wingman\Check");
+        Assert.Contains($"Runs \"{ExePath}\" check --notify", checkItem.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("conhost.exe", checkItem.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Describe_StartupEntryLine_ShowsPlainCommandWithoutHeadlessPrefix()
+    {
+        var plan = SetupPlanner.Build(new WingmanSettings(), ExePath);
+
+        var items = SetupPlanner.Describe(plan);
+
+        var registryItem = Assert.Single(items, item => item.Kind == "registry");
+        Assert.Contains($"= \"{ExePath}\" tray", registryItem.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("conhost.exe", registryItem.Description, StringComparison.Ordinal);
     }
 
     [Fact]

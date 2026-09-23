@@ -54,9 +54,19 @@ internal static class ScheduledTaskXml
 
     // Task Scheduler splits the /TR string into Command and Arguments and may keep or drop the
     // quotes around the executable, so both sides are compared without quotes or repeated spaces.
+    // It also resolves a bare "conhost.exe" to its full System32 path when it stores the task, so
+    // a freshly registered headless task would otherwise never compare equal to the plan that
+    // produced it; both sides collapse to the same "conhost.exe" token before comparing. A task
+    // registered by a previous build has no conhost token at all, so it still compares unequal and
+    // gets updated rather than left alone.
     private static string NormalizeCommandLine(string commandLine)
     {
         var words = commandLine.Replace("\"", "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length > 0 && words[0].EndsWith("conhost.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            words[0] = "conhost.exe";
+        }
+
         return string.Join(' ', words);
     }
 
