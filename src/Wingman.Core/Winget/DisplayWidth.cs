@@ -56,6 +56,28 @@ internal static class DisplayWidth
         return width;
     }
 
+    /// <summary>
+    /// Returns the char index at which <paramref name="displayColumn"/> begins in
+    /// <paramref name="line"/>, or the line's length when the line is narrower than that.
+    /// </summary>
+    public static int CharIndexAtColumn(string line, int displayColumn)
+    {
+        var width = 0;
+        var index = 0;
+        foreach (var rune in line.EnumerateRunes())
+        {
+            if (width >= displayColumn)
+            {
+                break;
+            }
+
+            width += Of(rune);
+            index += rune.Utf16SequenceLength;
+        }
+
+        return index;
+    }
+
     private static bool IsWide(int codePoint)
     {
         foreach (var (first, last) in WideRanges)

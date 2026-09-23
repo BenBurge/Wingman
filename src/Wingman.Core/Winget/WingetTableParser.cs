@@ -106,8 +106,8 @@ public static partial class WingetTableParser
         for (var i = 0; i < columns.Count; i++)
         {
             var (name, start) = columns[i];
-            var startIndex = CharIndexAtDisplayColumn(line, start);
-            var endIndex = i + 1 < columns.Count ? CharIndexAtDisplayColumn(line, columns[i + 1].Start) : line.Length;
+            var startIndex = DisplayWidth.CharIndexAtColumn(line, start);
+            var endIndex = i + 1 < columns.Count ? DisplayWidth.CharIndexAtColumn(line, columns[i + 1].Start) : line.Length;
             values[name] = line[startIndex..endIndex].Trim();
         }
 
@@ -120,28 +120,6 @@ public static partial class WingetTableParser
             AvailableVersion: values.ContainsKey("Available") && availableVersion.Length > 0 ? availableVersion : null,
             Source: values.GetValueOrDefault("Source", ""),
             RequiresExplicitTargeting: requiresExplicitTargeting);
-    }
-
-    /// <summary>
-    /// Returns the char index at which <paramref name="displayColumn"/> begins in
-    /// <paramref name="line"/>, or the line's length when the line is narrower than that.
-    /// </summary>
-    private static int CharIndexAtDisplayColumn(string line, int displayColumn)
-    {
-        var width = 0;
-        var index = 0;
-        foreach (var rune in line.EnumerateRunes())
-        {
-            if (width >= displayColumn)
-            {
-                break;
-            }
-
-            width += DisplayWidth.Of(rune);
-            index += rune.Utf16SequenceLength;
-        }
-
-        return index;
     }
 
     [GeneratedRegex(@"\b(Name|Id|Version|Match|Available|Source)\b")]
