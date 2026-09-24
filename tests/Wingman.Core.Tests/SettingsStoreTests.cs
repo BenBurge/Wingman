@@ -28,6 +28,7 @@ public class SettingsStoreTests : IDisposable
         Assert.True(settings.AcceptAgreements);
         Assert.True(settings.IncludeUnknown);
         Assert.Equal(ElevationMode.Auto, settings.ElevationMode);
+        Assert.Equal(ElevationLauncher.Direct, settings.ElevationLauncher);
         Assert.True(settings.ContinueOnFailure);
         Assert.Equal("Midnight", settings.Theme);
         Assert.Equal(6, settings.CheckIntervalHours);
@@ -53,6 +54,7 @@ public class SettingsStoreTests : IDisposable
             AcceptAgreements = false,
             IncludeUnknown = false,
             ElevationMode = ElevationMode.Always,
+            ElevationLauncher = ElevationLauncher.PowerShell,
             ContinueOnFailure = false,
             Theme = "Auto",
             CheckIntervalHours = 12,
@@ -73,6 +75,7 @@ public class SettingsStoreTests : IDisposable
         Assert.False(loaded.AcceptAgreements);
         Assert.False(loaded.IncludeUnknown);
         Assert.Equal(ElevationMode.Always, loaded.ElevationMode);
+        Assert.Equal(ElevationLauncher.PowerShell, loaded.ElevationLauncher);
         Assert.False(loaded.ContinueOnFailure);
         Assert.Equal("Auto", loaded.Theme);
         Assert.Equal(12, loaded.CheckIntervalHours);
@@ -181,6 +184,21 @@ public class SettingsStoreTests : IDisposable
 
         Assert.Contains($"\"elevationMode\": \"{expectedJson}\"", text);
         Assert.Equal(mode, loaded.ElevationMode);
+    }
+
+    [Theory]
+    [InlineData(ElevationLauncher.Direct, "direct")]
+    [InlineData(ElevationLauncher.PowerShell, "powerShell")]
+    public void SaveThenLoad_RoundTripsElevationLauncherAsCamelCaseString(ElevationLauncher launcher, string expectedJson)
+    {
+        var store = new SettingsStore(_directoryPath);
+
+        store.Save(new WingmanSettings { ElevationLauncher = launcher });
+        var text = File.ReadAllText(store.FilePath);
+        var loaded = store.Load();
+
+        Assert.Contains($"\"elevationLauncher\": \"{expectedJson}\"", text);
+        Assert.Equal(launcher, loaded.ElevationLauncher);
     }
 
     [Fact]

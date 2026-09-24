@@ -27,6 +27,13 @@ public sealed class WingmanSettings
     [JsonConverter(typeof(JsonStringEnumConverter<ElevationMode>))]
     public ElevationMode ElevationMode { get; set; } = ElevationMode.Auto;
 
+    /// <summary>
+    /// What the elevation prompt starts: <c>wingman.exe</c> directly, or Windows PowerShell running
+    /// it. An unrecognized value in the file fails the whole load, as for <see cref="ElevationMode"/>.
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter<ElevationLauncher>))]
+    public ElevationLauncher ElevationLauncher { get; set; } = ElevationLauncher.Direct;
+
     /// <summary>Keeps a batch running after one of its operations fails; when false, the rest are canceled.</summary>
     public bool ContinueOnFailure { get; set; } = true;
 
