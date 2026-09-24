@@ -61,6 +61,12 @@ dotnet build Wingman.sln
 dotnet test Wingman.sln
 ```
 
+### Local install
+
+`pwsh tools/Install-Local.ps1` publishes a single-file build to
+`%LOCALAPPDATA%\Programs\Wingman`, adds it to PATH, and registers the scheduled
+tasks. `-Uninstall` reverses it; `-NoSetup` skips registration.
+
 ## Run
 
 On Windows, against a real `winget`:
