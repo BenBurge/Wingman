@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="556" viewBox="0 0 880 556">
+<rect width="880" height="556" rx="12" fill="#0E1117"/>
+<g transform="translate(8 8)">
+<rect width="864" height="540" fill="#171B26"/>
+<rect x="261" y="18" width="108" height="18" fill="#F0B54A"/>
+<g font-family="Cascadia Mono, Consolas, 'JetBrains Mono', monospace" font-size="15">
+<text x="0" y="14" fill="#3A4258" textLength="18" xml:space="preserve">┌─</text>
+<text x="27" y="14" fill="#D8DEE9" textLength="63" xml:space="preserve" font-weight="bold">Wingman</text>
+<text x="99" y="14" fill="#3A4258" textLength="594" xml:space="preserve">──────────────────────────────────────────────────────────────────</text>
+<text x="702" y="14" fill="#6C7590" textLength="135" xml:space="preserve">winget 1.29.380</text>
+<text x="846" y="14" fill="#3A4258" textLength="18" xml:space="preserve">─┐</text>
+<text x="0" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="27" y="32" fill="#D8DEE9" textLength="117" xml:space="preserve">Installed 214</text>
+<text x="153" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="171" y="32" fill="#D8DEE9" textLength="72" xml:space="preserve">Discover</text>
+<text x="252" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="270" y="32" fill="#171B26" textLength="90" xml:space="preserve" font-weight="bold">Updates 17</text>
+<text x="369" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="387" y="32" fill="#D8DEE9" textLength="63" xml:space="preserve">History</text>
+<text x="459" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="477" y="32" fill="#D8DEE9" textLength="72" xml:space="preserve">Settings</text>
+<text x="855" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="50" fill="#3A4258" textLength="864" xml:space="preserve">├──────────────────────────────────────────────────────────────────────────────────────────────┤</text>
+<text x="0" y="68" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="68" fill="#D8DEE9" textLength="117" xml:space="preserve" font-weight="bold">Running batch</text>
+<text x="153" y="68" fill="#6C7590" textLength="54" xml:space="preserve">2 of 2</text>
+<text x="603" y="68" fill="#D8DEE9" textLength="144" xml:space="preserve">elevated helper:</text>
+<text x="756" y="68" fill="#6C7590" textLength="90" xml:space="preserve">not needed</text>
+<text x="855" y="68" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="86" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="86" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="104" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="104" fill="#7FC98A" textLength="9" xml:space="preserve">✓</text>
+<text x="36" y="104" fill="#D8DEE9" textLength="414" xml:space="preserve">AutoHotkey.AutoHotkey upgrade  2.0.26 → 2.0.28</text>
+<text x="504" y="104" fill="#7FC98A" textLength="36" xml:space="preserve">done</text>
+<text x="612" y="104" fill="#6C7590" textLength="45" xml:space="preserve">0.4 s</text>
+<text x="855" y="104" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="122" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="122" fill="#F0B54A" textLength="9" xml:space="preserve">▶</text>
+<text x="36" y="122" fill="#D8DEE9" textLength="351" xml:space="preserve">Vendor.WillFail       install  → latest</text>
+<text x="504" y="122" fill="#F0B54A" textLength="9" xml:space="preserve">⠼</text>
+<text x="855" y="122" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="140" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="140" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="158" fill="#3A4258" textLength="846" xml:space="preserve">│ ─ Log · Vendor.WillFail ────────────────────────────────────────────────────────────────────</text>
+<text x="855" y="158" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="176" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="176" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 28 of 40</text>
+<text x="855" y="176" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="194" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="194" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 29 of 40</text>
+<text x="855" y="194" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="212" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="212" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 30 of 40</text>
+<text x="855" y="212" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="230" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="230" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 31 of 40</text>
+<text x="855" y="230" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="248" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="248" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 32 of 40</text>
+<text x="855" y="248" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="266" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="266" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 33 of 40</text>
+<text x="855" y="266" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="284" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="284" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 34 of 40</text>
+<text x="855" y="284" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="302" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="302" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 35 of 40</text>
+<text x="855" y="302" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="320" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="320" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 36 of 40</text>
+<text x="855" y="320" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="338" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="338" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 37 of 40</text>
+<text x="855" y="338" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="356" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="356" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 38 of 40</text>
+<text x="855" y="356" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="374" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="374" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 39 of 40</text>
+<text x="855" y="374" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="392" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="392" fill="#D8DEE9" textLength="216" xml:space="preserve">Extracting file 40 of 40</text>
+<text x="855" y="392" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="410" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="410" fill="#6C7590" textLength="9" xml:space="preserve">$</text>
+<text x="36" y="410" fill="#D8DEE9" textLength="810" xml:space="preserve">winget install --id Vendor.WillFail --exact --disable-interactivity --accept-source-agree…</text>
+<text x="855" y="410" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="428" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="428" fill="#D8DEE9" textLength="477" xml:space="preserve">Found Vendor.WillFail [Vendor.WillFail] Version 1.0.0</text>
+<text x="855" y="428" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="446" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="446" fill="#D8DEE9" textLength="441" xml:space="preserve">This application is licensed to you by its owner.</text>
+<text x="855" y="446" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="464" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="464" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="482" fill="#3A4258" textLength="864" xml:space="preserve">├──────────────────────────────────────────────────────────────────────────────────────────────┤</text>
+<text x="0" y="500" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="500" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="518" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="518" fill="#F0B54A" textLength="27" xml:space="preserve" font-weight="bold">Esc</text>
+<text x="54" y="518" fill="#D8DEE9" textLength="144" xml:space="preserve">Cancel remaining</text>
+<text x="225" y="518" fill="#F0B54A" textLength="18" xml:space="preserve" font-weight="bold">↑↓</text>
+<text x="252" y="518" fill="#D8DEE9" textLength="90" xml:space="preserve">Scroll log</text>
+<text x="369" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">q</text>
+<text x="387" y="518" fill="#D8DEE9" textLength="36" xml:space="preserve">Quit</text>
+<text x="855" y="518" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="536" fill="#3A4258" textLength="864" xml:space="preserve">└──────────────────────────────────────────────────────────────────────────────────────────────┘</text>
+</g>
+</g>
+</svg>

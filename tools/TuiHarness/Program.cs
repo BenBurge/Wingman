@@ -12,9 +12,14 @@ using Wingman.Tui;
 
 if (args.Length < 2 || !int.TryParse(args[0], out var width) || !int.TryParse(args[1], out var height))
 {
-    Console.Error.WriteLine("usage: TuiHarness <width> <height> [Midnight|Daylight|Nord|Dracula] [--elevated | --route <route>]");
+    Console.Error.WriteLine("usage: TuiHarness <width> <height> [Midnight|Daylight|Nord|Dracula] [--elevated | --route <route>] [--svg <outputDir>]");
     return 2;
 }
+
+// --svg writes the frames of the steps named for README screenshots to <outputDir>/<name>.svg.
+const string SvgFlag = "--svg";
+var svgIndex = Array.IndexOf(args, SvgFlag);
+var svgDirectory = svgIndex >= 0 && svgIndex + 1 < args.Length ? Path.GetFullPath(args[svgIndex + 1]) : null;
 
 // The normal run ends by launching the harness again once per child scenario, each appending its
 // frames to the same out.txt: --elevated tells the shell it already runs as administrator, and
@@ -284,7 +289,7 @@ Step[] elevatedSteps =
 Step[] mainSteps =
 [
     new(100, "Installed loading", () => { }),
-    new(1500, "Installed loaded, details for the first row", () => { }, WithColors: true, Verify: () =>
+    new(1500, "Installed loaded, details for the first row", () => { }, WithColors: true, Screenshot: "installed", Verify: () =>
     {
         Check("tab strip shows Installed 213 as soon as it loads", ScreenHas(" Installed 213 "));
         Check("tab strip already shows Updates 17, loaded in the background before Updates was ever shown", ScreenHas(" Updates 17 "));
@@ -444,7 +449,9 @@ Step[] mainSteps =
         Check("install action", BatchRow(SlowClient.FailingId).Contains("install  → latest"));
         Check("install waiting", BatchGlyph(SlowClient.FailingId) == '·' && BatchRow(SlowClient.FailingId).Contains("waiting"));
     }),
-    new(600, "mid-batch: one done, one running", () => { }, WithColors: true, Verify: () =>
+    new(600, "mid-batch: one done, one running", () => { }, WithColors: true, Screenshot: "batch",
+        Until: () => BatchGlyph("AutoHotkey.AutoHotkey") == '✓' && BatchGlyph(SlowClient.FailingId) == '▶' && HasBarOrSpinner(BatchRow(SlowClient.FailingId)),
+        Verify: () =>
     {
         Check("title counts the running one", ScreenHas(" Running batch  2 of 2"));
         Check("AutoHotkey done", BatchGlyph("AutoHotkey.AutoHotkey") == '✓' && BatchRow("AutoHotkey.AutoHotkey").Contains("done"));
@@ -852,7 +859,7 @@ Step[] mainSteps =
         Check("three marked rows", MarkedRowCount() == 3);
     }),
     new(50, "filter Docker, p, Down, Enter: hold it", () => { screen.Press(new Key('/')); screen.Type("Docker"); screen.Press(Key.Enter); screen.Press(Key.P); screen.Press(Key.CursorDown); screen.Press(Key.Enter); }),
-    new(150, "clear the filter, a: marks all but held and explicit", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(Key.A); }, Verify: () =>
+    new(150, "clear the filter, a: marks all but held and explicit", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(Key.A); }, Screenshot: "updates", Verify: () =>
     {
         Check("count with held", ScreenHas("15 available · 13 marked · 1 held"));
         Check("held row not marked", !AnyMarkedRow('⊘'));
@@ -1133,6 +1140,7 @@ Step[] mainSteps =
         Check("defaults", ScreenHas(" Defaults") && ScreenHas("   Install scope             (•) default  ( ) user  ( ) machine"));
         Check("default flags", ScreenHas("[x] Accept package agreements   [x] Include unknown versions"));
         Check("elevation radio and continue on failure", ScreenHas("   " + "Elevation".PadRight(26) + "(•) Auto  ( ) Always  ( ) Never   [x] Continue on failure"));
+        Check("elevation launcher radio", ScreenHas("   " + "Elevate via".PadRight(26) + "(•) wingman.exe  ( ) PowerShell (for Admin By Request whitelists)"));
         Check("restart action", ScreenHas("   ⏎ Restart as administrator") && !ScreenHas("Windows only") && !ScreenHas("already administrator"));
         Check("theme row", ScreenHas("   Theme                     (•) Midnight  ( ) Daylight  ( ) Nord  ( ) Dracula  ( ) Auto"));
         Check("no phase 3 placeholders", !ScreenHas("phase 3"));
@@ -1193,6 +1201,18 @@ Step[] mainSteps =
         Check("Auto picked", ScreenHas("(•) Auto  ( ) Always  ( ) Never"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationMode\": \"auto\"", StringComparison.Ordinal));
         Check("continue on failure has focus", Focused() == nameof(CheckField));
+    }),
+    new(50, "click PowerShell: the elevation launcher is saved", () => ClickText("( ) PowerShell"), Verify: () =>
+    {
+        Check("PowerShell picked", ScreenHas("( ) wingman.exe  (•) PowerShell (for Admin By Request whitelists)"));
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationLauncher\": \"powerShell\"", StringComparison.Ordinal));
+        Check("in effect", shell.Settings.ElevationLauncher == ElevationLauncher.PowerShell);
+    }),
+    new(50, "click wingman.exe: the direct launch again, focus on the launcher row", () => ClickText("( ) wingman.exe"), Verify: () =>
+    {
+        Check("wingman.exe picked", ScreenHas("(•) wingman.exe  ( ) PowerShell"));
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationLauncher\": \"direct\"", StringComparison.Ordinal));
+        Check("launcher row has focus", Focused() == nameof(OptionRow));
     }),
     new(50, "Tab x10, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Tab, 10); screen.Press(Key.Enter); }, Verify: () =>
     {
@@ -1472,7 +1492,7 @@ Step[] unknownRouteSteps =
         var registerX = registerY >= 0 ? screen.Rows()[registerY].IndexOf("⏎ Register", StringComparison.Ordinal) : -1;
         Check("drawn dim", registerY >= 0 && screen.AttributeAt(registerX, registerY) == theme.On(theme.Dim).ToString());
     }),
-    new(50, "unknown route: Tab x16 from Install scope skips the dim actions", () => screen.Press(Key.Tab, 16), Verify: () =>
+    new(50, "unknown route: Tab x17 from Install scope skips the dim actions", () => screen.Press(Key.Tab, 17), Verify: () =>
     {
         var restartY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Restart as administrator", StringComparison.Ordinal));
         Check("Export, then Restart as administrator", restartY >= 0 && screen.AttributeAt(4, restartY) == theme.Selected.ToString());
@@ -1522,6 +1542,14 @@ void FinishStep(Step step, Stopwatch waited)
     }
 
     screen.Dump($"{step.Label} | focused={Focused()}", step.WithColors);
+    if (svgDirectory is not null && step.Screenshot is not null)
+    {
+        Directory.CreateDirectory(svgDirectory);
+        var svgPath = Path.Combine(svgDirectory, step.Screenshot + ".svg");
+        File.WriteAllText(svgPath, SvgScreenshot.Render(app.Driver!.Contents!, theme));
+        screen.Log("wrote " + svgPath);
+    }
+
     step.Verify?.Invoke();
     next++;
     if (next < steps.Length && shell.Window.IsRunning)
@@ -1613,4 +1641,5 @@ foreach (var childArgs in childRuns)
 
 return failedChecks == 0 && childrenPassed ? 0 : 1;
 
-internal sealed record Step(int DelayMs, string Label, Action Act, bool WithColors = false, Action? Verify = null, Func<bool>? Until = null);
+/// <param name="Screenshot">The file name, without extension, that <c>--svg</c> writes this step's frame to.</param>
+internal sealed record Step(int DelayMs, string Label, Action Act, bool WithColors = false, Action? Verify = null, Func<bool>? Until = null, string? Screenshot = null);
