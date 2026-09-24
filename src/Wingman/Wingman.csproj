@@ -25,11 +25,10 @@
   </PropertyGroup>
 
   <!--
-    PublishReadyToRun was tried for issue #81 and measured worse, not better: warm "wingman
-    version" startup went from ~233ms to ~443ms (a compressed single-file publish has to decompress
-    the much larger R2R native code sections on every launch, which costs more than the JIT time it
-    saves for an app this small), and the exe grew about 18%. Left out on purpose; do not re-add
-    without re-measuring against a compressed single-file publish specifically.
+    ReadyToRun is off: with EnableCompressionInSingleFile, its larger native code sections are
+    decompressed on every launch, which costs more than the JIT time it saves for an app this size
+    (warm start about 440ms versus 230ms, exe about 18% larger). Re-measure against a compressed
+    single-file publish before turning it on.
   -->
 
   <ItemGroup>

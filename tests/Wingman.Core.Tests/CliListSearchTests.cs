@@ -138,6 +138,16 @@ public class CliListSearchTests : IDisposable
     }
 
     [Fact]
+    public async Task Search_WhenOutputIsATerminal_ShowsTheWaitNotice()
+    {
+        _cli.IsOutputRedirected = false;
+
+        await _cli.RunAsync("search", "git");
+
+        Assert.Contains("checking winget…", _cli.Error.ToString());
+    }
+
+    [Fact]
     public async Task Search_Json_FlagsInstalledPackages()
     {
         await _cli.RunAsync("search", "git", "--json");

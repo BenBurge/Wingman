@@ -54,21 +54,26 @@ internal sealed class ImportCommand : ICliCommand
         }
 
         var ct = context.Cancel;
-        var installed = await context.Client.ListInstalledAsync(ct);
-        var upgrades = await context.Client.ListUpgradesAsync(ct);
-        var importPlan = BundleImportPlanner.Plan(bundle, installed, upgrades);
-
         var applyOptions = !args.HasFlag("no-options");
         var builder = new PlanBuilder(context);
-        var operationsByRow = new QueuedOperation?[importPlan.Count];
+        IReadOnlyList<ImportPlanRow> importPlan;
+        QueuedOperation?[] operationsByRow;
         var operations = new List<QueuedOperation>();
-        for (var i = 0; i < importPlan.Count; i++)
+        using (WingetWait.Begin(context))
         {
-            var operation = await BuildOperationAsync(context, builder, importPlan[i], installed, applyOptions);
-            if (operation is not null)
+            var installed = await context.Client.ListInstalledAsync(ct);
+            var upgrades = await context.Client.ListUpgradesAsync(ct);
+            importPlan = BundleImportPlanner.Plan(bundle, installed, upgrades);
+
+            operationsByRow = new QueuedOperation?[importPlan.Count];
+            for (var i = 0; i < importPlan.Count; i++)
             {
-                operationsByRow[i] = operation;
-                operations.Add(operation);
+                var operation = await BuildOperationAsync(context, builder, importPlan[i], installed, applyOptions);
+                if (operation is not null)
+                {
+                    operationsByRow[i] = operation;
+                    operations.Add(operation);
+                }
             }
         }
 
