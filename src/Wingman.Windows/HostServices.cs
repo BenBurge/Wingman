@@ -20,9 +20,16 @@ public static class HostServices
     public static IToastSender? ToastSender(IProcessRunner runner) =>
         OperatingSystem.IsWindows() ? new ToastNotifier(runner) : null;
 
-    /// <summary>A <see cref="SelfUpdate.SelfUpdateStarter"/> on Windows; null elsewhere, where Wingman is not installed through winget.</summary>
+    /// <summary>A <see cref="SelfUpdate.SelfUpdateStarter"/> on Windows; null elsewhere, where there is no installer to run.</summary>
     public static ISelfUpdateStarter? SelfUpdateStarter() =>
         OperatingSystem.IsWindows() ? new SelfUpdate.SelfUpdateStarter() : null;
+
+    /// <summary>
+    /// On Windows, the folder the installer registered in its uninstall entry, or null when it
+    /// never ran; null elsewhere.
+    /// </summary>
+    public static string? InstallerRegisteredFolder() =>
+        OperatingSystem.IsWindows() ? SelfUpdate.InstallLocation.Read() : null;
 
     /// <summary>
     /// On Windows, whether this process has a console window (<c>GetConsoleWindow</c>), which it

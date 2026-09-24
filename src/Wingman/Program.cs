@@ -1,6 +1,8 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using Wingman.Cli;
 using Wingman.Core.Elevation;
+using Wingman.Core.SelfUpdate;
 using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Wingman.Tui;
@@ -29,6 +31,11 @@ if (args is ["--elevated-worker", ..])
 
 var isFake = args.Contains("--fake");
 
+// One client for the whole process, as HttpClient is meant to be shared. The timeout covers each
+// request up to its response headers, so a large installer download is not cut off by it.
+var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+var rid = ReleaseRid(RuntimeInformation.RuntimeIdentifier);
+
 if (CliRunner.IsHeadless(args))
 {
     UseUtf8Output();
@@ -48,8 +55,12 @@ if (CliRunner.IsHeadless(args))
         SetupExecutor = HostServices.SetupExecutor(processRunner),
         ToastSender = HostServices.ToastSender(processRunner),
         SelfUpdateStarter = HostServices.SelfUpdateStarter(),
+        ReleaseSource = new GitHubReleaseSource(http),
+        UpdateDownloader = new UpdateDownloader(http),
+        InstallerRegisteredFolder = HostServices.InstallerRegisteredFolder(),
+        Rid = rid,
         TrayRunner = TrayHost.Run,
-        TuiLauncher = (route, _) => Task.FromResult(RunTui(isFake, route)),
+        TuiLauncher = (route, _) => Task.FromResult(RunTui(isFake, route, http, rid)),
         WindowSpawner = HostServices.WindowSpawner,
         ElevationFactory = ElevationSupport.Factory,
         ProcessIsElevated = ElevationSupport.IsElevated ?? false,
@@ -67,9 +78,9 @@ if (unrecognizedArgs.Length > 0)
     return ExitCodes.Usage;
 }
 
-return RunTui(isFake, startRoute: null);
+return RunTui(isFake, startRoute: null, http, rid);
 
-static int RunTui(bool isFake, string? startRoute)
+static int RunTui(bool isFake, string? startRoute, HttpClient http, string rid)
 {
     IWingetClient client = isFake ? new FakeWingetClient() : new WingetCliClient(new ProcessRunner());
 
@@ -91,12 +102,22 @@ static int RunTui(bool isFake, string? startRoute)
     {
         var runner = new ProcessRunner();
         services = new ShellServices(
-            HostServices.SetupExecutor(runner), HostServices.SelfUpdateStarter(), HostServices.ToastSender(runner), CliRunner.Version);
+            HostServices.SetupExecutor(runner), HostServices.SelfUpdateStarter(), HostServices.ToastSender(runner), CliRunner.Version)
+        {
+            Releases = new GitHubReleaseSource(http),
+            Downloader = new UpdateDownloader(http),
+            Rid = rid,
+        };
     }
 
     WingmanApp.Run(client, elevation, themeDetector, isElevated, restartAsAdministrator, services, startRoute);
     return 0;
 }
+
+// Releases publish one installer per architecture; anything that is not Arm64 runs the x64 one,
+// which Windows on Arm can also emulate.
+static string ReleaseRid(string runtimeIdentifier) =>
+    runtimeIdentifier.EndsWith("-arm64", StringComparison.OrdinalIgnoreCase) ? "win-arm64" : "win-x64";
 
 // Windows consoles start on the OEM code page, which cannot print the ✓ ✗ ⊘ ⚡ markers the
 // commands use. Setting it fails when the process has no console at all, and then nothing reads

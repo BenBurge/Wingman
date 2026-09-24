@@ -26,4 +26,25 @@ public sealed class WingmanState
     public bool Running { get; set; }
 
     public DateTimeOffset? LastBatch { get; set; }
+
+    /// <summary>
+    /// When the latest GitHub release was last read, so the TUI and the scheduled check share one
+    /// request every few hours; <c>null</c> if it never has been.
+    /// </summary>
+    public DateTimeOffset? LastUpdateCheck { get; set; }
+
+    /// <summary>The latest release's version without its <c>v</c>, or empty when none was found.</summary>
+    public string LatestVersion { get; set; } = "";
+
+    public string LatestTag { get; set; } = "";
+
+    public string LatestSetupUrl { get; set; } = "";
+
+    public string LatestSha256Url { get; set; } = "";
+
+    /// <summary>
+    /// The version <c>check --notify</c> started the installer for; the first check that runs as
+    /// that version announces the update with a toast and clears it.
+    /// </summary>
+    public string PendingUpdateVersion { get; set; } = "";
 }

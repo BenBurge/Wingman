@@ -2,6 +2,7 @@ using System.Globalization;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
+using Wingman.Core.SelfUpdate;
 using Wingman.Core.Settings;
 using Wingman.Core.Setup;
 using Wingman.Core.Winget;
@@ -76,15 +77,16 @@ internal sealed class SettingsTab : ScreenHostTab
         private const int CheckRow = 7;
         private const int AutoInstallRow = 8;
         private const int ToastRow = 9;
-        private const int AppearanceRow = 10;
-        private const int ThemeRow = 11;
-        private const int TrayRow = 12;
-        private const int TrayFlagsRow = 13;
-        private const int ToolsRow = 14;
-        private const int ToolItemsRow = 15;
-        private const int SetupRow = 16;
-        private const int RestartRow = 17;
-        private const int FooterRow = 19;
+        private const int SelfUpdateRow = 10;
+        private const int AppearanceRow = 11;
+        private const int ThemeRow = 12;
+        private const int TrayRow = 13;
+        private const int TrayFlagsRow = 14;
+        private const int ToolsRow = 15;
+        private const int ToolItemsRow = 16;
+        private const int SetupRow = 17;
+        private const int RestartRow = 18;
+        private const int FooterRow = 20;
 
         private const string IntervalPrefix = "every ";
         private const string IntervalSuffix = " hours";
@@ -109,7 +111,6 @@ internal sealed class SettingsTab : ScreenHostTab
 
         private const string RegisterQuestion = "Register Wingman's scheduled tasks, startup entry, and shortcut? (y/n)";
         private const string RemoveQuestion = "Remove Wingman's scheduled tasks, startup entry, and shortcut? (y/n)";
-        private const string SelfUpdateQuestion = "Quit Wingman and update it through winget? (y/n)";
 
         private static readonly string[] ScopeValues = ["", "user", "machine"];
         private static readonly ElevationMode[] ElevationValues = [ElevationMode.Auto, ElevationMode.Always, ElevationMode.Never];
@@ -130,6 +131,7 @@ internal sealed class SettingsTab : ScreenHostTab
         private readonly FormTextField _autoInstallTime;
         private readonly CheckField _toastOnUpdates;
         private readonly CheckField _toastOnBatch;
+        private readonly CheckField _autoUpdateWingman;
         private readonly OptionRow _themeOption;
         private readonly CheckField _showTrayIcon;
         private readonly CheckField _startTrayAtLogin;
@@ -149,6 +151,7 @@ internal sealed class SettingsTab : ScreenHostTab
         // Added once the startup check finds a newer release; drawn dim with the reason until then.
         private ActionField? _update;
         private bool _isRunningSetup;
+        private bool _isDownloadingUpdate;
 
         private Theme _theme;
 
@@ -201,6 +204,9 @@ internal sealed class SettingsTab : ScreenHostTab
             _toastOnBatch = Check("Toast when a batch finishes", toastOnBatchLeft, ToastRow, settings.ToastOnBatch);
             _toastOnBatch.Toggled += () => Save(() => settings.ToastOnBatch = _toastOnBatch.IsChecked);
 
+            _autoUpdateWingman = Check("Keep Wingman up to date automatically", FieldLeft, SelfUpdateRow, settings.AutoUpdateWingman);
+            _autoUpdateWingman.Toggled += () => Save(() => settings.AutoUpdateWingman = _autoUpdateWingman.IsChecked);
+
             _themeOption = new OptionRow(_theme, Theme.SettingNames) { X = FieldLeft, Y = ThemeRow };
             _themeOption.SelectedIndex = IndexOfIgnoringCase(Theme.SettingNames, settings.Theme);
             _themeOption.Picked += PickTheme;
@@ -244,7 +250,7 @@ internal sealed class SettingsTab : ScreenHostTab
             [
                 _scope, _acceptAgreements, _includeUnknown,
                 _elevation, _continueOnFailure, _launcher,
-                _interval, _checkAtLogin, _autoInstall, _autoInstallTime, _toastOnUpdates, _toastOnBatch,
+                _interval, _checkAtLogin, _autoInstall, _autoInstallTime, _toastOnUpdates, _toastOnBatch, _autoUpdateWingman,
                 _themeOption,
                 _showTrayIcon, _startTrayAtLogin,
                 _import, _export,
@@ -351,6 +357,7 @@ internal sealed class SettingsTab : ScreenHostTab
             DrawText(LabelLeft, AutoInstallRow, "Auto-install", normal, width);
             DrawText(FieldLeft + CheckField.WidthFor(AutoInstallLabel), AutoInstallRow, AutoInstallTimePrefix, normal, width);
             DrawBrackets(_autoInstallTime);
+            DrawText(LabelLeft, SelfUpdateRow, "Wingman", normal, width);
 
             DrawText(1, AppearanceRow, "Appearance", header, width);
             DrawText(LabelLeft, ThemeRow, "Theme", normal, width);
@@ -413,7 +420,7 @@ internal sealed class SettingsTab : ScreenHostTab
 
         private string UpdateNote()
         {
-            if (_shell.Services.SelfUpdate is null)
+            if (_shell.Services.SelfUpdate is null || _shell.Services.Releases is null)
             {
                 return WindowsOnly;
             }
@@ -423,7 +430,12 @@ internal sealed class SettingsTab : ScreenHostTab
                 return "checking…";
             }
 
-            return check.IsNewerAvailable ? $"{check.AvailableVersion} available" : "up to date";
+            if (check.Latest is not { } latest)
+            {
+                return "could not reach GitHub";
+            }
+
+            return check.IsNewerAvailable ? $"{latest.Version} available" : "up to date";
         }
 
         /// <summary>
@@ -685,13 +697,16 @@ internal sealed class SettingsTab : ScreenHostTab
         }
 
         /// <summary>
-        /// Asks before starting winget's upgrade of Wingman in a process that outlives this one, then
-        /// quits so winget can replace the executable; refused while a batch runs, since quitting
-        /// would cancel it.
+        /// Asks before downloading the newer release's installer, then verifies and starts it and
+        /// quits, since the installer stops every running Wingman to replace the executable; refused
+        /// while a batch runs, since quitting would cancel it.
         /// </summary>
         private void AskSelfUpdate()
         {
-            if (_shell.Services.SelfUpdate is not { } starter)
+            var services = _shell.Services;
+            if (services.SelfUpdate is not { } starter
+                || services.Downloader is not { } downloader
+                || _shell.SelfUpdateResult is not { IsNewerAvailable: true, Latest: { } latest })
             {
                 return;
             }
@@ -702,20 +717,70 @@ internal sealed class SettingsTab : ScreenHostTab
                 return;
             }
 
-            _shell.AskConfirm(SelfUpdateQuestion, () =>
+            if (_isDownloadingUpdate)
             {
+                _shell.SetStatus($"Wingman {latest.Version} is already downloading");
+                return;
+            }
+
+            _shell.AskConfirm($"Download Wingman {latest.Version} and restart? (y/n)", () => DownloadUpdate(starter, downloader, latest));
+        }
+
+        private void DownloadUpdate(ISelfUpdateStarter starter, UpdateDownloader downloader, ReleaseInfo latest)
+        {
+            _isDownloadingUpdate = true;
+            _shell.SetProgress($"Downloading Wingman {latest.Version}…");
+
+            var app = _shell.App;
+            var directory = _shell.Services.UpdateDirectory;
+            _ = Task.Run(async () =>
+            {
+                string? setupPath = null;
+                Exception? error = null;
                 try
                 {
-                    starter.StartDetachedUpgrade();
+                    setupPath = await downloader.DownloadVerifiedAsync(latest, directory, CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
-                    _shell.SetError($"Could not start the update: {ex.Message}");
-                    return;
+                    error = ex;
                 }
 
-                _shell.App.RequestStop();
+                app.Invoke(() =>
+                {
+                    _isDownloadingUpdate = false;
+                    InstallUpdate(starter, latest, setupPath, error);
+                });
             });
+        }
+
+        /// <summary>Starts the verified installer and quits, or says why it cannot.</summary>
+        private void InstallUpdate(ISelfUpdateStarter starter, ReleaseInfo latest, string? setupPath, Exception? error)
+        {
+            if (setupPath is null)
+            {
+                _shell.SetError($"Could not download Wingman {latest.Version}: {error?.Message}");
+                return;
+            }
+
+            // A batch started while the download ran would be cut off by quitting now.
+            if (_shell.IsBatchRunning)
+            {
+                _shell.SetError($"Wingman {latest.Version} is downloaded; choose Update Wingman again once the batch finishes");
+                return;
+            }
+
+            try
+            {
+                starter.StartInstaller(setupPath);
+            }
+            catch (Exception ex)
+            {
+                _shell.SetError($"Could not start the Wingman installer: {ex.Message}");
+                return;
+            }
+
+            _shell.App.RequestStop();
         }
     }
 }

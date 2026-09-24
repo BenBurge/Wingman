@@ -177,14 +177,6 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool PostMessageW(nint hwnd, uint message, nint wParam, nint lParam);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    public static extern nint FindWindowExW(nint parent, nint childAfter, string? className, string? windowName);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    public static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
-
     [DllImport("user32.dll", SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     public static extern nuint SetTimer(nint hwnd, nuint id, uint elapseMilliseconds, nint timerProc);

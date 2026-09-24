@@ -236,8 +236,8 @@ internal sealed class Shell
     /// <summary>The host's setup executor, self-update starter, toast sender, and version; each service may be null.</summary>
     public ShellServices Services { get; }
 
-    /// <summary>What the startup check found about a newer Wingman; null until it finishes, and always without a self-update starter.</summary>
-    public SelfUpdateCheck? SelfUpdateResult { get; private set; }
+    /// <summary>What the startup check found about a newer Wingman; null until it finishes, and always without a self-update starter or release source.</summary>
+    public UpdateCheck? SelfUpdateResult { get; private set; }
 
     /// <summary>Raised on the UI thread once <see cref="SelfUpdateResult"/> is set.</summary>
     public event Action? SelfUpdateChecked;
@@ -822,6 +822,9 @@ internal sealed class Shell
 
     /// <summary>Shows <paramref name="text"/> on the message line in the success color for a few seconds.</summary>
     public void SetSuccess(string text) => PostMessage(text, MessageTone.Ok, isTransient: true);
+
+    /// <summary>Shows <paramref name="text"/> on the message line until the next message, for work that may take a while.</summary>
+    public void SetProgress(string text) => PostMessage(text, MessageTone.Normal, isTransient: false);
 
     /// <summary>Shows <paramref name="text"/> on the message line in the error color until the next message.</summary>
     public void SetError(string text) => PostMessage(text, MessageTone.Error, isTransient: false);
@@ -1512,27 +1515,32 @@ internal sealed class Shell
     }
 
     /// <summary>
-    /// Asks winget on a background task whether a newer Wingman is published, when the host can
-    /// start the upgrade, and says so on the message line until the next message if one is.
+    /// Asks GitHub on a background task whether a newer Wingman is released, when the host can run
+    /// its installer, and says so on the message line until the next message if one is. The answer
+    /// is shared with the scheduled check through <c>state.json</c>, so a start within a few hours
+    /// of the last check makes no request.
     /// </summary>
     private void CheckForSelfUpdate()
     {
-        if (Services.SelfUpdate is null)
+        if (Services.SelfUpdate is null || Services.Releases is not { } releases)
         {
             return;
         }
 
         var version = Services.Version;
+        var rid = Services.Rid;
+        var state = WingmanApp.CreateStateStore();
         _ = Task.Run(async () =>
         {
-            var check = await SelfUpdateChecker.CheckAsync(_client, version, CancellationToken.None);
+            var check = await SelfUpdateChecker.CheckAsync(
+                releases, version, rid, state, SelfUpdateChecker.MaxAge, DateTimeOffset.Now, CancellationToken.None);
             App.Invoke(() =>
             {
                 SelfUpdateResult = check;
                 SelfUpdateChecked?.Invoke();
-                if (check.IsNewerAvailable)
+                if (check is { IsNewerAvailable: true, Latest: { } latest })
                 {
-                    PostMessage($"Wingman {check.AvailableVersion} is available · Settings → Update Wingman", MessageTone.Info, isTransient: false);
+                    PostMessage($"Wingman {latest.Version} is available · Settings → Update Wingman", MessageTone.Info, isTransient: false);
                 }
             });
         });

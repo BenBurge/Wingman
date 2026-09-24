@@ -96,8 +96,26 @@ public sealed class CliContext
     /// <summary>Shows a toast; null where there is no way to show one. The host sets it on Windows.</summary>
     public IToastSender? ToastSender { get; init; }
 
-    /// <summary>Starts the detached winget upgrade; null off Windows.</summary>
+    /// <summary>Runs a downloaded Wingman installer; null off Windows.</summary>
     public ISelfUpdateStarter? SelfUpdateStarter { get; init; }
+
+    /// <summary>See <see cref="CliHostServices.ReleaseSource"/>; null under <c>--fake</c>.</summary>
+    public GitHubReleaseSource? ReleaseSource { get; init; }
+
+    /// <summary>See <see cref="CliHostServices.UpdateDownloader"/>; null under <c>--fake</c>.</summary>
+    public UpdateDownloader? UpdateDownloader { get; init; }
+
+    /// <summary>See <see cref="CliHostServices.InstallerRegisteredFolder"/>.</summary>
+    public string? InstallerRegisteredFolder { get; init; }
+
+    /// <summary>See <see cref="CliHostServices.Rid"/>.</summary>
+    public string Rid { get; init; } = "win-x64";
+
+    /// <summary>Where self-update downloads installers to.</summary>
+    public string UpdateDirectory { get; init; } = UpdateDownloader.DefaultDirectory;
+
+    /// <summary>The clock the self-update cache is aged against.</summary>
+    public Func<DateTimeOffset> Now { get; init; } = () => DateTimeOffset.Now;
 
     /// <summary>See <see cref="CliHostServices.TrayRunner"/>.</summary>
     public Func<string, string, int?>? TrayRunner { get; init; }
@@ -160,6 +178,12 @@ public sealed class CliContext
             SetupExecutor = services.SetupExecutor,
             ToastSender = services.ToastSender,
             SelfUpdateStarter = services.SelfUpdateStarter,
+
+            // The fake is for trying Wingman out, so it never downloads or installs a real release.
+            ReleaseSource = isFake ? null : services.ReleaseSource,
+            UpdateDownloader = isFake ? null : services.UpdateDownloader,
+            InstallerRegisteredFolder = services.InstallerRegisteredFolder,
+            Rid = services.Rid,
             TrayRunner = services.TrayRunner,
             TuiLauncher = services.TuiLauncher,
             WindowSpawner = services.WindowSpawner,

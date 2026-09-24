@@ -59,7 +59,10 @@ options.
 - Scheduled update checks on an interval and at login, and optional daily auto-install.
 - Toasts with actions (Update all, Open, View log) that replace each other instead of piling up.
 - A tray icon whose badge shows updates available, work in progress, a failed run, or paused notifications.
-- Self-update through winget, from the TUI or `wingman self-update`.
+- Self-update from GitHub Releases: an installed Wingman downloads, verifies, and installs new releases on its own (Settings → Keep Wingman up to date automatically), or on demand from the TUI or `wingman self-update`.
+
+<p align="center"><img src="assets/screenshots/toasts.svg" width="400" alt="Wingman toast notifications: 19 updates available with Update all and Open buttons, and a batch-finished toast with View log"></p>
+<p align="center"><em>Native Windows toasts: Update all opens Wingman with every update marked and ready to run; View log opens History.</em></p>
 
 **Headless CLI**
 - Check, list, search, upgrade, install, export, import, and history from scripts, with `--json` output, `--dry-run`, `--yes`, and stable exit codes.

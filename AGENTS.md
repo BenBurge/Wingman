@@ -136,3 +136,4 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - The Inno uninstaller (`unins000.exe`) relaunches itself from `%TEMP%` and the first process returns at once, so tests poll for the install folder to disappear instead of waiting on the process.
 - `CloseWingman` in `[Code]` finds processes through `Win32_Process` because the setup is 32-bit and a 32-bit PowerShell cannot read a 64-bit process's path through `Get-Process`.
 - The `AppId` GUID keys the uninstall entry (`{GUID}_is1`, also the manifest's `ProductCode`); never change it.
+- `Wingman.Windows.SelfUpdate.InstallLocation` reads `InstallLocation` from `HKCU\...\Uninstall\{FC7D592F-76BD-4409-9F32-1C9EAF29A091}_is1`, a copy of the `AppId` in `installer/wingman.iss`; if the two ever differ, every installed copy is detected as portable and never updates itself.
