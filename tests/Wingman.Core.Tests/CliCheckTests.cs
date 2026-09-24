@@ -133,6 +133,39 @@ public class CliCheckTests : IDisposable
     }
 
     [Fact]
+    public async Task Check_WithNoUpgrades_MakesNoPinCalls()
+    {
+        var counting = new CountingWingetClient(_cli.Client) { UpgradesOverride = [] };
+        _cli.ClientOverride = counting;
+
+        var exitCode = await _cli.RunAsync("check");
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Equal(0, counting.PinsCalls);
+    }
+
+    [Fact]
+    public async Task Check_WithUpgrades_CallsListPinsOnce()
+    {
+        var counting = new CountingWingetClient(_cli.Client);
+        _cli.ClientOverride = counting;
+
+        await _cli.RunAsync("check");
+
+        Assert.Equal(1, counting.PinsCalls);
+    }
+
+    [Fact]
+    public async Task Check_WhenOutputIsATerminal_ShowsTheWaitNotice()
+    {
+        _cli.IsOutputRedirected = false;
+
+        await _cli.RunAsync("check");
+
+        Assert.Contains("checking winget…", _cli.Error.ToString());
+    }
+
+    [Fact]
     public async Task Check_ClearsRunningAndRecordsTheError_WhenWingetFails()
     {
         _cli.ClientOverride = new ScriptedWingetClient(_cli.Client)

@@ -83,10 +83,15 @@ internal sealed class CheckCommand : ICliCommand
 
     private static async Task<UpdatesView> ListUpdatesAsync(CliContext context)
     {
+        using var wait = WingetWait.Begin(context);
         try
         {
             var upgrades = await context.Client.ListUpgradesAsync(context.Cancel);
-            var pins = await context.Client.ListPinsAsync(context.Cancel);
+
+            // Nothing can be held or excluded when there is nothing to update, so skip the pin lookup.
+            IReadOnlyList<Pin> pins = upgrades.Count > 0
+                ? await context.Client.ListPinsAsync(context.Cancel)
+                : [];
             return UpdatesFilter.Apply(upgrades, pins, context.Options);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

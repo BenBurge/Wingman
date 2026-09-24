@@ -64,6 +64,38 @@ public class CliListSearchTests : IDisposable
     }
 
     [Fact]
+    public async Task List_WithNoMatch_MakesNoPinCalls()
+    {
+        var counting = new CountingWingetClient(_cli.Client);
+        _cli.ClientOverride = counting;
+
+        await _cli.RunAsync("list", "zzz-nothing");
+
+        Assert.Equal(0, counting.PinsCalls);
+    }
+
+    [Fact]
+    public async Task List_WithMatches_CallsListPinsOnce()
+    {
+        var counting = new CountingWingetClient(_cli.Client);
+        _cli.ClientOverride = counting;
+
+        await _cli.RunAsync("list", "git");
+
+        Assert.Equal(1, counting.PinsCalls);
+    }
+
+    [Fact]
+    public async Task List_WhenOutputIsATerminal_ShowsTheWaitNotice()
+    {
+        _cli.IsOutputRedirected = false;
+
+        await _cli.RunAsync("list");
+
+        Assert.Contains("checking winget…", _cli.Error.ToString());
+    }
+
+    [Fact]
     public async Task List_TruncatesCellsToFitTheWidth()
     {
         _cli.Width = 60;

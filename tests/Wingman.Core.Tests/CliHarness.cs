@@ -1,5 +1,6 @@
 using Wingman.Cli;
 using Wingman.Core.History;
+using Wingman.Core.Models;
 using Wingman.Core.Notifications;
 using Wingman.Core.Options;
 using Wingman.Core.SelfUpdate;
@@ -130,4 +131,49 @@ internal sealed class RecordingToastSender(List<ToastContent> toasts) : IToastSe
         toasts.Add(content);
         return Task.CompletedTask;
     }
+}
+
+/// <summary>
+/// Wraps a client to count <see cref="ListPinsAsync"/> calls, so a test can prove a command skipped
+/// the pin lookup when it had no rows that could be held.
+/// </summary>
+internal sealed class CountingWingetClient(IWingetClient inner) : IWingetClient
+{
+    public int PinsCalls { get; private set; }
+
+    /// <summary>Replaces what <see cref="ListUpgradesAsync"/> returns, so a test can make the upgrade list empty.</summary>
+    public IReadOnlyList<PackageRow>? UpgradesOverride { get; set; }
+
+    public Task<string> GetVersionAsync(CancellationToken ct) => inner.GetVersionAsync(ct);
+
+    public Task<IReadOnlyList<PackageRow>> SearchAsync(string query, CancellationToken ct) => inner.SearchAsync(query, ct);
+
+    public Task<IReadOnlyList<PackageRow>> ListInstalledAsync(CancellationToken ct) => inner.ListInstalledAsync(ct);
+
+    public Task<IReadOnlyList<PackageRow>> ListUpgradesAsync(CancellationToken ct) =>
+        UpgradesOverride is { } upgrades ? Task.FromResult(upgrades) : inner.ListUpgradesAsync(ct);
+
+    public Task<PackageDetails?> ShowAsync(string id, CancellationToken ct) => inner.ShowAsync(id, ct);
+
+    public Task<IReadOnlyList<string>> ListVersionsAsync(string id, CancellationToken ct) => inner.ListVersionsAsync(id, ct);
+
+    public Task<IReadOnlyList<Pin>> ListPinsAsync(CancellationToken ct)
+    {
+        PinsCalls++;
+        return inner.ListPinsAsync(ct);
+    }
+
+    public Task<OperationResult> InstallAsync(OperationRequest request, IProgress<string> output, CancellationToken ct) =>
+        inner.InstallAsync(request, output, ct);
+
+    public Task<OperationResult> UpgradeAsync(OperationRequest request, IProgress<string> output, CancellationToken ct) =>
+        inner.UpgradeAsync(request, output, ct);
+
+    public Task<OperationResult> UninstallAsync(OperationRequest request, IProgress<string> output, CancellationToken ct) =>
+        inner.UninstallAsync(request, output, ct);
+
+    public Task<OperationResult> PinAsync(string id, bool blocking, string? version, CancellationToken ct) =>
+        inner.PinAsync(id, blocking, version, ct);
+
+    public Task<OperationResult> UnpinAsync(string id, CancellationToken ct) => inner.UnpinAsync(id, ct);
 }

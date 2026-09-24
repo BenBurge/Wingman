@@ -24,6 +24,14 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
+  <!--
+    PublishReadyToRun was tried for issue #81 and measured worse, not better: warm "wingman
+    version" startup went from ~233ms to ~443ms (a compressed single-file publish has to decompress
+    the much larger R2R native code sections on every launch, which costs more than the JIT time it
+    saves for an app this small), and the exe grew about 18%. Left out on purpose; do not re-add
+    without re-measuring against a compressed single-file publish specifically.
+  -->
+
   <ItemGroup>
     <ProjectReference Include="..\Wingman.Cli\Wingman.Cli.csproj" />
     <ProjectReference Include="..\Wingman.Core\Wingman.Core.csproj" />
