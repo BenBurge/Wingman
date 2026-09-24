@@ -36,6 +36,7 @@ public class SettingsStoreTests : IDisposable
         Assert.False(settings.AutoInstall);
         Assert.Equal("03:00", settings.AutoInstallTime);
         Assert.Equal(new TimeOnly(3, 0), settings.AutoInstallTimeOfDay);
+        Assert.True(settings.AutoUpdateWingman);
         Assert.True(settings.ToastOnUpdates);
         Assert.True(settings.ToastOnBatch);
         Assert.True(settings.ShowTrayIcon);
@@ -61,6 +62,7 @@ public class SettingsStoreTests : IDisposable
             CheckAtLogin = false,
             AutoInstall = true,
             AutoInstallTime = "23:45",
+            AutoUpdateWingman = false,
             ToastOnUpdates = false,
             ToastOnBatch = false,
             ShowTrayIcon = false,
@@ -83,6 +85,7 @@ public class SettingsStoreTests : IDisposable
         Assert.True(loaded.AutoInstall);
         Assert.Equal("23:45", loaded.AutoInstallTime);
         Assert.Equal(new TimeOnly(23, 45), loaded.AutoInstallTimeOfDay);
+        Assert.False(loaded.AutoUpdateWingman);
         Assert.False(loaded.ToastOnUpdates);
         Assert.False(loaded.ToastOnBatch);
         Assert.False(loaded.ShowTrayIcon);
@@ -251,5 +254,6 @@ public class SettingsStoreTests : IDisposable
         Assert.Contains("\"elevationMode\": \"auto\"", text);
         Assert.Contains("\"continueOnFailure\"", text);
         Assert.Contains("\"theme\"", text);
+        Assert.Contains("\"autoUpdateWingman\": true", text);
     }
 }

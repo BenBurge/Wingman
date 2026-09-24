@@ -60,6 +60,12 @@ public sealed class WingmanSettings
     public TimeOnly AutoInstallTimeOfDay =>
         TryParseAutoInstallTime(AutoInstallTime, out var timeOfDay) ? timeOfDay : new TimeOnly(3, 0);
 
+    /// <summary>
+    /// Lets the scheduled check download and run a newer Wingman installer from GitHub Releases.
+    /// Only an installed copy updates itself; a portable one is left alone.
+    /// </summary>
+    public bool AutoUpdateWingman { get; set; } = true;
+
     public bool ToastOnUpdates { get; set; } = true;
 
     public bool ToastOnBatch { get; set; } = true;

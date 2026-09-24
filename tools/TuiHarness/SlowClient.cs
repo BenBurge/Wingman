@@ -1,5 +1,4 @@
 using Wingman.Core.Models;
-using Wingman.Core.SelfUpdate;
 using Wingman.Core.Winget;
 
 namespace TuiHarness;
@@ -8,14 +7,12 @@ namespace TuiHarness;
 /// <see cref="FakeWingetClient"/> with winget-like delays, plus rows the fixtures lack: a wide-character
 /// package at the end of the installed list whose <c>show</c> fails, one upgrade that needs
 /// explicit targeting, and a catalog package, <c>Vendor.WillFail</c>, whose install prints more lines than
-/// the log pane holds and then fails. Its <c>show</c> of Wingman itself reports <see cref="PublishedWingmanVersion"/>, so the
-/// startup self-update check finds a newer release.
+/// the log pane holds and then fails.
 /// </summary>
 internal sealed class SlowClient(IWingetClient inner) : IWingetClient
 {
     public const string WideId = "Wide.漢字漢字漢字漢字漢字";
     public const string FailingId = "Vendor.WillFail";
-    public const string PublishedWingmanVersion = "9.9.9";
     private const string ExplicitTargetingId = "Microsoft.VisualStudio.2022.Professional";
 
     // More than a 40-row terminal's log pane shows, so the wheel has something to scroll.
@@ -57,11 +54,6 @@ internal sealed class SlowClient(IWingetClient inner) : IWingetClient
         if (id == WideId)
         {
             throw new InvalidOperationException("simulated show failure");
-        }
-
-        if (id == SelfUpdateChecker.PackageId)
-        {
-            return new PackageDetails { Id = id, Name = "Wingman", Version = PublishedWingmanVersion };
         }
 
         var details = await inner.ShowAsync(id, ct);

@@ -1,5 +1,6 @@
 using System.Xml.Linq;
 using Wingman.Core.Models;
+using Wingman.Core.SelfUpdate;
 
 namespace Wingman.Core.Notifications;
 
@@ -52,6 +53,18 @@ public static class ToastBuilder
         var actions = new List<ToastAction> { new("View log", "wingman:history") };
 
         return new ToastContent(title, body, actions, "wingman-batch", "wingman");
+    }
+
+    /// <summary>
+    /// Announces that Wingman updated itself. Its one action, which is also where a click on the
+    /// toast goes, opens the release's GitHub page in the browser rather than Wingman.
+    /// </summary>
+    public static ToastContent WingmanUpdated(string version)
+    {
+        var tag = "v" + SelfUpdateChecker.NormalizeVersion(version);
+        var releaseUrl = $"https://github.com/BenBurge/Wingman/releases/tag/{tag}";
+        var actions = new List<ToastAction> { new("What's new", releaseUrl) };
+        return new ToastContent($"Wingman updated to {tag}", "The new version is installed and running.", actions, "wingman-self-update", "wingman");
     }
 
     public static string ToXml(ToastContent content)

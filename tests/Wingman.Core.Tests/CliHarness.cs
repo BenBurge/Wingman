@@ -51,6 +51,19 @@ internal sealed class CliHarness : IDisposable
 
     public ISelfUpdateStarter? SelfUpdateStarter { get; set; }
 
+    public GitHubReleaseSource? ReleaseSource { get; set; }
+
+    public UpdateDownloader? UpdateDownloader { get; set; }
+
+    public string? InstallerRegisteredFolder { get; set; }
+
+    public string Rid { get; set; } = "win-x64";
+
+    public DateTimeOffset Now { get; set; } = new(2026, 9, 24, 12, 0, 0, TimeSpan.Zero);
+
+    /// <summary>Where self-update downloads installers: inside <see cref="DataDirectory"/>, so <see cref="Dispose"/> removes them.</summary>
+    public string UpdateDirectory => Path.Combine(DataDirectory, "updates");
+
     public Func<string, string, int?>? TrayRunner { get; set; }
 
     public Func<string?, CancellationToken, Task<int>>? TuiLauncher { get; set; }
@@ -113,6 +126,12 @@ internal sealed class CliHarness : IDisposable
         ToastSender = new RecordingToastSender(Toasts),
         SetupExecutor = SetupExecutor,
         SelfUpdateStarter = SelfUpdateStarter,
+        ReleaseSource = ReleaseSource,
+        UpdateDownloader = UpdateDownloader,
+        InstallerRegisteredFolder = InstallerRegisteredFolder,
+        Rid = Rid,
+        UpdateDirectory = UpdateDirectory,
+        Now = () => Now,
         TrayRunner = TrayRunner,
         TuiLauncher = TuiLauncher,
         WindowSpawner = WindowSpawner,

@@ -189,6 +189,22 @@ public class ToastContentTests
         Assert.Equal(0, quoteCount % 2);
     }
 
+    // --- ToastBuilder.WingmanUpdated ---
+
+    [Fact]
+    public void WingmanUpdated_OpensTheReleasePageFromTheToastAndItsAction()
+    {
+        var content = ToastBuilder.WingmanUpdated("1.2.0");
+
+        Assert.Equal("Wingman updated to v1.2.0", content.Title);
+        Assert.Equal("wingman-self-update", content.Tag);
+        var action = Assert.Single(content.Actions);
+        Assert.Equal(new ToastAction("What's new", "https://github.com/BenBurge/Wingman/releases/tag/v1.2.0"), action);
+        var xml = XElement.Parse(ToastBuilder.ToXml(content));
+        Assert.Equal("https://github.com/BenBurge/Wingman/releases/tag/v1.2.0", xml.Attribute("launch")?.Value);
+        Assert.Equal("protocol", xml.Attribute("activationType")?.Value);
+    }
+
     [Fact]
     public void BuildPowerShellCommand_PackageNameWithSingleQuote_KeepsQuotesBalanced()
     {

@@ -1,6 +1,9 @@
 namespace Wingman.Core.Notifications;
 
-/// <summary>One button on a toast, deep-linking back into Wingman through the <c>wingman:</c> protocol.</summary>
+/// <summary>
+/// One button on a toast, deep-linking back into Wingman through the <c>wingman:</c> protocol, or
+/// opening a web page through an <c>https:</c> link.
+/// </summary>
 public sealed record ToastAction(string Content, string ProtocolUri);
 
 /// <summary>

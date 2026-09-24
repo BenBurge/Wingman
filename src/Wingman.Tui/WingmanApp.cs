@@ -4,6 +4,7 @@ using Wingman.Core.History;
 using Wingman.Core.Operations;
 using Wingman.Core.Options;
 using Wingman.Core.Settings;
+using Wingman.Core.State;
 using Wingman.Core.Winget;
 using Wingman.Tui.Tabs;
 
@@ -13,8 +14,8 @@ namespace Wingman.Tui;
 public static class WingmanApp
 {
     /// <summary>
-    /// Names a directory to keep <c>settings.json</c>, <c>package-options.json</c>, and the
-    /// <c>history</c> folder in instead of <c>%APPDATA%\Wingman</c>, so <c>tools/TuiHarness</c>
+    /// Names a directory to keep <c>settings.json</c>, <c>package-options.json</c>, <c>state.json</c>,
+    /// and the <c>history</c> folder in instead of <c>%APPDATA%\Wingman</c>, so <c>tools/TuiHarness</c>
     /// never reads or writes the real profile.
     /// </summary>
     internal const string DataDirectoryVariable = "WINGMAN_DATA_DIR";
@@ -65,6 +66,9 @@ public static class WingmanApp
 
     internal static PackageOptionsStore CreatePackageOptionsStore() =>
         DataDirectoryOverride() is { } directory ? new PackageOptionsStore(directory) : PackageOptionsStore.CreateDefault();
+
+    internal static StateStore CreateStateStore() =>
+        DataDirectoryOverride() is { } directory ? new StateStore(directory) : StateStore.CreateDefault();
 
     internal static HistoryStore CreateHistoryStore() =>
         DataDirectoryOverride() is { } directory ? new HistoryStore(Path.Combine(directory, "history")) : HistoryStore.CreateDefault();

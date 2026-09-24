@@ -6,6 +6,7 @@ using TuiHarness;
 using Wingman.Core.Bundles;
 using Wingman.Core.History;
 using Wingman.Core.Options;
+using Wingman.Core.SelfUpdate;
 using Wingman.Core.Settings;
 using Wingman.Core.Winget;
 using Wingman.Tui;
@@ -77,10 +78,19 @@ bool RecordRestart(IReadOnlyList<string> restartArgs)
 // unknown-route run gets no services at all, so its Settings frame shows what such a host draws.
 var setupExecutor = new RecordingSetupExecutor();
 var selfUpdate = new RecordingSelfUpdateStarter();
+var gitHub = new FakeGitHubHandler();
+using var http = new HttpClient(gitHub);
+var updateDirectory = Path.Combine(dataDirectory, "updates");
 ShellServices services;
 if (startRoute is null)
 {
-    services = new ShellServices(setupExecutor, selfUpdate, null, "1.0.0");
+    services = new ShellServices(setupExecutor, selfUpdate, null, "1.0.0")
+    {
+        Releases = new GitHubReleaseSource(http),
+        Downloader = new UpdateDownloader(http),
+        Rid = "win-x64",
+        UpdateDirectory = updateDirectory,
+    };
 }
 else if (startRoute is "update-all" or "history")
 {
@@ -163,6 +173,8 @@ string RightPaneText(IReadOnlyList<string> rows) => string.Join("\n", rows.Skip(
 
 // The right pane's text as one line, so a check can find a sentence the pane wraps at 96 columns.
 string RightPaneFlowed() => string.Join(" ", screen.Rows().Skip(3).Take(height - 6).Select(row => row[(Divider() + 1)..].Trim(' ', '│')).Where(text => text.Length > 0));
+// A Settings cell no field covers, on the Tray header row, so a highlighted option never hides the theme ground.
+Terminal.Gui.Drawing.Color? SettingsGround() => screen.BackgroundAt(width / 2, height / 2 + 1);
 int KeyBarX(string item) => screen.Rows()[height - 2].IndexOf(item, StringComparison.Ordinal);
 int TabStripX(string title) => screen.Rows()[1].IndexOf(" " + title + " ", StringComparison.Ordinal) + 1;
 bool IsCursorRow(int y) => y >= 0 && screen.AttributeAt(10, y) == theme.Selected.ToString();
@@ -295,7 +307,8 @@ Step[] mainSteps =
         Check("tab strip already shows Updates 17, loaded in the background before Updates was ever shown", ScreenHas(" Updates 17 "));
         Check("the startup self-update status", screen.Rows()[MessageY()].Contains(SelfUpdateStatus, StringComparison.Ordinal));
         Check("in the info color", screen.AttributeAt(2, MessageY()) == theme.On(theme.Info).ToString());
-        Check("the check compared the harness version", shell.SelfUpdateResult is { InstalledVersion: "1.0.0", AvailableVersion: SlowClient.PublishedWingmanVersion, IsNewerAvailable: true });
+        Check("the check compared the harness version", shell.SelfUpdateResult is { InstalledVersion: "1.0.0", Latest.Version: FakeGitHubHandler.PublishedVersion, IsNewerAvailable: true });
+        Check("GitHub asked once", gitHub.ReleaseRequests == 1);
     }),
     new(50, "3, r, 1, 3: force a reload on Updates, then leave and come straight back while it is in flight", () =>
     {
@@ -1147,6 +1160,7 @@ Step[] mainSteps =
         Check("check row", ScreenHas("   " + "Check for updates".PadRight(26) + "every [ 6   ] hours   [x] and at login"));
         Check("auto-install row", ScreenHas("   " + "Auto-install".PadRight(26) + "[ ] packages marked auto-update  at [ 03:00 ]"));
         Check("toast row", ScreenHas("   " + "".PadRight(26) + "[x] Toast when updates are found  [x] Toast when a batch finishes"));
+        Check("self-update row", ScreenHas("   " + "Wingman".PadRight(26) + "[x] Keep Wingman up to date automatically"));
         Check("tray row", ScreenHas(" Tray") && ScreenHas("   " + "".PadRight(26) + "[x] Show tray icon   [x] Start at login"));
         Check("tools", ScreenHas("   ⏎ Import bundle…   ⏎ Export bundle…   ⏎ Register scheduled tasks (wingman setup)"));
         Check("remove and update", ScreenHas("   ⏎ Remove scheduled tasks   ⏎ Update Wingman   9.9.9 available"));
@@ -1214,7 +1228,7 @@ Step[] mainSteps =
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationLauncher\": \"direct\"", StringComparison.Ordinal));
         Check("launcher row has focus", Focused() == nameof(OptionRow));
     }),
-    new(50, "Tab x10, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Tab, 10); screen.Press(Key.Enter); }, Verify: () =>
+    new(50, "Tab x11, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Tab, 11); screen.Press(Key.Enter); }, Verify: () =>
     {
         Check("import title", ScreenHas(" Import bundle  choose a .ubundle file"));
         Check("settings hidden", !ScreenHas(" Defaults"));
@@ -1222,6 +1236,12 @@ Step[] mainSteps =
     }),
     new(50, "Esc: the settings are back", () => screen.Press(Key.Esc), Verify: () =>
         Check("settings back", ScreenHas(" Defaults") && ScreenHas(" Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "))),
+    new(50, "click Keep Wingman up to date automatically: turned off and saved", () => ClickText("[x] Keep Wingman up to date automatically"), Verify: () =>
+    {
+        Check("unchecked", ScreenHas("[ ] Keep Wingman up to date automatically"));
+        Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"autoUpdateWingman\": false", StringComparison.Ordinal));
+        Check("in effect", !shell.Settings.AutoUpdateWingman);
+    }),
     new(50, "click Restart as administrator: the question", () => ClickText("⏎ Restart as administrator"), Verify: () =>
         Check("question", ScreenHas(Shell.RestartQuestionText))),
     new(50, "y: the restart is declined and Wingman keeps running", () => screen.Press(Key.Y), Verify: () =>
@@ -1235,7 +1255,7 @@ Step[] mainSteps =
     {
         Check("Daylight picked", ScreenHas("(•) Daylight"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"theme\": \"Daylight\"", StringComparison.Ordinal));
-        Check("Daylight ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Daylight.Background);
+        Check("Daylight ground", SettingsGround() == Theme.Daylight.Background);
         Check("no Midnight ground left", !screen.AnyBackground(Theme.Midnight.Background));
     }),
     new(50, "4: the History table is in Daylight too", () => screen.Press(new Key('4')), WithColors: true, Verify: () =>
@@ -1248,17 +1268,17 @@ Step[] mainSteps =
     new(50, "5, Right, Space: Nord", () => { screen.Press(new Key('5')); screen.Press(Key.CursorRight); screen.Press(Key.Space); }, WithColors: true, Verify: () =>
     {
         Check("Nord picked", ScreenHas("(•) Nord"));
-        Check("Nord ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Nord.Background);
+        Check("Nord ground", SettingsGround() == Theme.Nord.Background);
     }),
     new(50, "Right, Space: Dracula", () => { screen.Press(Key.CursorRight); screen.Press(Key.Space); }, WithColors: true, Verify: () =>
     {
         Check("Dracula picked", ScreenHas("(•) Dracula"));
-        Check("Dracula ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Dracula.Background);
+        Check("Dracula ground", SettingsGround() == Theme.Dracula.Background);
     }),
     new(50, "click Midnight: back to the default", () => ClickText("( ) Midnight"), Verify: () =>
     {
         Check("Midnight picked", ScreenHas("(•) Midnight"));
-        Check("Midnight ground", screen.BackgroundAt(width / 2, height / 2) == Theme.Midnight.Background);
+        Check("Midnight ground", SettingsGround() == Theme.Midnight.Background);
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"theme\": \"Midnight\"", StringComparison.Ordinal));
     }),
     new(50, "click the interval box, retype it as 12, Tab: saved", () =>
@@ -1441,11 +1461,14 @@ Step[] mainSteps =
         Check("time row", ScreenHas("at [ 03:00 ]"))),
     new(50, "click Update Wingman: the question", () => ClickText("⏎ Update Wingman"), Verify: () =>
     {
-        Check("question", ScreenHas("Quit Wingman and update it through winget? (y/n)"));
-        Check("nothing started yet", selfUpdate.Calls == 0);
+        Check("question", ScreenHas("Download Wingman 9.9.9 and restart? (y/n)"));
+        Check("nothing started yet", selfUpdate.SetupPaths.Count == 0);
     }),
-    new(50, "y: the upgrade starts and Wingman quits", () => screen.Press(Key.Y), Verify: () =>
-        Check("the starter was called once", selfUpdate.Calls == 1)),
+
+    // The download finishes on a background task and its result reaches the UI thread only after
+    // this step, so the frame shows the status and the final check after the run sees the start.
+    new(50, "y: the download starts, then the installer starts and Wingman quits", () => screen.Press(Key.Y), Verify: () =>
+        Check("downloading status", screen.Rows()[MessageY()].Contains("Downloading Wingman 9.9.9…", StringComparison.Ordinal))),
 ];
 
 // Opened on update-all: Updates marks what a would and asks to run it, and y runs the batch.
@@ -1492,7 +1515,7 @@ Step[] unknownRouteSteps =
         var registerX = registerY >= 0 ? screen.Rows()[registerY].IndexOf("⏎ Register", StringComparison.Ordinal) : -1;
         Check("drawn dim", registerY >= 0 && screen.AttributeAt(registerX, registerY) == theme.On(theme.Dim).ToString());
     }),
-    new(50, "unknown route: Tab x17 from Install scope skips the dim actions", () => screen.Press(Key.Tab, 17), Verify: () =>
+    new(50, "unknown route: Tab x18 from Install scope skips the dim actions", () => screen.Press(Key.Tab, 18), Verify: () =>
     {
         var restartY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Restart as administrator", StringComparison.Ordinal));
         Check("Export, then Restart as administrator", restartY >= 0 && screen.AttributeAt(4, restartY) == theme.Selected.ToString());
@@ -1573,17 +1596,23 @@ app.Run(shell.Window);
 shell.Window.Dispose();
 app.Dispose();
 
+// Before the data directory goes, since the installer was downloaded into it.
+if (!isChildRun)
+{
+    var expectedSetupPath = Path.Combine(updateDirectory, FakeGitHubHandler.SetupName);
+    var startedSetup = selfUpdate.SetupPaths.Count == 1 ? selfUpdate.SetupPaths[0] : null;
+    Check("Update Wingman stopped the app after starting the installer", next == steps.Length && startedSetup is not null);
+    Check("the installer started from the downloaded path", startedSetup == expectedSetupPath);
+    Check("the downloaded file is the verified installer", startedSetup is not null
+        && File.Exists(startedSetup) && File.ReadAllBytes(startedSetup).SequenceEqual(FakeGitHubHandler.SetupBytes));
+}
+
 try
 {
     Directory.Delete(dataDirectory, recursive: true);
 }
 catch (IOException)
 {
-}
-
-if (!isChildRun)
-{
-    Check("Update Wingman stopped the app after starting the upgrade", next == steps.Length && selfUpdate.Calls == 1);
 }
 
 string runName;

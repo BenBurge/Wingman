@@ -56,8 +56,8 @@ internal sealed class PlanBuilder
                     continue;
                 }
 
-                // winget cannot replace wingman.exe while this process runs it; self-update
-                // upgrades it from a detached process after Wingman exits.
+                // winget cannot replace wingman.exe while this process runs it; self-update runs
+                // the release installer, which stops Wingman before replacing it.
                 if (string.Equals(row.Id, SelfUpdateChecker.PackageId, StringComparison.OrdinalIgnoreCase))
                 {
                     notes.Add($"skip {row.Id}: use wingman self-update");

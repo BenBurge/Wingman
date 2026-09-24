@@ -1,11 +1,12 @@
 namespace Wingman.Core.SelfUpdate;
 
-/// <summary>
-/// Starts <see cref="SelfUpdateCommand.DetachedUpgradeArguments"/> in a process that outlives this
-/// one. The implementation is Windows-only.
-/// </summary>
+/// <summary>Runs a downloaded Wingman installer. The implementation is Windows-only.</summary>
 public interface ISelfUpdateStarter
 {
-    /// <summary>Starts the upgrade and returns at once; the caller should exit so winget can replace the executable.</summary>
-    void StartDetachedUpgrade();
+    /// <summary>
+    /// Starts <paramref name="setupPath"/> silently and returns without waiting. The installer
+    /// closes the tray and every <c>wingman.exe</c> in the install folder, this process included,
+    /// so the caller must not rely on running for long afterward.
+    /// </summary>
+    void StartInstaller(string setupPath);
 }

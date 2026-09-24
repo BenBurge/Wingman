@@ -21,8 +21,20 @@ public sealed record CliHostServices
     /// <summary>Shows the toasts <c>check --notify</c> and <c>upgrade --notify</c> build.</summary>
     public IToastSender? ToastSender { get; init; }
 
-    /// <summary>Starts the detached winget upgrade for <c>wingman self-update</c>.</summary>
+    /// <summary>Runs the downloaded installer for <c>wingman self-update</c> and <c>check --notify</c>.</summary>
     public ISelfUpdateStarter? SelfUpdateStarter { get; init; }
+
+    /// <summary>Reads the latest Wingman release from GitHub.</summary>
+    public GitHubReleaseSource? ReleaseSource { get; init; }
+
+    /// <summary>Downloads and verifies a release's installer.</summary>
+    public UpdateDownloader? UpdateDownloader { get; init; }
+
+    /// <summary>The folder the installer registered, or null when Wingman was never installed by it.</summary>
+    public string? InstallerRegisteredFolder { get; init; }
+
+    /// <summary>The runtime whose installer self-update downloads: <c>win-x64</c> or <c>win-arm64</c>.</summary>
+    public string Rid { get; init; } = "win-x64";
 
     /// <summary>
     /// Runs the tray icon until it quits, given the executable path and the data directory, and
