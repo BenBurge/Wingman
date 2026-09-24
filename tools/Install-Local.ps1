@@ -71,14 +71,15 @@ $ProjectPath = Join-Path $RepoRoot 'src\Wingman\Wingman.csproj'
 $ExePath = Join-Path $InstallDir 'wingman.exe'
 
 # Add-Type only defines a .NET type in this process; it has no effect on the machine, so it
-# runs the same whether or not -DryRun is set.
+# runs the same whether or not -DryRun is set. The class must be public: PowerShell cannot
+# resolve an internal type by name.
 $NativeMethodsSource = @'
 using System;
 using System.Runtime.InteropServices;
 
 namespace Wingman.Install
 {
-    internal static class NativeMethods
+    public static class NativeMethods
     {
         public static readonly IntPtr HwndMessage = new IntPtr(-3);
         public const uint WM_CLOSE = 0x0010;
