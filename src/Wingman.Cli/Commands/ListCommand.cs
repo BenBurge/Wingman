@@ -25,16 +25,29 @@ internal sealed class ListCommand : ICliCommand
     public async Task<int> RunAsync(CliArgs args, CliContext context)
     {
         var query = args.Positionals.Count > 0 ? args.Positionals[0] : null;
-        var installed = await context.Client.ListInstalledAsync(context.Cancel);
-        var pins = await context.Client.ListPinsAsync(context.Cancel);
-
         var packages = new List<(PackageRow Row, UpdatePolicyKind Policy)>();
-        foreach (var row in installed)
+        using (WingetWait.Begin(context))
         {
-            if (query is null || Matches(row, query))
+            var installed = await context.Client.ListInstalledAsync(context.Cancel);
+            var matched = new List<PackageRow>();
+            foreach (var row in installed)
             {
-                var policy = UpdatePolicyResolver.Resolve(row, pins, context.Options.GetUpdatesOptions(row.Id));
-                packages.Add((row, policy));
+                if (query is null || Matches(row, query))
+                {
+                    matched.Add(row);
+                }
+            }
+
+            // The ⟳ marker and its underlying policy need pins and per-package options, which a
+            // filtered-to-nothing result has no use for.
+            if (matched.Count > 0)
+            {
+                var pins = await context.Client.ListPinsAsync(context.Cancel);
+                foreach (var row in matched)
+                {
+                    var policy = UpdatePolicyResolver.Resolve(row, pins, context.Options.GetUpdatesOptions(row.Id));
+                    packages.Add((row, policy));
+                }
             }
         }
 

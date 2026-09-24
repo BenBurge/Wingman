@@ -1,15 +1,17 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-    Renders the Wingman app icon and tray glyphs into assets/.
+    Renders the Wingman app icon, tray glyphs, logo, and social preview into assets/.
 
 .DESCRIPTION
     Draws the Wingman "W" glyph (a single 2-unit stroke on a 16-unit grid,
     per docs/DESIGN.md "Distribution and background pieces" and the tray
     icon mockup in docs/mockups/wingman-screens.html) at each required
     pixel size, composes multi-resolution ICO files by hand, and writes
-    them under assets/. Re-run any time the glyph or palette changes;
-    every file is overwritten in place.
+    them under assets/. It also writes PNGs for the README and GitHub: the
+    app icon, the bare glyph as a logo, and the 1280x640 social preview
+    image. Re-run any time the glyph or palette changes; every file is
+    overwritten in place.
 
 .NOTES
     Requires Windows (System.Drawing / GDI+ is not available cross-platform).
@@ -36,6 +38,8 @@ $ColorDark = [System.Drawing.ColorTranslator]::FromHtml('#171B26')
 $ColorWhite = [System.Drawing.Color]::White
 $ColorGray = [System.Drawing.ColorTranslator]::FromHtml('#6C7590')
 $ColorRed = [System.Drawing.ColorTranslator]::FromHtml('#E5707A')
+$ColorTitle = [System.Drawing.ColorTranslator]::FromHtml('#D8DEE9')
+$ColorTagline = [System.Drawing.ColorTranslator]::FromHtml('#8FA3C7')
 
 # Badge geometry, in 16-unit grid units: a diameter-6 circle in the
 # bottom-right quadrant with a 1-unit transparent gap separating it from
@@ -250,10 +254,158 @@ New-IconSet -Path (Join-Path $trayDir 'wingman-tray-paused.ico') -Sizes $traySiz
     Add-Glyph -Graphics $g -Color $ColorGray
 }
 
+function Save-Png {
+    param([System.Drawing.Bitmap]$Bitmap, [string]$Path)
+    $Bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    Write-Host "Wrote $Path ($($Bitmap.Width)x$($Bitmap.Height))"
+}
+
+function Split-GreedyLines {
+    # Packs tokens joined by $Separator into lines no wider than $MaxWidth,
+    # so a wrapped line never starts or ends on a separator.
+    param(
+        [System.Drawing.Graphics]$Graphics,
+        [System.Drawing.Font]$Font,
+        [string[]]$Tokens,
+        [string]$Separator,
+        [float]$MaxWidth
+    )
+    $format = [System.Drawing.StringFormat]::GenericTypographic
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $current = ''
+    foreach ($token in $Tokens) {
+        $candidate = if ($current) { $current + $Separator + $token } else { $token }
+        $width = $Graphics.MeasureString($candidate, $Font, [System.Drawing.PointF]::Empty, $format).Width
+        if ($current -and $width -gt $MaxWidth) {
+            $lines.Add($current)
+            $current = $token
+        }
+        else {
+            $current = $candidate
+        }
+    }
+    if ($current) { $lines.Add($current) }
+    return , $lines.ToArray()
+}
+
+function Split-TextLines {
+    # Wraps into as few lines as $MaxWidth allows, then narrows the width
+    # for as long as the line count holds, so the lines come out close to
+    # equal length instead of leaving a short orphan on the last one.
+    param(
+        [System.Drawing.Graphics]$Graphics,
+        [System.Drawing.Font]$Font,
+        [string[]]$Tokens,
+        [string]$Separator,
+        [float]$MaxWidth
+    )
+    $lineCount = (Split-GreedyLines -Graphics $Graphics -Font $Font -Tokens $Tokens -Separator $Separator -MaxWidth $MaxWidth).Count
+    $width = $MaxWidth
+    while ($width -gt 4) {
+        $narrower = Split-GreedyLines -Graphics $Graphics -Font $Font -Tokens $Tokens -Separator $Separator -MaxWidth ($width - 4)
+        if ($narrower.Count -ne $lineCount) { break }
+        $width -= 4
+    }
+    return , (Split-GreedyLines -Graphics $Graphics -Font $Font -Tokens $Tokens -Separator $Separator -MaxWidth $width)
+}
+
+# App icon as a PNG, for the README and anywhere an ICO does not fit.
+$appPng = New-GridGraphics -Size 256
+Add-Tile -Graphics $appPng.Graphics
+Add-Glyph -Graphics $appPng.Graphics -Color $ColorDark
+$appPng.Graphics.Dispose()
+Save-Png -Bitmap $appPng.Bitmap -Path (Join-Path $assetsDir 'wingman.png')
+$appPng.Bitmap.Dispose()
+
+# README logo: the bare amber glyph reads on both of GitHub's themes.
+$logoPng = New-GridGraphics -Size 512
+Add-Glyph -Graphics $logoPng.Graphics -Color $ColorAmber
+$logoPng.Graphics.Dispose()
+Save-Png -Bitmap $logoPng.Bitmap -Path (Join-Path $assetsDir 'wingman-logo.png')
+$logoPng.Bitmap.Dispose()
+
+# Social preview: GitHub's 1280x640 card. The tile and the text block to
+# its right share a vertical center, and the pair is centered horizontally
+# once the text has been wrapped and measured.
+$previewWidth = 1280
+$previewHeight = 640
+$margin = 112
+$tileSize = 360
+$textGap = 72
+
+$preview = New-Object System.Drawing.Bitmap $previewWidth, $previewHeight, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+$g = [System.Drawing.Graphics]::FromImage($preview)
+$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+$g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+$g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+$g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+$g.Clear($ColorDark)
+
+$pixel = [System.Drawing.GraphicsUnit]::Pixel
+$titleFont = New-Object System.Drawing.Font ('Segoe UI', [float]120, [System.Drawing.FontStyle]::Bold, $pixel)
+$taglineFont = New-Object System.Drawing.Font ('Segoe UI', [float]44, [System.Drawing.FontStyle]::Regular, $pixel)
+$featuresFont = New-Object System.Drawing.Font ('Segoe UI', [float]26, [System.Drawing.FontStyle]::Regular, $pixel)
+$format = [System.Drawing.StringFormat]::GenericTypographic
+
+$wrapWidth = $previewWidth - (2 * $margin) - $tileSize - $textGap
+$taglineLines = Split-TextLines -Graphics $g -Font $taglineFont -Separator ' ' -MaxWidth $wrapWidth `
+    -Tokens ('A keyboard-driven terminal UI for winget' -split ' ')
+$featureLines = Split-TextLines -Graphics $g -Font $featuresFont -Separator ' · ' -MaxWidth $wrapWidth `
+    -Tokens @('winget batches', 'elevation', 'update policies', 'bundles', 'scheduled checks', 'tray')
+
+# Each entry is one line: its font, color, and the space above it.
+$blocks = [System.Collections.Generic.List[object]]::new()
+$blocks.Add(@{ Text = 'Wingman'; Font = $titleFont; Color = $ColorTitle; Before = 0 })
+for ($i = 0; $i -lt $taglineLines.Count; $i++) {
+    $before = if ($i -eq 0) { 8 } else { 0 }
+    $blocks.Add(@{ Text = $taglineLines[$i]; Font = $taglineFont; Color = $ColorTagline; Before = $before })
+}
+for ($i = 0; $i -lt $featureLines.Count; $i++) {
+    $before = if ($i -eq 0) { 28 } else { 2 }
+    $blocks.Add(@{ Text = $featureLines[$i]; Font = $featuresFont; Color = $ColorGray; Before = $before })
+}
+
+$blockHeight = 0.0
+$blockWidth = 0.0
+foreach ($block in $blocks) {
+    $blockHeight += $block.Before + $block.Font.GetHeight($g)
+    $lineWidth = $g.MeasureString($block.Text, $block.Font, [System.Drawing.PointF]::Empty, $format).Width
+    $blockWidth = [Math]::Max($blockWidth, $lineWidth)
+}
+
+$tileLeft = [float](($previewWidth - ($tileSize + $textGap + $blockWidth)) / 2)
+$tileTop = [float](($previewHeight - $tileSize) / 2)
+$g.TranslateTransform($tileLeft, $tileTop)
+$g.ScaleTransform([float]($tileSize / 16.0), [float]($tileSize / 16.0))
+Add-Tile -Graphics $g
+Add-Glyph -Graphics $g -Color $ColorDark
+$g.ResetTransform()
+
+# GDI+ line height includes the font's internal leading and descent, which
+# leaves the visible text sitting low; the small upward nudge recenters it
+# on the tile optically.
+$opticalLift = 10
+$textLeft = [float]($tileLeft + $tileSize + $textGap)
+$y = [float](($previewHeight - $blockHeight) / 2 - $opticalLift)
+foreach ($block in $blocks) {
+    $y += $block.Before
+    $brush = New-Object System.Drawing.SolidBrush $block.Color
+    $g.DrawString($block.Text, $block.Font, $brush, $textLeft, $y, $format)
+    $brush.Dispose()
+    $y += $block.Font.GetHeight($g)
+}
+
+$titleFont.Dispose()
+$taglineFont.Dispose()
+$featuresFont.Dispose()
+$g.Dispose()
+Save-Png -Bitmap $preview -Path (Join-Path $assetsDir 'social-preview.png')
+$preview.Dispose()
+
 # --- Verification --------------------------------------------------------
 
 Write-Host ""
-Write-Host "Verifying generated icons..."
+Write-Host "Verifying generated assets..."
 
 $allFiles = @(
     (Join-Path $assetsDir 'wingman.ico'),
@@ -266,6 +418,27 @@ $allFiles = @(
 )
 
 $allOk = $true
+
+$expectedPngs = [ordered]@{
+    (Join-Path $assetsDir 'wingman.png')        = @(256, 256)
+    (Join-Path $assetsDir 'wingman-logo.png')   = @(512, 512)
+    (Join-Path $assetsDir 'social-preview.png') = @(1280, 640)
+}
+foreach ($file in $expectedPngs.Keys) {
+    $expectedWidth, $expectedHeight = $expectedPngs[$file]
+    $width = 0
+    $height = 0
+    if (Test-Path $file) {
+        $image = [System.Drawing.Image]::FromFile($file)
+        $width = $image.Width
+        $height = $image.Height
+        $image.Dispose()
+    }
+    $sizeOk = ($width -eq $expectedWidth -and $height -eq $expectedHeight)
+    $status = if ($sizeOk) { 'OK' } else { 'FAIL'; $allOk = $false }
+    Write-Host ("  {0,-4} {1} ({2}x{3})" -f $status, $file, $width, $height)
+}
+
 foreach ($file in $allFiles) {
     $exists = Test-Path $file
     $loads = $false
@@ -292,9 +465,9 @@ $countOk = ([BitConverter]::ToUInt16($appIconBytes, 4)) -eq 7
 Write-Host ("  {0,-4} wingman.ico header is 00 00 01 00 with image count 7" -f $(if ($headerOk -and $countOk) { 'OK' } else { 'FAIL'; $allOk = $false }))
 
 if (-not $allOk) {
-    Write-Error "Icon verification failed; see FAIL lines above."
+    Write-Error "Asset verification failed; see FAIL lines above."
     exit 1
 }
 
 Write-Host ""
-Write-Host "All icons generated and verified."
+Write-Host "All assets generated and verified."

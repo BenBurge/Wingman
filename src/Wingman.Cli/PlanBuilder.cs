@@ -37,6 +37,7 @@ internal sealed class PlanBuilder
     /// <c>AutoUpdatePackage</c>, for the scheduled auto-install.</param>
     public async Task<Plan> UpgradesAsync(IReadOnlyList<string> ids, bool all, bool autoOnly)
     {
+        using var wait = WingetWait.Begin(_context);
         var ct = _context.Cancel;
         var upgrades = await _context.Client.ListUpgradesAsync(ct);
         var pins = await _context.Client.ListPinsAsync(ct);
@@ -119,6 +120,7 @@ internal sealed class PlanBuilder
     /// </summary>
     public async Task<Plan> InstallsAsync(IReadOnlyList<string> ids, string? version)
     {
+        using var wait = WingetWait.Begin(_context);
         var installed = await _context.Client.ListInstalledAsync(_context.Cancel);
         var hasVersion = !string.IsNullOrEmpty(version);
 

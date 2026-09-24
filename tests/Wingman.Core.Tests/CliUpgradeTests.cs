@@ -27,6 +27,16 @@ public class CliUpgradeTests : IDisposable
     }
 
     [Fact]
+    public async Task Upgrade_WhenOutputIsATerminal_ShowsTheWaitNotice()
+    {
+        _cli.IsOutputRedirected = false;
+
+        await _cli.RunAsync("upgrade", "--all", "--dry-run");
+
+        Assert.Contains("checking winget…", _cli.Error.ToString());
+    }
+
+    [Fact]
     public async Task UpgradeWithYes_RunsTheBatchWritesHistoryAndExits0()
     {
         var exitCode = await _cli.RunAsync("upgrade", "--yes", "AutoHotkey.AutoHotkey");
@@ -198,6 +208,16 @@ public class CliUpgradeTests : IDisposable
 
         string[] expected = ["skip Git.Git: already up to date", "skip Vendor.Missing: not installed", "Nothing to do."];
         Assert.Equal(expected, _cli.OutputLines);
+    }
+
+    [Fact]
+    public async Task Install_WhenOutputIsATerminal_ShowsTheWaitNotice()
+    {
+        _cli.IsOutputRedirected = false;
+
+        await _cli.RunAsync("install", "7zip.7zip", "--dry-run");
+
+        Assert.Contains("checking winget…", _cli.Error.ToString());
     }
 
     [Fact]

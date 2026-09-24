@@ -51,7 +51,8 @@ public sealed class CliContext
 
     /// <summary>
     /// Standard output is not a terminal, so <c>open</c> cannot draw the TUI here and opens a new
-    /// window instead. True unless <see cref="Create(CliArgs, TextWriter, TextWriter, CliHostServices, CancellationToken)"/>
+    /// window instead, and <see cref="WingetWait"/> stays silent since there is no one watching a
+    /// transient line. True unless <see cref="Create(CliArgs, TextWriter, TextWriter, CliHostServices, CancellationToken)"/>
     /// finds an interactive console.
     /// </summary>
     public bool IsOutputRedirected { get; init; } = true;

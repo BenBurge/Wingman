@@ -71,19 +71,20 @@ internal sealed class SettingsTab : ScreenHostTab
         private const int DefaultFlagsRow = 2;
         private const int BatchesRow = 3;
         private const int BatchFlagsRow = 4;
-        private const int UpdatesRow = 5;
-        private const int CheckRow = 6;
-        private const int AutoInstallRow = 7;
-        private const int ToastRow = 8;
-        private const int AppearanceRow = 9;
-        private const int ThemeRow = 10;
-        private const int TrayRow = 11;
-        private const int TrayFlagsRow = 12;
-        private const int ToolsRow = 13;
-        private const int ToolItemsRow = 14;
-        private const int SetupRow = 15;
-        private const int RestartRow = 16;
-        private const int FooterRow = 18;
+        private const int LauncherRow = 5;
+        private const int UpdatesRow = 6;
+        private const int CheckRow = 7;
+        private const int AutoInstallRow = 8;
+        private const int ToastRow = 9;
+        private const int AppearanceRow = 10;
+        private const int ThemeRow = 11;
+        private const int TrayRow = 12;
+        private const int TrayFlagsRow = 13;
+        private const int ToolsRow = 14;
+        private const int ToolItemsRow = 15;
+        private const int SetupRow = 16;
+        private const int RestartRow = 17;
+        private const int FooterRow = 19;
 
         private const string IntervalPrefix = "every ";
         private const string IntervalSuffix = " hours";
@@ -113,6 +114,8 @@ internal sealed class SettingsTab : ScreenHostTab
         private static readonly string[] ScopeValues = ["", "user", "machine"];
         private static readonly ElevationMode[] ElevationValues = [ElevationMode.Auto, ElevationMode.Always, ElevationMode.Never];
         private static readonly string[] ElevationLabels = ["Auto", "Always", "Never"];
+        private static readonly ElevationLauncher[] LauncherValues = [ElevationLauncher.Direct, ElevationLauncher.PowerShell];
+        private static readonly string[] LauncherLabels = ["wingman.exe", "PowerShell (for Admin By Request whitelists)"];
 
         private readonly Shell _shell;
         private readonly OptionRow _scope;
@@ -120,6 +123,7 @@ internal sealed class SettingsTab : ScreenHostTab
         private readonly CheckField _includeUnknown;
         private readonly OptionRow _elevation;
         private readonly CheckField _continueOnFailure;
+        private readonly OptionRow _launcher;
         private readonly FormTextField _interval;
         private readonly CheckField _checkAtLogin;
         private readonly CheckField _autoInstall;
@@ -171,6 +175,11 @@ internal sealed class SettingsTab : ScreenHostTab
             var continueLeft = FieldLeft + OptionRow.WidthFor(ElevationLabels) + CheckGap.Length;
             _continueOnFailure = Check("Continue on failure", continueLeft, BatchFlagsRow, settings.ContinueOnFailure);
             _continueOnFailure.Toggled += () => Save(() => settings.ContinueOnFailure = _continueOnFailure.IsChecked);
+
+            // The host's elevation factory and restart read the saved setting at each prompt, so saving applies it.
+            _launcher = new OptionRow(_theme, LauncherLabels) { X = FieldLeft, Y = LauncherRow };
+            _launcher.SelectedIndex = Array.IndexOf(LauncherValues, settings.ElevationLauncher);
+            _launcher.Picked += () => Save(() => settings.ElevationLauncher = LauncherValues[_launcher.SelectedIndex]);
 
             _interval = TextBox(IntervalLeft, CheckRow, IntervalWidth, FormatHours(settings.CheckIntervalHours));
             _interval.HasFocusChanged += (_, _) => CommitOnLeave(_interval, CommitInterval);
@@ -234,7 +243,7 @@ internal sealed class SettingsTab : ScreenHostTab
             _fields =
             [
                 _scope, _acceptAgreements, _includeUnknown,
-                _elevation, _continueOnFailure,
+                _elevation, _continueOnFailure, _launcher,
                 _interval, _checkAtLogin, _autoInstall, _autoInstallTime, _toastOnUpdates, _toastOnBatch,
                 _themeOption,
                 _showTrayIcon, _startTrayAtLogin,
@@ -332,6 +341,7 @@ internal sealed class SettingsTab : ScreenHostTab
             DrawText(LabelLeft, ScopeRow, "Install scope", normal, width);
             DrawText(1, BatchesRow, "Batches", header, width);
             DrawText(LabelLeft, BatchFlagsRow, "Elevation", normal, width);
+            DrawText(LabelLeft, LauncherRow, "Elevate via", normal, width);
 
             DrawText(1, UpdatesRow, "Updates", header, width);
             DrawText(LabelLeft, CheckRow, "Check for updates", normal, width);

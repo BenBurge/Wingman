@@ -1,3 +1,5 @@
+using Wingman.Core.Models;
+
 namespace Wingman.Cli.Commands;
 
 /// <summary><c>wingman search</c>: winget's search results, with installed packages marked.</summary>
@@ -28,8 +30,13 @@ internal sealed class SearchCommand : ICliCommand
         }
 
         var query = args.Positionals[0];
-        var results = await context.Client.SearchAsync(query, context.Cancel);
-        var installed = await context.Client.ListInstalledAsync(context.Cancel);
+        IReadOnlyList<PackageRow> results;
+        IReadOnlyList<PackageRow> installed;
+        using (WingetWait.Begin(context))
+        {
+            results = await context.Client.SearchAsync(query, context.Cancel);
+            installed = await context.Client.ListInstalledAsync(context.Cancel);
+        }
 
         var installedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in installed)

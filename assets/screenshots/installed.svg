@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="556" viewBox="0 0 880 556">
+<rect width="880" height="556" rx="12" fill="#0E1117"/>
+<g transform="translate(8 8)">
+<rect width="864" height="540" fill="#171B26"/>
+<rect x="18" y="18" width="135" height="18" fill="#F0B54A"/>
+<rect x="9" y="108" width="504" height="18" fill="#F0B54A"/>
+<g font-family="Cascadia Mono, Consolas, 'JetBrains Mono', monospace" font-size="15">
+<text x="0" y="14" fill="#3A4258" textLength="18" xml:space="preserve">┌─</text>
+<text x="27" y="14" fill="#D8DEE9" textLength="63" xml:space="preserve" font-weight="bold">Wingman</text>
+<text x="99" y="14" fill="#3A4258" textLength="594" xml:space="preserve">──────────────────────────────────────────────────────────────────</text>
+<text x="702" y="14" fill="#6C7590" textLength="135" xml:space="preserve">winget 1.29.380</text>
+<text x="846" y="14" fill="#3A4258" textLength="18" xml:space="preserve">─┐</text>
+<text x="0" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="27" y="32" fill="#171B26" textLength="117" xml:space="preserve" font-weight="bold">Installed 213</text>
+<text x="153" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="171" y="32" fill="#D8DEE9" textLength="72" xml:space="preserve">Discover</text>
+<text x="252" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="270" y="32" fill="#D8DEE9" textLength="90" xml:space="preserve">Updates 17</text>
+<text x="369" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="387" y="32" fill="#D8DEE9" textLength="63" xml:space="preserve">History</text>
+<text x="459" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="477" y="32" fill="#D8DEE9" textLength="72" xml:space="preserve">Settings</text>
+<text x="855" y="32" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="50" fill="#3A4258" textLength="864" xml:space="preserve">├────────────────────────────────────────────────────────┬─────────────────────────────────────┤</text>
+<text x="0" y="68" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="68" fill="#D8DEE9" textLength="63" xml:space="preserve">Filter:</text>
+<text x="414" y="68" fill="#D8DEE9" textLength="90" xml:space="preserve">213 of 213</text>
+<text x="513" y="68" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="68" fill="#D8DEE9" textLength="135" xml:space="preserve" font-weight="bold">ActiveBatch V14</text>
+<text x="855" y="68" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="86" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="513" y="86" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="86" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="104" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="104" fill="#8FA3C7" textLength="36" xml:space="preserve">Name</text>
+<text x="252" y="104" fill="#8FA3C7" textLength="18" xml:space="preserve">Id</text>
+<text x="387" y="104" fill="#8FA3C7" textLength="63" xml:space="preserve">Version</text>
+<text x="513" y="104" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="104" fill="#D8DEE9" textLength="315" xml:space="preserve">Id         ARP\Machine\X64\{5EC2AC…</text>
+<text x="855" y="104" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="122" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="122" fill="#171B26" textLength="441" xml:space="preserve">ActiveBatch V14         ARP\Machine\X… 14.0.5.425</text>
+<text x="513" y="122" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="122" fill="#D8DEE9" textLength="189" xml:space="preserve">Version    14.0.5.425</text>
+<text x="855" y="122" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="140" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="140" fill="#D8DEE9" textLength="414" xml:space="preserve">Admin By Request Works… ARP\Machine\X… 8.7.1.0</text>
+<text x="513" y="140" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="140" fill="#D8DEE9" textLength="81" xml:space="preserve">Available</text>
+<text x="630" y="140" fill="#6C7590" textLength="9" xml:space="preserve">—</text>
+<text x="855" y="140" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="158" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="158" fill="#D8DEE9" textLength="459" xml:space="preserve">Adobe Acrobat Reader    Adobe.Acrobat… 26.002.21931</text>
+<text x="513" y="158" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="158" fill="#D8DEE9" textLength="315" xml:space="preserve">Publisher  ARP\Machine\X64\{5EC2AC…</text>
+<text x="855" y="158" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="176" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="176" fill="#D8DEE9" textLength="423" xml:space="preserve">Adobe Acrobat Reader    MSIX\AdobeAcr… 26.0.0.1</text>
+<text x="513" y="176" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="176" fill="#D8DEE9" textLength="162" xml:space="preserve">License    Unknown</text>
+<text x="855" y="176" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="194" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="194" fill="#D8DEE9" textLength="423" xml:space="preserve">Adobe Acrobat Reader    MSIX\AdobeAcr… 26.0.0.1</text>
+<text x="513" y="194" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="194" fill="#D8DEE9" textLength="315" xml:space="preserve">Homepage   https://example.invalid…</text>
+<text x="855" y="194" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="212" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="212" fill="#D8DEE9" textLength="441" xml:space="preserve">App Installer           Microsoft.App… 1.29.380.0</text>
+<text x="513" y="212" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="212" fill="#D8DEE9" textLength="54" xml:space="preserve">Source</text>
+<text x="630" y="212" fill="#6C7590" textLength="9" xml:space="preserve">—</text>
+<text x="855" y="212" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="230" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="230" fill="#D8DEE9" textLength="414" xml:space="preserve">Arctic Wolf Agent 2026… ARP\Machine\X… 26.1.47</text>
+<text x="513" y="230" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="230" fill="#D8DEE9" textLength="45" xml:space="preserve">Scope</text>
+<text x="630" y="230" fill="#6C7590" textLength="9" xml:space="preserve">—</text>
+<text x="855" y="230" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="248" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="248" fill="#D8DEE9" textLength="405" xml:space="preserve">Arctic Wolf Agent Cont… ARP\Machine\X… 1.3.51</text>
+<text x="513" y="248" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="248" fill="#D8DEE9" textLength="153" xml:space="preserve">Policy     update</text>
+<text x="855" y="248" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="266" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="266" fill="#D8DEE9" textLength="405" xml:space="preserve">AutoHotkey              AutoHotkey.Au… 2.0.26</text>
+<text x="513" y="266" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="266" fill="#D8DEE9" textLength="63" xml:space="preserve">Options</text>
+<text x="630" y="266" fill="#6C7590" textLength="63" xml:space="preserve">default</text>
+<text x="855" y="266" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="284" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="284" fill="#D8DEE9" textLength="423" xml:space="preserve">AV1 Video Extension     MSIX\Microsof… 2.0.30.0</text>
+<text x="513" y="284" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="284" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="302" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="302" fill="#D8DEE9" textLength="423" xml:space="preserve">AVC Encoder Video Exte… MSIX\Microsof… 1.1.47.0</text>
+<text x="513" y="302" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="302" fill="#8FA3C7" textLength="99" xml:space="preserve">Description</text>
+<text x="855" y="302" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="320" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="320" fill="#D8DEE9" textLength="414" xml:space="preserve">Azure Data CLI          Microsoft.Azu… 20.3.14</text>
+<text x="513" y="320" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="320" fill="#D8DEE9" textLength="288" xml:space="preserve">Fixture data; winget show output</text>
+<text x="855" y="320" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="338" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="338" fill="#D8DEE9" textLength="405" xml:space="preserve">Azure Data Studio       Microsoft.Azu… 1.52.0</text>
+<text x="513" y="338" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="531" y="338" fill="#D8DEE9" textLength="306" xml:space="preserve">was not captured for this package.</text>
+<text x="855" y="338" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="356" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="356" fill="#D8DEE9" textLength="423" xml:space="preserve">Azure Developer CLI     Microsoft.Azd  1.31.300</text>
+<text x="513" y="356" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="356" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="374" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="374" fill="#D8DEE9" textLength="423" xml:space="preserve">Azure Developer CLI     Microsoft.Azd  1.28.100</text>
+<text x="513" y="374" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="374" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="392" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="392" fill="#D8DEE9" textLength="441" xml:space="preserve">Cisco Secure Client - … ARP\Machine\X… 5.1.11.388</text>
+<text x="513" y="392" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="392" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="410" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="410" fill="#D8DEE9" textLength="450" xml:space="preserve">Claude                  Anthropic.Cla… 2.2553.13.0</text>
+<text x="513" y="410" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="410" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="428" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="428" fill="#D8DEE9" textLength="414" xml:space="preserve">Claude Code             Anthropic.Cla… 2.1.240</text>
+<text x="513" y="428" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="428" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="446" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="446" fill="#D8DEE9" textLength="459" xml:space="preserve">Command Palette         MSIX\Microsof… 0.12.12365.0</text>
+<text x="513" y="446" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="446" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="464" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="36" y="464" fill="#D8DEE9" textLength="450" xml:space="preserve">Company Portal          MSIX\Microsof… 11.2.2021.0</text>
+<text x="513" y="464" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="855" y="464" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="482" fill="#3A4258" textLength="864" xml:space="preserve">├────────────────────────────────────────────────────────┴─────────────────────────────────────┤</text>
+<text x="0" y="500" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="500" fill="#7CB4E8" textLength="486" xml:space="preserve">Wingman 9.9.9 is available · Settings → Update Wingman</text>
+<text x="855" y="500" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="518" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="18" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">u</text>
+<text x="36" y="518" fill="#D8DEE9" textLength="63" xml:space="preserve">Upgrade</text>
+<text x="126" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">x</text>
+<text x="144" y="518" fill="#D8DEE9" textLength="81" xml:space="preserve">Uninstall</text>
+<text x="252" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">p</text>
+<text x="270" y="518" fill="#D8DEE9" textLength="54" xml:space="preserve">Policy</text>
+<text x="351" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">␣</text>
+<text x="369" y="518" fill="#D8DEE9" textLength="36" xml:space="preserve">Mark</text>
+<text x="432" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">c</text>
+<text x="450" y="518" fill="#D8DEE9" textLength="45" xml:space="preserve">Clear</text>
+<text x="522" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">g</text>
+<text x="540" y="518" fill="#D8DEE9" textLength="27" xml:space="preserve">Run</text>
+<text x="594" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">/</text>
+<text x="612" y="518" fill="#D8DEE9" textLength="54" xml:space="preserve">Filter</text>
+<text x="693" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">?</text>
+<text x="711" y="518" fill="#D8DEE9" textLength="36" xml:space="preserve">Help</text>
+<text x="774" y="518" fill="#F0B54A" textLength="9" xml:space="preserve" font-weight="bold">q</text>
+<text x="792" y="518" fill="#D8DEE9" textLength="36" xml:space="preserve">Quit</text>
+<text x="855" y="518" fill="#3A4258" textLength="9" xml:space="preserve">│</text>
+<text x="0" y="536" fill="#3A4258" textLength="864" xml:space="preserve">└──────────────────────────────────────────────────────────────────────────────────────────────┘</text>
+</g>
+</g>
+</svg>
