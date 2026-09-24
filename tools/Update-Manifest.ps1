@@ -105,10 +105,14 @@ function Set-PackageVersion {
     # the \r pulled into a lookahead - matching it elsewhere would either fail to
     # anchor (outside the match) or consume the \r into the match and strip it from
     # the replaced text.
-    $updated = $content -replace '(?m)^PackageVersion:[ \t]*\S+[ \t]*(?=\r?$)', "PackageVersion: $Version"
-    if ($updated -eq $content) {
+    $pattern = '(?m)^PackageVersion:[ \t]*\S+[ \t]*(?=\r?$)'
+    # Checked by match rather than by comparing before and after, so a manifest that
+    # already carries this version is a no-op instead of an error.
+    if ($content -notmatch $pattern) {
         throw "Could not find a PackageVersion line in '$Path'."
     }
+
+    $updated = $content -replace $pattern, "PackageVersion: $Version"
 
     Write-Utf8NoBom -Path $Path -Content $updated
 }
