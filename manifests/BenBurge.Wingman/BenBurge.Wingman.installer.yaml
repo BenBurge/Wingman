@@ -2,18 +2,19 @@
 
 PackageIdentifier: BenBurge.Wingman
 PackageVersion: 0.1.0
-InstallerType: zip
-NestedInstallerType: portable
-NestedInstallerFiles:
-  - RelativeFilePath: wingman.exe
-    PortableCommandAlias: wingman
+InstallerType: inno
+Scope: user
+InstallerSwitches:
+  Custom: /CURRENTUSER
+UpgradeBehavior: install
+ProductCode: "{FC7D592F-76BD-4409-9F32-1C9EAF29A091}_is1"
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/BenBurge/Wingman/releases/download/v0.1.0/wingman-v0.1.0-win-x64.zip
+    InstallerUrl: https://github.com/BenBurge/Wingman/releases/download/v0.1.0/wingman-v0.1.0-win-x64-setup.exe
     # Placeholder until the first release is cut; see manifests/README.md.
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
   - Architecture: arm64
-    InstallerUrl: https://github.com/BenBurge/Wingman/releases/download/v0.1.0/wingman-v0.1.0-win-arm64.zip
+    InstallerUrl: https://github.com/BenBurge/Wingman/releases/download/v0.1.0/wingman-v0.1.0-win-arm64-setup.exe
     # Placeholder until the first release is cut; see manifests/README.md.
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
 ManifestType: installer

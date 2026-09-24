@@ -37,3 +37,106 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}
           path: "**/TestResults/*.trx"
+
+  # Builds the Inno Setup installer, then installs and uninstalls it for real on the runner, so
+  # what setup registers and what the uninstaller removes are both checked end to end.
+  installer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Ensure Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Build installer
+        run: tools/Build-Installer.ps1 -Version 0.0.0-ci
+
+      - name: Install and check
+        run: |
+          $setup = Resolve-Path artifacts/wingman-v0.0.0-ci-win-x64-setup.exe
+          $log = Join-Path $PWD 'install.log'
+          # /notray=1 keeps setup from starting a tray that would outlive the job.
+          $process = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /notray=1 `"/LOG=$log`"" -PassThru
+          $null = $process.Handle
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0) { throw "Setup exited with code $($process.ExitCode)" }
+
+          $installDir = "$env:LOCALAPPDATA\Programs\Wingman"
+          $exe = Join-Path $installDir 'wingman.exe'
+          $failures = [System.Collections.Generic.List[string]]::new()
+          function Check([bool]$ok, [string]$what) {
+            if ($ok) { Write-Host "ok    $what" } else { Write-Host "FAIL  $what"; $failures.Add($what) }
+          }
+
+          Check (Test-Path $exe) "wingman.exe installed at $exe"
+          if (Test-Path $exe) {
+            $version = (& $exe --version | Out-String).Trim()
+            Check ($version -eq 'wingman 0.0.0-ci') "--version prints 'wingman 0.0.0-ci' (got '$version')"
+          }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          Check (@($userPath -split ';') -contains $installDir) "user PATH contains $installDir"
+          schtasks /Query /TN "Wingman\Check" | Out-Null
+          Check ($LASTEXITCODE -eq 0) "scheduled task Wingman\Check exists"
+          $run = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Wingman -ErrorAction SilentlyContinue
+          Check ($null -ne $run) "Run value Wingman exists"
+          Check (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Wingman.lnk") "Start Menu shortcut exists"
+          Check (Test-Path 'HKCU:\Software\Classes\wingman') "wingman: protocol key exists"
+          Check (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{FC7D592F-76BD-4409-9F32-1C9EAF29A091}_is1') "uninstall entry exists"
+          Check ($null -eq (Get-Process wingman -ErrorAction SilentlyContinue)) "no tray started with /notray=1"
+
+          Write-Host "--- Wingman\Check task definition"
+          schtasks /Query /TN "Wingman\Check" /XML
+
+          if ($failures.Count -gt 0) { throw "$($failures.Count) install check(s) failed" }
+
+      - name: Uninstall and check
+        run: |
+          $installDir = "$env:LOCALAPPDATA\Programs\Wingman"
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{FC7D592F-76BD-4409-9F32-1C9EAF29A091}_is1'
+          $uninstaller = (Get-ItemProperty $uninstallKey).UninstallString.Trim('"')
+          Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait
+
+          # The uninstaller relaunches itself from %TEMP% and returns at once, so wait for its work.
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Test-Path $installDir) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+
+          $failures = [System.Collections.Generic.List[string]]::new()
+          function Check([bool]$ok, [string]$what) {
+            if ($ok) { Write-Host "ok    $what" } else { Write-Host "FAIL  $what"; $failures.Add($what) }
+          }
+
+          Check (-not (Test-Path $installDir)) "install folder removed"
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          Check (-not (@($userPath -split ';') -contains $installDir)) "user PATH no longer contains $installDir"
+          schtasks /Query /TN "Wingman\Check" 2>&1 | Out-Null
+          Check ($LASTEXITCODE -ne 0) "scheduled task Wingman\Check removed"
+          $run = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Wingman -ErrorAction SilentlyContinue
+          Check ($null -eq $run) "Run value Wingman removed"
+          Check (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Wingman.lnk")) "Start Menu shortcut removed"
+          Check (-not (Test-Path 'HKCU:\Software\Classes\wingman')) "wingman: protocol key removed"
+          Check (-not (Test-Path $uninstallKey)) "uninstall entry removed"
+
+          if ($failures.Count -gt 0) { throw "$($failures.Count) uninstall check(s) failed" }
+          $global:LASTEXITCODE = 0
+
+      - name: Upload install log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-log
+          path: install.log
+          if-no-files-found: ignore
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-win-x64
+          path: artifacts/wingman-v0.0.0-ci-win-x64-setup.exe

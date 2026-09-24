@@ -16,8 +16,8 @@
     The release version, e.g. 0.1.0. Must be three dot-separated integers.
 
 .PARAMETER Sha256Dir
-    Folder containing wingman-v<version>-win-x64.zip.sha256 and
-    wingman-v<version>-win-arm64.zip.sha256, each a line of the form
+    Folder containing wingman-v<version>-win-x64-setup.exe.sha256 and
+    wingman-v<version>-win-arm64-setup.exe.sha256, each a line of the form
     "<hash>  <filename>" as written by .github/workflows/release.yml.
 
 .PARAMETER ManifestDir
@@ -61,7 +61,7 @@ function Get-InstallerHash {
         [string]$Arch
     )
 
-    $fileName = "wingman-v$Version-win-$Arch.zip.sha256"
+    $fileName = "wingman-v$Version-win-$Arch-setup.exe.sha256"
     $path = Join-Path $Sha256Dir $fileName
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Missing hash file for '$Arch': $path"
@@ -136,11 +136,11 @@ foreach ($line in $lines) {
         $urlEol = $Matches.eol
 
         $arch = $null
-        if ($urlValue -match 'win-x64\.zip$') { $arch = "x64" }
-        elseif ($urlValue -match 'win-arm64\.zip$') { $arch = "arm64" }
+        if ($urlValue -match 'win-x64-setup\.exe$') { $arch = "x64" }
+        elseif ($urlValue -match 'win-arm64-setup\.exe$') { $arch = "arm64" }
 
         if ($arch) {
-            $newUrl = "https://github.com/BenBurge/Wingman/releases/download/v$Version/wingman-v$Version-win-$arch.zip"
+            $newUrl = "https://github.com/BenBurge/Wingman/releases/download/v$Version/wingman-v$Version-win-$arch-setup.exe"
             $output.Add("$($urlIndent)InstallerUrl: $newUrl$($urlEol)")
             $pendingArch = $arch
             continue
@@ -174,7 +174,7 @@ Write-Utf8NoBom -Path $installerManifest -Content (-join $output)
 
 Write-Host "Updated manifests in '$ManifestDir' to version $Version"
 foreach ($arch in $hashes.Keys) {
-    $url = "https://github.com/BenBurge/Wingman/releases/download/v$Version/wingman-v$Version-win-$arch.zip"
+    $url = "https://github.com/BenBurge/Wingman/releases/download/v$Version/wingman-v$Version-win-$arch-setup.exe"
     Write-Host "  $arch"
     Write-Host "    $url"
     Write-Host "    $($hashes[$arch])"
