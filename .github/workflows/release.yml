@@ -1,4 +1,5 @@
-# Publishes wingman.exe as a self-contained, untrimmed single file for win-x64 and win-arm64.
+# Publishes wingman.exe as a self-contained, untrimmed single file for win-x64 and win-arm64,
+# and ships each as a zip and as a per-user Inno Setup installer (installer/wingman.iss).
 # Native AOT and trimming are off: Wingman.Core's System.Text.Json calls are reflection based
 # (IL2026, IL3050) and TreatWarningsAsErrors fails the publish on those warnings. The publish
 # properties live in src/Wingman/Wingman.csproj under a RuntimeIdentifier condition.
@@ -48,12 +49,23 @@ jobs:
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           "$hash  $zip" | Out-File -Encoding ascii "$zip.sha256"
 
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Build installer
+        shell: pwsh
+        run: tools/Build-Installer.ps1 -Version ${{ steps.version.outputs.version }} -Rid ${{ matrix.rid }} -OutputDir . -SkipPublish -SourceDir out/${{ matrix.rid }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: wingman-${{ matrix.rid }}
           path: |
             wingman-${{ github.ref_name }}-${{ matrix.rid }}.zip
             wingman-${{ github.ref_name }}-${{ matrix.rid }}.zip.sha256
+            wingman-${{ github.ref_name }}-${{ matrix.rid }}-setup.exe
+            wingman-${{ github.ref_name }}-${{ matrix.rid }}-setup.exe.sha256
 
   release:
     needs: publish

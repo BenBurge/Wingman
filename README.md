@@ -69,15 +69,21 @@ options.
 Wingman runs on Windows 10 and 11 with winget 1.4 or newer. It ships as a single
 self-contained executable, so no .NET runtime is needed.
 
-**winget** (once the manifest is published to the community repository):
+**Installer:** download `wingman-v<version>-win-x64-setup.exe` (or `-win-arm64-setup.exe`)
+from [Releases](https://github.com/BenBurge/Wingman/releases) and run it; no admin rights
+needed. It installs to `%LOCALAPPDATA%\Programs\Wingman`, adds `wingman` to your PATH,
+starts the tray icon and registers it at login, and sets up scheduled update checks.
+Uninstall from Settings → Apps.
+
+**winget** (once the manifest is published to the community repository) runs the same
+installer:
 
 ```
 winget install BenBurge.Wingman
 ```
 
-**Release zip:** download `wingman-v<version>-win-x64.zip` or `-win-arm64.zip` from
-[Releases](https://github.com/BenBurge/Wingman/releases), extract `wingman.exe` to a
-folder on your PATH, and run `wingman setup`.
+**Portable zip:** download `wingman-v<version>-win-x64.zip` or `-win-arm64.zip` from
+Releases, extract `wingman.exe` to a folder on your PATH, and run `wingman setup`.
 
 **From source, for development:** `pwsh tools/Install-Local.ps1` publishes a
 single-file build to `%LOCALAPPDATA%\Programs\Wingman`, adds it to PATH, and runs
@@ -99,10 +105,10 @@ current tab.
 | `u` | Upgrade | `?` | Help |
 | `x` | Uninstall (Installed) | `q` | Quit |
 
-On first run, `wingman setup` registers the scheduled update checks, starts the tray
-icon at login, creates the Start Menu shortcut that toasts need, and registers
-`wingman:` links so toast and tray actions can open the UI. It is safe to rerun after
-changing settings. `wingman setup --remove` undoes all of it.
+`wingman setup`, which the installer runs for you, registers the scheduled update
+checks, starts the tray icon at login, creates the Start Menu shortcut that toasts
+need, and registers `wingman:` links so toast and tray actions can open the UI. It is
+safe to rerun after changing settings. `wingman setup --remove` undoes all of it.
 
 ## Command line
 
@@ -173,6 +179,9 @@ except the Windows-only pieces runs on macOS and Linux too.
 - `tools/TuiHarness` runs the TUI headless at a fixed size, scripts keys and mouse
   events, and dumps every frame to `out.txt`:
   `dotnet run --project tools/TuiHarness -- 96 30 Midnight`.
+- `pwsh tools/Build-Installer.ps1 -Version 0.1.0` publishes and builds the setup
+  executable into `artifacts/`; it needs Inno Setup 6
+  (`winget install JRSoftware.InnoSetup`).
 - Parser fixtures are captured on Windows with `tools/Capture-WingetFixtures.ps1` and
   live in `tests/Wingman.Core.Tests/Fixtures/`.
 - Work follows the issue-per-PR workflow in [AGENTS.md](AGENTS.md).
