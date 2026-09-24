@@ -11,11 +11,9 @@ ProductCode: "{FC7D592F-76BD-4409-9F32-1C9EAF29A091}_is1"
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/BenBurge/Wingman/releases/download/v0.1.0/wingman-v0.1.0-win-x64-setup.exe
-    # Placeholder until the first release is cut; see manifests/README.md.
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: 9A0FD2C3791A55A4C040DE7A183391A917461896E4A499B276C1D3C955241309
   - Architecture: arm64
     InstallerUrl: https://github.com/BenBurge/Wingman/releases/download/v0.1.0/wingman-v0.1.0-win-arm64-setup.exe
-    # Placeholder until the first release is cut; see manifests/README.md.
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: 97CFAAE7B76E81A83812727071B44DE9E23E6E3F65DB4F875C9C89513D6F2054
 ManifestType: installer
 ManifestVersion: 1.10.0
