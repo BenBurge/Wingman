@@ -11,6 +11,7 @@ using Wingman.Core.Settings;
 using Wingman.Core.State;
 using Wingman.Core.Winget;
 using Wingman.Tui;
+using Wingman.Tui.Tabs;
 
 if (args.Length < 2 || !int.TryParse(args[0], out var width) || !int.TryParse(args[1], out var height))
 {
@@ -174,8 +175,54 @@ string RightPaneText(IReadOnlyList<string> rows) => string.Join("\n", rows.Skip(
 
 // The right pane's text as one line, so a check can find a sentence the pane wraps at 96 columns.
 string RightPaneFlowed() => string.Join(" ", screen.Rows().Skip(3).Take(height - 6).Select(row => row[(Divider() + 1)..].Trim(' ', '│')).Where(text => text.Length > 0));
-// A Settings cell no field covers, on the Tray header row, so a highlighted option never hides the theme ground.
-Terminal.Gui.Drawing.Color? SettingsGround() => screen.BackgroundAt(width / 2, height / 2 + 1);
+// The Settings tab: its sections, the divider's column, and the column where each control and its
+// explanation start, past the divider, the pane's one-cell margin, and the 26-cell label column.
+string[] settingsSections = ["Defaults", "Batches", "Updates", "Appearance", "Tray", "Tools"];
+const int SettingsDivider = 21;
+const int SettingsControlX = SettingsDivider + 2 + 26;
+
+// At 96x30 the Tools section is two rows taller than its pane; at 120x40 every section fits.
+var isCompactHeight = height <= 30;
+
+// The five theme options take 59 cells on one row, which fit from the control column of a 110-column window.
+var isThemeStacked = width < 110;
+
+// A Settings cell below the last section in the list, which nothing highlights, so it shows the theme ground.
+Terminal.Gui.Drawing.Color? SettingsGround() => screen.BackgroundAt(5, height - 6);
+
+// A right-pane row as a setting draws it: the label padded to the control column, then the control or its explanation.
+string Pane(string label, string control) => "│ " + label.PadRight(26) + control;
+int RowY(string text) => screen.Rows().ToList().FindIndex(row => row.Contains(text, StringComparison.Ordinal));
+int SectionRowY(string title) => screen.Rows().ToList().FindIndex(row => row.Length > SettingsDivider && row[1..SettingsDivider].TrimEnd() == " " + title);
+void ClickSection(string title) => screen.Click(3, SectionRowY(title));
+
+// The selected section spans the list in the cursor-row colors while the list has focus, and is accent text otherwise.
+bool IsSelectedSection(string title, bool focused, Theme? drawnWith = null)
+{
+    var colors = drawnWith ?? theme;
+    var expected = (focused ? colors.Selected : colors.On(colors.Accent)).ToString();
+    var y = SectionRowY(title);
+    return y >= 0 && screen.AttributeAt(2, y) == expected && screen.AttributeAt(SettingsDivider - 1, y) == expected;
+}
+
+void CheckSectionHeader(string title, string summary)
+{
+    Check($"{title}: title and summary", ScreenHas("│ " + title + "  " + summary));
+    var titleY = RowY("│ " + title + "  " + summary);
+    var titleX = SettingsDivider + 2;
+    Check($"{title}: title bold, summary dim", titleY >= 0
+        && screen.AttributeAt(titleX, titleY) == theme.On(theme.Foreground, Terminal.Gui.Drawing.TextStyle.Bold).ToString()
+        && screen.AttributeAt(titleX + title.Length + 2, titleY) == theme.On(theme.Dim).ToString());
+}
+
+// One control per line: no pane row holds two checkboxes or two actions.
+void CheckOneControlPerLine()
+{
+    int Count(string row, string text) => (row.Length - row.Replace(text, "", StringComparison.Ordinal).Length) / text.Length;
+    var paneRows = screen.Rows().Skip(3).Take(height - 8).Select(row => row[(SettingsDivider + 1)..]);
+    Check("one control per line", paneRows.All(row => Count(row, "[x] ") + Count(row, "[ ] ") <= 1 && Count(row, "⏎ ") <= 1));
+}
+
 int KeyBarX(string item) => screen.Rows()[height - 2].IndexOf(item, StringComparison.Ordinal);
 int TabStripX(string title) => screen.Rows()[1].IndexOf(" " + title + " ", StringComparison.Ordinal) + 1;
 bool IsCursorRow(int y) => y >= 0 && screen.AttributeAt(10, y) == theme.Selected.ToString();
@@ -288,11 +335,12 @@ Step[] elevatedSteps =
         Check("status", ScreenHas(Shell.AlreadyElevatedText));
         Check("no new batch", ScreenHas(" Batch finished  1 of 1 · 1 failed"));
     }),
-    new(50, "elevated: Enter, 5: Settings", () => { screen.Press(Key.Enter); screen.Press(new Key('5')); }, WithColors: true, Verify: () =>
+    new(50, "elevated: Enter, 5: Settings", () => { screen.Press(Key.Enter); screen.Press(new Key('5')); }),
+    new(50, "elevated: click Tools, wheel down", () => { ClickSection("Tools"); screen.Wheel(SettingsControlX, height / 2, down: true); }, WithColors: true, Verify: () =>
     {
-        Check("restart dim with the reason", ScreenHas("   ⏎ Restart as administrator   already administrator"));
-        var restartY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Restart as administrator", StringComparison.Ordinal));
-        Check("drawn dim", restartY >= 0 && screen.AttributeAt(4, restartY) == theme.On(theme.Dim).ToString());
+        Check("restart dim with the reason", ScreenHas(Pane("", "⏎ Restart as administrator")) && ScreenHas(Pane("", "already administrator")));
+        var restartY = RowY("⏎ Restart as administrator");
+        Check("drawn dim", restartY >= 0 && screen.AttributeAt(SettingsControlX, restartY) == theme.On(theme.Dim).ToString());
     }),
     new(50, "elevated: q quits", () => screen.Press(Key.Q)),
 ];
@@ -1233,38 +1281,124 @@ Step[] mainSteps =
         Check("the retry listed", LeftPaneHas(" upgrade    JanDeDobbel"));
     }),
 
-    new(50, "5: Settings", () => screen.Press(new Key('5')), WithColors: true, Verify: () =>
+    new(50, "5: Settings, the Defaults section", () => screen.Press(new Key('5')), WithColors: true, Verify: () =>
     {
-        Check("defaults", ScreenHas(" Defaults") && ScreenHas("   Install scope             (•) default  ( ) user  ( ) machine"));
-        Check("default flags", ScreenHas("[x] Accept package agreements   [x] Include unknown versions"));
-        Check("elevation radio and continue on failure", ScreenHas("   " + "Elevation".PadRight(26) + "(•) Auto  ( ) Always  ( ) Never   [x] Continue on failure"));
-        Check("elevation launcher radio", ScreenHas("   " + "Elevate via".PadRight(26) + "(•) wingman.exe  ( ) PowerShell (for Admin By Request whitelists)"));
-        Check("restart action", ScreenHas("   ⏎ Restart as administrator") && !ScreenHas("Windows only") && !ScreenHas("already administrator"));
-        Check("theme row", ScreenHas("   Theme                     (•) Midnight  ( ) Daylight  ( ) Nord  ( ) Dracula  ( ) Auto"));
+        Check("the section list", LeftPaneHas(" Sections") && settingsSections.All(title => LeftPaneHas(" " + title)));
+        var headerY = SectionRowY("Sections");
+        Check("the list title in the header color, a blank row under it", headerY >= 0
+            && screen.AttributeAt(2, headerY) == theme.On(theme.Header).ToString() && SectionRowY("Defaults") == headerY + 2);
+        Check("the divider joins the separators", screen.Rows()[2][SettingsDivider] == '┬' && screen.Rows()[height - 4][SettingsDivider] == '┴');
+        Check("Defaults drawn as the cursor row while the list has focus", IsSelectedSection("Defaults", focused: true));
+        Check("the list has focus", Focused() == nameof(SettingsSectionList));
+        CheckSectionHeader("Defaults", "How winget installs packages");
+        Check("install scope", ScreenHas(Pane("Install scope", "(•) default  ( ) user  ( ) machine")));
+        Check("its explanation under the control", ScreenHas(Pane("", "Where packages install when a package has no")));
+        Check("accept agreements on its own line", ScreenHas(Pane("", "[x] Accept package agreements")));
+        Check("its explanation", RightPaneFlowed().Contains("Pass --accept-package-agreements so installs do not stop at a license prompt.", StringComparison.Ordinal));
+        Check("include unknown on its own line", ScreenHas(Pane("", "[x] Include unknown versions")));
+        Check("its explanation", RightPaneFlowed().Contains("List packages whose installed version winget cannot read.", StringComparison.Ordinal));
+        var explanationY = screen.Rows().ToList().FindIndex(row => row.Contains("Where packages install", StringComparison.Ordinal));
+        Check("explanations dim", explanationY >= 0 && screen.AttributeAt(SettingsControlX, explanationY) == theme.On(theme.Dim).ToString());
+        CheckOneControlPerLine();
         Check("no phase 3 placeholders", !ScreenHas("phase 3"));
-        Check("check row", ScreenHas("   " + "Check for updates".PadRight(26) + "every [ 6   ] hours   [x] and at login"));
-        Check("auto-install row", ScreenHas("   " + "Auto-install".PadRight(26) + "[ ] packages marked auto-update  at [ 03:00 ]"));
-        Check("toast row", ScreenHas("   " + "".PadRight(26) + "[x] Toast when updates are found  [x] Toast when a batch finishes"));
-        Check("self-update row", ScreenHas("   " + "Wingman".PadRight(26) + "[x] Keep Wingman up to date automatically"));
-        Check("tray row", ScreenHas(" Tray") && ScreenHas("   " + "".PadRight(26) + "[x] Show tray icon   [x] Start at login"));
-        Check("tools", ScreenHas("   ⏎ Import bundle…   ⏎ Export bundle…   ⏎ Register scheduled tasks (wingman setup)"));
-        Check("remove and update", ScreenHas("   ⏎ Remove scheduled tasks   ⏎ Update Wingman   9.9.9 available"));
-        var updatesHeaderY = screen.Rows().ToList().FindIndex(row => row.StartsWith("│ Updates", StringComparison.Ordinal));
-        Check("the Updates group title in the header color", updatesHeaderY >= 0 && screen.AttributeAt(2, updatesHeaderY) == theme.On(theme.Header).ToString());
-        var registerY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Register scheduled tasks", StringComparison.Ordinal));
-        var registerX = registerY >= 0 ? screen.Rows()[registerY].IndexOf("⏎ Register", StringComparison.Ordinal) : -1;
-        Check("register live, its ⏎ in accent", registerY >= 0 && screen.AttributeAt(registerX, registerY) == theme.On(theme.Accent, Terminal.Gui.Drawing.TextStyle.Bold).ToString());
-        Check("footer", ScreenHas(" Saved to "));
-        Check("settings key bar", ScreenHas(" Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "));
-        Check("scope has focus", Focused() == nameof(OptionRow));
+        Check("footer pinned to the pane's last row", screen.Rows()[height - 5].Contains("│ Saved to ", StringComparison.Ordinal)
+            && screen.Rows()[height - 5].Contains("settings.json as you change them", StringComparison.Ordinal));
+        Check("settings key bar", ScreenHas(" ↑↓ Section   Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "));
+        Check("nothing to scroll", !ScreenHas("▲") && !ScreenHas("▼"));
     }),
-    new(50, "Tab x4, Space: Continue on failure off", () => { screen.Press(Key.Tab, 4); screen.Press(Key.Space); }, Verify: () =>
+    new(50, "?: the help lists the Settings keys", () => screen.Press(new Key('?')), Verify: () =>
+    {
+        Check("help open", IsHelpOpen());
+        Check("section keys", ScreenHas("choose a section, or the field above or below") && ScreenHas("back to the sections"));
+    }),
+    new(50, "?: the help closed", () => screen.Press(new Key('?')), Verify: () =>
+        Check("help closed", !IsHelpOpen() && Focused() == nameof(SettingsSectionList))),
+    new(50, "Down: the Batches section", () => screen.Press(Key.CursorDown), WithColors: true, Verify: () =>
+    {
+        Check("Batches selected", IsSelectedSection("Batches", focused: true) && !IsSelectedSection("Defaults", focused: true));
+        Check("the list keeps focus", Focused() == nameof(SettingsSectionList));
+        CheckSectionHeader("Batches", "How batches run and elevate");
+        Check("elevation radio", ScreenHas(Pane("Elevation", "(•) Auto  ( ) Always  ( ) Never")));
+        Check("elevation explanation", RightPaneFlowed().Contains(
+            "Auto elevates only what needs it; Always runs every batch elevated; Never lets winget prompt per installer.", StringComparison.Ordinal));
+        Check("elevation launcher radio", ScreenHas(Pane("Elevate via", "(•) wingman.exe  ( ) PowerShell")));
+        Check("launcher explanation", RightPaneFlowed().Contains(
+            "PowerShell helps when an admin-approval tool, such as Admin By Request, only allows PowerShell.", StringComparison.Ordinal));
+        Check("continue on failure on its own line", ScreenHas(Pane("", "[x] Continue on failure")));
+        Check("its explanation", RightPaneFlowed().Contains("Keep running the rest of a batch after one operation fails.", StringComparison.Ordinal));
+        CheckOneControlPerLine();
+    }),
+    new(50, "Down: the Updates section", () => screen.Press(Key.CursorDown), WithColors: true, Verify: () =>
+    {
+        CheckSectionHeader("Updates", "Checking for updates, auto-install, and notifications");
+        Check("interval box", ScreenHas(Pane("Check for updates", "every [ 6   ] hours")));
+        Check("at login on its own line", ScreenHas(Pane("", "[x] and at login")));
+        Check("check explanation", RightPaneFlowed().Contains("How often the scheduled task checks winget and GitHub Releases.", StringComparison.Ordinal));
+        Check("auto-install", ScreenHas(Pane("Auto-install", "[ ] packages marked auto-update")));
+        Check("auto-install time on its own line", ScreenHas(Pane("", "at [ 03:00 ]")));
+        Check("auto-install explanation", RightPaneFlowed().Contains("Upgrade packages marked auto-update at this time each day.", StringComparison.Ordinal));
+        Check("toasts one per line", ScreenHas(Pane("Notifications", "[x] Toast when updates are found")) && ScreenHas(Pane("", "[x] Toast when a batch finishes")));
+        Check("toast explanation", RightPaneFlowed().Contains("Windows notifications from the scheduled check and from batches.", StringComparison.Ordinal));
+        Check("self-update", ScreenHas(Pane("", "[x] Keep Wingman up to date automatically")));
+        Check("self-update explanation", RightPaneFlowed().Contains("Download, verify, and install new Wingman releases from GitHub on their own.", StringComparison.Ordinal));
+        CheckOneControlPerLine();
+        Check("the section fits, nothing to scroll", !ScreenHas("▲") && !ScreenHas("▼"));
+    }),
+    new(50, "Down: the Appearance section", () => screen.Press(Key.CursorDown), Verify: () =>
+    {
+        CheckSectionHeader("Appearance", "Colors");
+        Check("theme options", ScreenHas(Pane("Theme", "(•) Midnight")) && Theme.SettingNames.Skip(1).All(name => ScreenHas("( ) " + name)));
+        Check("stacked only when one row does not fit", ScreenHas(Pane("", "( ) Daylight")) == isThemeStacked);
+        Check("theme explanation", ScreenHas(Pane("", "Auto follows the Windows light or dark mode.")));
+    }),
+    new(50, "Down: the Tray section", () => screen.Press(Key.CursorDown), Verify: () =>
+    {
+        CheckSectionHeader("Tray", "The tray icon");
+        Check("tray checkboxes one per line", ScreenHas(Pane("", "[x] Show tray icon")) && ScreenHas(Pane("", "[x] Start at login")));
+        Check("tray explanation", RightPaneFlowed().Contains("The tray shows update badges and a menu; setup registers it to start at login.", StringComparison.Ordinal));
+        CheckOneControlPerLine();
+    }),
+    new(50, "Down: the Tools section", () => screen.Press(Key.CursorDown), WithColors: true, Verify: () =>
+    {
+        CheckSectionHeader("Tools", "Bundles, scheduled tasks, and Wingman itself");
+        Check("import", ScreenHas(Pane("Bundles", "⏎ Import bundle…")) && ScreenHas(Pane("", "Install packages from a UniGetUI .ubundle.")));
+        Check("export", ScreenHas(Pane("", "⏎ Export bundle…")) && RightPaneFlowed().Contains("Save installed packages and their options to a .ubundle file.", StringComparison.Ordinal));
+        Check("register", ScreenHas(Pane("Scheduled tasks", "⏎ Register scheduled tasks (wingman setup)")));
+        Check("register explanation", RightPaneFlowed().Contains(
+            "Create the scheduled checks, the tray at login, the Start Menu shortcut, and wingman: links.", StringComparison.Ordinal));
+        Check("remove", ScreenHas(Pane("", "⏎ Remove scheduled tasks")) && ScreenHas(Pane("", "Undo Register.")));
+        Check("update with its status", ScreenHas(Pane("Wingman", "⏎ Update Wingman")) && ScreenHas(Pane("", "9.9.9 available")));
+        Check("restart action", ScreenHas(Pane("", "⏎ Restart as administrator")) && !ScreenHas("Windows only") && !ScreenHas("already administrator"));
+        var registerY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Register scheduled tasks", StringComparison.Ordinal));
+        Check("register live, its ⏎ in accent", registerY >= 0 && screen.AttributeAt(SettingsControlX, registerY) == theme.On(theme.Accent, Terminal.Gui.Drawing.TextStyle.Bold).ToString());
+
+        // Tools is two rows taller than the pane at 96x30, and fits at 120x40.
+        Check("▼ in the pane's bottom-right corner exactly when Tools is taller than the pane",
+            (screen.Rows()[height - 7][width - 2] == '▼') == isCompactHeight && !ScreenHas("▲"));
+        Check("the marker dim", !isCompactHeight || screen.AttributeAt(width - 2, height - 7) == theme.On(theme.Dim).ToString());
+    }),
+    new(50, "Home, Enter: Defaults, focus on Install scope", () => { screen.Press(Key.Home); screen.Press(Key.Enter); }, WithColors: true, Verify: () =>
+    {
+        Check("scope has focus", Focused() == nameof(OptionRow));
+        Check("Defaults in accent while focus is in the section", IsSelectedSection("Defaults", focused: false));
+    }),
+    new(50, "Esc: back to the section list", () => screen.Press(Key.Esc), Verify: () =>
+    {
+        Check("the list has focus", Focused() == nameof(SettingsSectionList));
+        Check("Defaults still selected", IsSelectedSection("Defaults", focused: true));
+    }),
+    new(50, "Down, Tab x3, Space: Batches, Continue on failure off", () => { screen.Press(Key.CursorDown); screen.Press(Key.Tab, 3); screen.Press(Key.Space); }, Verify: () =>
     {
         Check("unchecked", ScreenHas("[ ] Continue on failure"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"continueOnFailure\": false", StringComparison.Ordinal));
         Check("in effect", !shell.Settings.ContinueOnFailure);
     }),
-    new(50, "Shift+Tab, Right x2, Space: elevation Never", () => { screen.Press(Key.Tab.WithShift); screen.Press(Key.CursorRight, 2); screen.Press(Key.Space); }, Verify: () =>
+    new(50, "Tab: past the last control, the section list", () => screen.Press(Key.Tab), Verify: () =>
+    {
+        Check("the list has focus", Focused() == nameof(SettingsSectionList));
+        Check("Batches still selected", IsSelectedSection("Batches", focused: true));
+    }),
+    new(50, "Enter, Right x2, Space: elevation Never", () => { screen.Press(Key.Enter); screen.Press(Key.CursorRight, 2); screen.Press(Key.Space); }, Verify: () =>
     {
         Check("Never picked", ScreenHas("( ) Auto  ( ) Always  (•) Never"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationMode\": \"never\"", StringComparison.Ordinal));
@@ -1287,7 +1421,7 @@ Step[] mainSteps =
         Check("elevation off line", RightPaneFlowed().Contains("elevation off (winget will prompt per installer)", StringComparison.Ordinal));
         Check("no UAC sentence", !ScreenHas("One UAC prompt"));
     }),
-    new(50, "c, 5, Left x2, Space, Tab: Auto again, focus back on Continue on failure", () =>
+    new(50, "c, 5, Left x2, Space, Tab: Auto again, focus on to Elevate via", () =>
     {
         screen.Press(Key.C);
         screen.Press(new Key('5'));
@@ -1299,11 +1433,13 @@ Step[] mainSteps =
         Check("queue empty", shell.Queue.Count == 0);
         Check("Auto picked", ScreenHas("(•) Auto  ( ) Always  ( ) Never"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationMode\": \"auto\"", StringComparison.Ordinal));
-        Check("continue on failure has focus", Focused() == nameof(CheckField));
+        var launcherY = screen.Rows().ToList().FindIndex(row => row.Contains("(•) wingman.exe", StringComparison.Ordinal));
+        Check("the launcher row has focus", Focused() == nameof(OptionRow)
+            && launcherY >= 0 && screen.AttributeAt(SettingsControlX, launcherY) == theme.Selected.ToString());
     }),
     new(50, "click PowerShell: the elevation launcher is saved", () => ClickText("( ) PowerShell"), Verify: () =>
     {
-        Check("PowerShell picked", ScreenHas("( ) wingman.exe  (•) PowerShell (for Admin By Request whitelists)"));
+        Check("PowerShell picked", ScreenHas("( ) wingman.exe  (•) PowerShell"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationLauncher\": \"powerShell\"", StringComparison.Ordinal));
         Check("in effect", shell.Settings.ElevationLauncher == ElevationLauncher.PowerShell);
     }),
@@ -1313,21 +1449,63 @@ Step[] mainSteps =
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"elevationLauncher\": \"direct\"", StringComparison.Ordinal));
         Check("launcher row has focus", Focused() == nameof(OptionRow));
     }),
-    new(50, "Tab x11, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Tab, 11); screen.Press(Key.Enter); }, Verify: () =>
+    new(50, "click Tools: the list has focus", () => ClickSection("Tools"), Verify: () =>
+    {
+        Check("Tools selected", IsSelectedSection("Tools", focused: true));
+        Check("the list has focus", Focused() == nameof(SettingsSectionList));
+    }),
+    new(50, "Enter, Enter on Import bundle…: the import screen takes the Settings tab", () => { screen.Press(Key.Enter); screen.Press(Key.Enter); }, Verify: () =>
     {
         Check("import title", ScreenHas(" Import bundle  choose a .ubundle file"));
-        Check("settings hidden", !ScreenHas(" Defaults"));
+        Check("settings hidden", !ScreenHas("│ Sections  ") && !ScreenHas("Bundles, scheduled tasks"));
         Check("the last bundle offered", shell.LastBundlePath == bundleCopy);
     }),
     new(50, "Esc: the settings are back", () => screen.Press(Key.Esc), Verify: () =>
-        Check("settings back", ScreenHas(" Defaults") && ScreenHas(" Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "))),
+    {
+        Check("settings back on Tools", LeftPaneHas(" Sections") && ScreenHas("│ Tools  Bundles, scheduled tasks, and Wingman itself"));
+        Check("settings key bar", ScreenHas(" ↑↓ Section   Tab Next field   ␣ Toggle   ⏎ Activate   ? Help   q Quit "));
+    }),
+    new(50, "click Updates", () => ClickSection("Updates"), Verify: () =>
+        CheckSectionHeader("Updates", "Checking for updates, auto-install, and notifications")),
     new(50, "click Keep Wingman up to date automatically: turned off and saved", () => ClickText("[x] Keep Wingman up to date automatically"), Verify: () =>
     {
         Check("unchecked", ScreenHas("[ ] Keep Wingman up to date automatically"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"autoUpdateWingman\": false", StringComparison.Ordinal));
         Check("in effect", !shell.Settings.AutoUpdateWingman);
     }),
-    new(50, "click Restart as administrator: the question", () => ClickText("⏎ Restart as administrator"), Verify: () =>
+    new(50, "Shift+Tab x4: through the time box to Auto-install, the box unscrolled", () => screen.Press(Key.Tab.WithShift, 4), Verify: () =>
+    {
+        Check("time row", ScreenHas(Pane("", "at [ 03:00 ]")));
+        var autoInstallY = screen.Rows().ToList().FindIndex(row => row.Contains("[ ] packages marked auto-update", StringComparison.Ordinal));
+        Check("auto-install has focus", autoInstallY >= 0 && screen.AttributeAt(SettingsControlX, autoInstallY) == theme.Selected.ToString());
+    }),
+    new(50, "click Tools", () => ClickSection("Tools"), Verify: () =>
+        Check("▼ while Tools is taller than the pane", ScreenHas("▼") == isCompactHeight)),
+    new(50, "wheel down over the pane: scrolled to the end", () => screen.Wheel(SettingsControlX, height / 2, down: true), Verify: () =>
+    {
+        if (isCompactHeight)
+        {
+            Check("▲ in the pane's top-right corner", screen.Rows()[3][width - 2] == '▲');
+            Check("no ▼ at the end", !ScreenHas("▼"));
+            Check("the title scrolled away", !ScreenHas("│ Tools  Bundles"));
+        }
+
+        Check("the restart line shows", ScreenHas(Pane("", "Run elevated, so batches need no UAC prompt.")));
+        Check("the list keeps focus", Focused() == nameof(SettingsSectionList));
+    }),
+    new(50, "wheel up over a control: back to the top", () => screen.Wheel(SettingsControlX + 2, RowY("⏎ Remove scheduled tasks"), down: false), Verify: () =>
+    {
+        Check("the title back", ScreenHas("│ Tools  Bundles, scheduled tasks, and Wingman itself"));
+        Check("▼ again while Tools is taller than the pane", ScreenHas("▼") == isCompactHeight && !ScreenHas("▲"));
+    }),
+    new(50, "Shift+Tab: from the list to the last control, scrolled into view", () => screen.Press(Key.Tab.WithShift), Verify: () =>
+    {
+        var restartY = RowY("⏎ Restart as administrator");
+        Check("restart has focus", restartY >= 0 && screen.AttributeAt(SettingsControlX, restartY) == theme.Selected.ToString());
+        Check("its line in view", ScreenHas(Pane("", "Run elevated, so batches need no UAC prompt.")));
+        Check("▲ once scrolled", ScreenHas("▲") == isCompactHeight);
+    }),
+    new(50, "Enter on Restart as administrator: the question", () => screen.Press(Key.Enter), Verify: () =>
         Check("question", ScreenHas(Shell.RestartQuestionText))),
     new(50, "y: the restart is declined and Wingman keeps running", () => screen.Press(Key.Y), Verify: () =>
     {
@@ -1336,12 +1514,16 @@ Step[] mainSteps =
         Check("declined status", ScreenHas(Shell.RestartDeclinedText));
         Check("still running", shell.Window.IsRunning);
     }),
+    new(50, "click Appearance", () => ClickSection("Appearance"), Verify: () =>
+        CheckSectionHeader("Appearance", "Colors")),
     new(50, "click Daylight: the theme switches live", () => ClickText("( ) Daylight"), WithColors: true, Verify: () =>
     {
         Check("Daylight picked", ScreenHas("(•) Daylight"));
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"theme\": \"Daylight\"", StringComparison.Ordinal));
         Check("Daylight ground", SettingsGround() == Theme.Daylight.Background);
         Check("no Midnight ground left", !screen.AnyBackground(Theme.Midnight.Background));
+        Check("the section list recolored", IsSelectedSection("Appearance", focused: false, Theme.Daylight));
+        Check("the divider recolored", screen.AttributeAt(SettingsDivider, 10) == Theme.Daylight.On(Theme.Daylight.Border).ToString());
     }),
     new(50, "4: the History table is in Daylight too", () => screen.Press(new Key('4')), WithColors: true, Verify: () =>
     {
@@ -1366,6 +1548,10 @@ Step[] mainSteps =
         Check("Midnight ground", SettingsGround() == Theme.Midnight.Background);
         Check("saved", File.ReadAllText(settingsStore.FilePath).Contains("\"theme\": \"Midnight\"", StringComparison.Ordinal));
     }),
+    // The run's own theme comes from the command line, not settings.json, so later color checks
+    // expect it back after the theme steps above end on Midnight.
+    new(50, "restore the run's theme", () => shell.ApplyTheme(theme)),
+    new(50, "click Updates", () => ClickSection("Updates")),
     new(50, "click the interval box, retype it as 12, Tab: saved", () =>
     {
         ClickAfter("every [ ");
@@ -1392,6 +1578,9 @@ Step[] mainSteps =
         Check("error", ScreenHas("Check for updates every 1 to 168 hours"));
         Check("the saved value back", ScreenHas("every [ 12  ] hours") && shell.Settings.CheckIntervalHours == 12);
     }),
+    new(50, "Esc: out of the box to the section list", () => screen.Press(Key.Esc), Verify: () =>
+        Check("the list has focus", Focused() == nameof(SettingsSectionList))),
+    new(50, "click Tools", () => ClickSection("Tools")),
     new(50, "click Register scheduled tasks: the question", () => ClickText("⏎ Register scheduled tasks"), Verify: () =>
         Check("question", ScreenHas("Register Wingman's scheduled tasks, startup entry, and shortcut? (y/n)"))),
     new(50, "y: registered through the executor", () => screen.Press(Key.Y)),
@@ -1542,8 +1731,8 @@ Step[] mainSteps =
         Check("nothing saved", shell.Options.GetInstallOptions(PolicyId).IsDefault());
     }),
 
-    new(50, "5: Settings, the time box unscrolled after Tab passed through it", () => screen.Press(new Key('5')), Verify: () =>
-        Check("time row", ScreenHas("at [ 03:00 ]"))),
+    new(50, "5: Settings, still on Tools", () => screen.Press(new Key('5')), Verify: () =>
+        Check("Tools shown", IsSelectedSection("Tools", focused: false) && ScreenHas(Pane("Wingman", "⏎ Update Wingman")))),
     new(50, "click Update Wingman: the question", () => ClickText("⏎ Update Wingman"), Verify: () =>
     {
         Check("question", ScreenHas("Download Wingman 9.9.9 and restart? (y/n)"));
@@ -1593,18 +1782,22 @@ Step[] unknownRouteSteps =
         Check("status", screen.Rows()[MessageY()].Contains($"Unknown route '{startRoute}'", StringComparison.Ordinal));
         Check("Installed keys", ScreenHas(" x Uninstall "));
     }),
-    new(50, "unknown route: 5, Settings without host services", () => screen.Press(new Key('5')), WithColors: true, Verify: () =>
+    new(50, "unknown route: 5, Settings without host services", () => screen.Press(new Key('5'))),
+    new(50, "unknown route: click Tools", () => ClickSection("Tools"), WithColors: true, Verify: () =>
     {
-        Check("register dim with the reason", ScreenHas("   ⏎ Import bundle…   ⏎ Export bundle…   ⏎ Register scheduled tasks   Windows only"));
-        Check("remove and update dim with the reason", ScreenHas("   ⏎ Remove scheduled tasks   Windows only   ⏎ Update Wingman   Windows only"));
-        var registerY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Register scheduled tasks", StringComparison.Ordinal));
-        var registerX = registerY >= 0 ? screen.Rows()[registerY].IndexOf("⏎ Register", StringComparison.Ordinal) : -1;
-        Check("drawn dim", registerY >= 0 && screen.AttributeAt(registerX, registerY) == theme.On(theme.Dim).ToString());
+        Check("import and export live", ScreenHas(Pane("Bundles", "⏎ Import bundle…")) && ScreenHas(Pane("", "⏎ Export bundle…")));
+        Check("register dim with the reason", ScreenHas(Pane("Scheduled tasks", "⏎ Register scheduled tasks   Windows only")));
+        Check("remove dim with the reason", ScreenHas(Pane("", "⏎ Remove scheduled tasks   Windows only")));
+        Check("update dim with the reason", ScreenHas(Pane("Wingman", "⏎ Update Wingman")) && ScreenHas(Pane("", "Windows only")));
+        var registerY = RowY("⏎ Register scheduled tasks");
+        Check("drawn dim", registerY >= 0 && screen.AttributeAt(SettingsControlX, registerY) == theme.On(theme.Dim).ToString());
+        var updateY = RowY("⏎ Update Wingman");
+        Check("update drawn dim", updateY >= 0 && screen.AttributeAt(SettingsControlX, updateY) == theme.On(theme.Dim).ToString());
     }),
-    new(50, "unknown route: Tab x18 from Install scope skips the dim actions", () => screen.Press(Key.Tab, 18), Verify: () =>
+    new(50, "unknown route: Enter, Tab x2 skips the dim actions", () => { screen.Press(Key.Enter); screen.Press(Key.Tab, 2); }, Verify: () =>
     {
-        var restartY = screen.Rows().ToList().FindIndex(row => row.Contains("⏎ Restart as administrator", StringComparison.Ordinal));
-        Check("Export, then Restart as administrator", restartY >= 0 && screen.AttributeAt(4, restartY) == theme.Selected.ToString());
+        var restartY = RowY("⏎ Restart as administrator");
+        Check("Import, Export, then Restart as administrator", restartY >= 0 && screen.AttributeAt(SettingsControlX, restartY) == theme.Selected.ToString());
     }),
     new(50, "unknown route: q quits", () => screen.Press(Key.Q)),
 ];

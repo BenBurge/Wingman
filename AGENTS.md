@@ -92,7 +92,7 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - Harness checks next to an overlay should cover only the box, because rows under it change while a batch streams.
 - `python3` is not installed on the development machine; use PowerShell or a small C# script for scripted checks.
 - A view that draws with theme colors must implement `IThemedView`, or it keeps the old palette after a switch. Cell and row color getters take the `Theme` and read it at draw time rather than holding a `Scheme` built earlier.
-- `View.Activated` already exists, so an event named `Activated` on a subclass fails with CS0108; `ActionField` uses `Pressed`.
+- `View.Activated` and `View.Title` already exist, so a subclass member named `Activated` or `Title` fails with CS0108; `ActionField` uses `Pressed`.
 - `Pos.GetAnchor` and `Dim.GetAnchor` are internal; compute field widths yourself (`CheckField.WidthFor`, `ActionField.WidthFor`).
 - `SetFocus()` on a container gives focus back to the subview that had it last; the Settings tab relies on this.
 - `HistoryEntry` has no canceled flag; `HistoryRow.FromEntries` infers it from the log (an operation whose log ends with `Canceled`, a batch that canceled something and failed nothing).
@@ -102,7 +102,8 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 - The shell handles `m` (context menu) only after the key bar hints, so a screen can bind `m` to its own action.
 - To retype a prefilled `FormTextField` in the harness, press End, then Backspace once per character.
 - The clone uses `core.autocrlf=true`, so checked-out files are CRLF in the working tree while the repo stores LF; a "0 carriage returns" check on a file you did not touch is meaningless, and git normalizes on commit either way.
-- A settings form that is hidden and shown again focuses its first field, not the last one; harness steps after that should click rather than Tab.
+- The Settings tab focuses its section list when it is shown, including after a hosted bundle screen closes; harness steps select a section by click or arrow rather than counting Tabs.
+- `SettingsSection` scrolls by setting each control's `Y` to its row minus the scroll offset, and hooks every control's `MouseEvent` so the wheel scrolls over controls too.
 - The queue pane is 37 columns at 96x30, so its summary lines wrap; harness checks use `RightPaneFlowed()` to read them.
 - `OperationPlan.RequiresElevation` means "needs admin rights at all" (resolved under `Auto`); the mode and the process's own elevation are applied later by `ElevationPolicy.UsesHelper`, so the batch runner can report `off` or `running as administrator` correctly.
 - Background `winget show` lookups for queued rows run one at a time and only when the details are not cached and the plan does not already need elevation, so `a` on Updates does not spawn a winget process per row.

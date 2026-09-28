@@ -2,20 +2,21 @@ using System.Globalization;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
+using Terminal.Gui.Views;
 using Wingman.Core.SelfUpdate;
 using Wingman.Core.Settings;
 using Wingman.Core.Setup;
 using Wingman.Core.Winget;
-using Attribute = Terminal.Gui.Drawing.Attribute;
 
 namespace Wingman.Tui.Tabs;
 
 /// <summary>
-/// <see cref="Shell.Settings"/> as a form, laid out as the mockup's settings screen: every change is
-/// saved at once, and a theme change recolors the app at once. The Tools rows open the bundle
-/// screens, which take the tab's content area as they do on the list tabs, as does the batch an
-/// import runs; they also register or remove the scheduled tasks and update Wingman itself when
-/// the host provides those services, and draw those actions dim with the reason when it does not.
+/// <see cref="Shell.Settings"/> as a form in two panes: the sections on the left, and the selected
+/// section's settings on the right, each with a line saying what it does. Every change is saved at
+/// once, and a theme change recolors the app at once. The Tools section opens the bundle screens,
+/// which take the tab's content area as they do on the list tabs, as does the batch an import
+/// runs; it also registers or removes the scheduled tasks and updates Wingman itself when the host
+/// provides those services, and draws those actions dim with the reason when it does not.
 /// </summary>
 internal sealed class SettingsTab : ScreenHostTab
 {
@@ -33,10 +34,10 @@ internal sealed class SettingsTab : ScreenHostTab
 
     protected override HelpGroup TabHelp => _form.Help;
 
-    /// <summary>Runs the live <c>Update Wingman</c> action if the startup check found a newer release; a no-op otherwise, since the form already draws why it is unavailable.</summary>
+    /// <summary>Shows Tools and runs the live <c>Update Wingman</c> action if the startup check found a newer release; the section already draws why otherwise.</summary>
     public void RunUpdateWingman() => _form.RunUpdateWingman();
 
-    /// <summary>Focuses the first field the first time, and after that the one that had focus when the tab was left, which Terminal.Gui restores.</summary>
+    /// <summary>Focuses the section list the first time, and after that whatever had focus when the tab was left, which Terminal.Gui restores.</summary>
     public override void OnShown()
     {
         if (_hasBeenShown)
@@ -46,7 +47,7 @@ internal sealed class SettingsTab : ScreenHostTab
         }
 
         _hasBeenShown = true;
-        _form.FocusFirstField();
+        _form.FocusSections();
     }
 
     protected override void HideContent() => _form.Visible = false;
@@ -61,48 +62,22 @@ internal sealed class SettingsTab : ScreenHostTab
 
     private sealed class SettingsForm : FormView, IThemedView
     {
-        // " Defaults" at column 1, then each row's label at 3 padded to 26, then its fields.
-        private const int LabelLeft = 3;
-        private const int LabelWidth = 26;
-        private const int FieldLeft = LabelLeft + LabelWidth;
-        private const string CheckGap = "   ";
+        private const int SectionListWidth = 20;
+        private const int PaneLeft = SectionListWidth + 1;
 
-        // Two cells rather than three, so the second toast checkbox still ends inside a 96-column window.
-        private const string ToastGap = "  ";
-
-        private const int DefaultsRow = 0;
-        private const int ScopeRow = 1;
-        private const int DefaultFlagsRow = 2;
-        private const int BatchesRow = 3;
-        private const int BatchFlagsRow = 4;
-        private const int LauncherRow = 5;
-        private const int UpdatesRow = 6;
-        private const int CheckRow = 7;
-        private const int AutoInstallRow = 8;
-        private const int ToastRow = 9;
-        private const int SelfUpdateRow = 10;
-        private const int AppearanceRow = 11;
-        private const int ThemeRow = 12;
-        private const int TrayRow = 13;
-        private const int TrayFlagsRow = 14;
-        private const int ToolsRow = 15;
-        private const int ToolItemsRow = 16;
-        private const int SetupRow = 17;
-        private const int RestartRow = 18;
-        private const int FooterRow = 20;
+        // The blank row and the footer under the section.
+        private const int FooterRows = 2;
+        private const string SavedPrefix = "Saved to ";
+        private const string SavedSuffix = " as you change them";
+        private const string ReasonGap = "   ";
 
         private const string IntervalPrefix = "every ";
         private const string IntervalSuffix = " hours";
         private const int IntervalWidth = 3;
-        private const string AutoInstallLabel = "packages marked auto-update";
-        private const string OpenBracket = "[ ";
-        private const string AutoInstallTimePrefix = "  at ";
+        private const string AutoInstallTimePrefix = "at ";
         private const int AutoInstallTimeWidth = 5;
         private const string TimeFormat = "HH:mm";
-        private const string ToastOnUpdatesLabel = "Toast when updates are found";
-        private const string ShowTrayIconLabel = "Show tray icon";
 
-        private const string AcceptAgreementsLabel = "Accept package agreements";
         private const string RestartLabel = "Restart as administrator";
         private const string ImportLabel = "Import bundle…";
         private const string ExportLabel = "Export bundle…";
@@ -119,15 +94,15 @@ internal sealed class SettingsTab : ScreenHostTab
         private static readonly ElevationMode[] ElevationValues = [ElevationMode.Auto, ElevationMode.Always, ElevationMode.Never];
         private static readonly string[] ElevationLabels = ["Auto", "Always", "Never"];
         private static readonly ElevationLauncher[] LauncherValues = [ElevationLauncher.Direct, ElevationLauncher.PowerShell];
-        private static readonly string[] LauncherLabels = ["wingman.exe", "PowerShell (for Admin By Request whitelists)"];
+        private static readonly string[] LauncherLabels = ["wingman.exe", "PowerShell"];
 
         private readonly Shell _shell;
         private readonly OptionRow _scope;
         private readonly CheckField _acceptAgreements;
         private readonly CheckField _includeUnknown;
         private readonly OptionRow _elevation;
-        private readonly CheckField _continueOnFailure;
         private readonly OptionRow _launcher;
+        private readonly CheckField _continueOnFailure;
         private readonly FormTextField _interval;
         private readonly CheckField _checkAtLogin;
         private readonly CheckField _autoInstall;
@@ -145,14 +120,18 @@ internal sealed class SettingsTab : ScreenHostTab
         private readonly ActionField? _register;
         private readonly ActionField? _remove;
 
+        // Hidden, and drawn dim with the reason, until the startup check finds a newer release.
+        private readonly ActionField _update;
+
         // Null when Wingman cannot restart itself elevated, because it already is or is not on Windows.
         private readonly ActionField? _restart;
-        private readonly int _updateLeft;
-        private readonly List<View> _fields;
+
+        private readonly SettingsSectionList _sectionList;
+        private readonly Line _divider;
+        private readonly SettingsSection[] _sections;
+        private readonly SettingsSection _tools;
         private readonly KeyHint[] _hints;
 
-        // Added once the startup check finds a newer release; drawn dim with the reason until then.
-        private ActionField? _update;
         private bool _isRunningSetup;
         private bool _isDownloadingUpdate;
 
@@ -164,119 +143,165 @@ internal sealed class SettingsTab : ScreenHostTab
             _theme = shell.Theme;
             var settings = shell.Settings;
 
-            _scope = new OptionRow(_theme, ["default", "user", "machine"]) { X = FieldLeft, Y = ScopeRow };
+            // The divider below joins the window's separators only if every container up to the window renders into its line canvas.
+            SuperViewRendersLineCanvas = true;
+
+            _scope = new OptionRow(_theme, ["default", "user", "machine"]);
             _scope.SelectedIndex = Array.IndexOf(ScopeValues, settings.DefaultScope);
             _scope.Picked += () => Save(() => settings.DefaultScope = ScopeValues[_scope.SelectedIndex]);
 
-            _acceptAgreements = Check(AcceptAgreementsLabel, FieldLeft, DefaultFlagsRow, settings.AcceptAgreements);
+            _acceptAgreements = Check("Accept package agreements", settings.AcceptAgreements);
             _acceptAgreements.Toggled += () => Save(() => settings.AcceptAgreements = _acceptAgreements.IsChecked);
 
-            _includeUnknown = Check("Include unknown versions", FieldLeft + CheckField.WidthFor(AcceptAgreementsLabel) + CheckGap.Length, DefaultFlagsRow, settings.IncludeUnknown);
+            _includeUnknown = Check("Include unknown versions", settings.IncludeUnknown);
             _includeUnknown.Toggled += () => Save(() => settings.IncludeUnknown = _includeUnknown.IsChecked);
 
-            _elevation = new OptionRow(_theme, ElevationLabels) { X = FieldLeft, Y = BatchFlagsRow };
+            _elevation = new OptionRow(_theme, ElevationLabels);
             _elevation.SelectedIndex = Array.IndexOf(ElevationValues, settings.ElevationMode);
             _elevation.Picked += () => Save(() => settings.ElevationMode = ElevationValues[_elevation.SelectedIndex]);
 
-            var continueLeft = FieldLeft + OptionRow.WidthFor(ElevationLabels) + CheckGap.Length;
-            _continueOnFailure = Check("Continue on failure", continueLeft, BatchFlagsRow, settings.ContinueOnFailure);
-            _continueOnFailure.Toggled += () => Save(() => settings.ContinueOnFailure = _continueOnFailure.IsChecked);
-
             // The host's elevation factory and restart read the saved setting at each prompt, so saving applies it.
-            _launcher = new OptionRow(_theme, LauncherLabels) { X = FieldLeft, Y = LauncherRow };
+            _launcher = new OptionRow(_theme, LauncherLabels);
             _launcher.SelectedIndex = Array.IndexOf(LauncherValues, settings.ElevationLauncher);
             _launcher.Picked += () => Save(() => settings.ElevationLauncher = LauncherValues[_launcher.SelectedIndex]);
 
-            _interval = TextBox(IntervalLeft, CheckRow, IntervalWidth, FormatHours(settings.CheckIntervalHours));
+            _continueOnFailure = Check("Continue on failure", settings.ContinueOnFailure);
+            _continueOnFailure.Toggled += () => Save(() => settings.ContinueOnFailure = _continueOnFailure.IsChecked);
+
+            _interval = TextBox(IntervalWidth, FormatHours(settings.CheckIntervalHours));
             _interval.HasFocusChanged += (_, _) => CommitOnLeave(_interval, CommitInterval);
 
-            var checkAtLoginLeft = IntervalLeft + IntervalWidth + DisplayWidth.Of(" ]" + IntervalSuffix) + CheckGap.Length;
-            _checkAtLogin = Check("and at login", checkAtLoginLeft, CheckRow, settings.CheckAtLogin);
+            _checkAtLogin = Check("and at login", settings.CheckAtLogin);
             _checkAtLogin.Toggled += () => Save(() => settings.CheckAtLogin = _checkAtLogin.IsChecked);
 
-            _autoInstall = Check(AutoInstallLabel, FieldLeft, AutoInstallRow, settings.AutoInstall);
+            _autoInstall = Check("packages marked auto-update", settings.AutoInstall);
             _autoInstall.Toggled += () => Save(() => settings.AutoInstall = _autoInstall.IsChecked);
 
-            _autoInstallTime = TextBox(AutoInstallTimeLeft, AutoInstallRow, AutoInstallTimeWidth, settings.AutoInstallTime);
+            _autoInstallTime = TextBox(AutoInstallTimeWidth, settings.AutoInstallTime);
             _autoInstallTime.HasFocusChanged += (_, _) => CommitOnLeave(_autoInstallTime, CommitAutoInstallTime);
 
-            _toastOnUpdates = Check(ToastOnUpdatesLabel, FieldLeft, ToastRow, settings.ToastOnUpdates);
+            _toastOnUpdates = Check("Toast when updates are found", settings.ToastOnUpdates);
             _toastOnUpdates.Toggled += () => Save(() => settings.ToastOnUpdates = _toastOnUpdates.IsChecked);
 
-            var toastOnBatchLeft = FieldLeft + CheckField.WidthFor(ToastOnUpdatesLabel) + ToastGap.Length;
-            _toastOnBatch = Check("Toast when a batch finishes", toastOnBatchLeft, ToastRow, settings.ToastOnBatch);
+            _toastOnBatch = Check("Toast when a batch finishes", settings.ToastOnBatch);
             _toastOnBatch.Toggled += () => Save(() => settings.ToastOnBatch = _toastOnBatch.IsChecked);
 
-            _autoUpdateWingman = Check("Keep Wingman up to date automatically", FieldLeft, SelfUpdateRow, settings.AutoUpdateWingman);
+            _autoUpdateWingman = Check("Keep Wingman up to date automatically", settings.AutoUpdateWingman);
             _autoUpdateWingman.Toggled += () => Save(() => settings.AutoUpdateWingman = _autoUpdateWingman.IsChecked);
 
-            _themeOption = new OptionRow(_theme, Theme.SettingNames) { X = FieldLeft, Y = ThemeRow };
+            _themeOption = new OptionRow(_theme, Theme.SettingNames);
             _themeOption.SelectedIndex = IndexOfIgnoringCase(Theme.SettingNames, settings.Theme);
             _themeOption.Picked += PickTheme;
 
-            _showTrayIcon = Check(ShowTrayIconLabel, FieldLeft, TrayFlagsRow, settings.ShowTrayIcon);
+            _showTrayIcon = Check("Show tray icon", settings.ShowTrayIcon);
             _showTrayIcon.Toggled += () => Save(() => settings.ShowTrayIcon = _showTrayIcon.IsChecked);
 
-            var startTrayLeft = FieldLeft + CheckField.WidthFor(ShowTrayIconLabel) + CheckGap.Length;
-            _startTrayAtLogin = Check("Start at login", startTrayLeft, TrayFlagsRow, settings.StartTrayAtLogin);
+            _startTrayAtLogin = Check("Start at login", settings.StartTrayAtLogin);
             _startTrayAtLogin.Toggled += () => Save(() => settings.StartTrayAtLogin = _startTrayAtLogin.IsChecked);
 
-            _import = new ActionField(_theme, ImportLabel) { X = LabelLeft, Y = ToolItemsRow };
+            _import = new ActionField(_theme, ImportLabel);
             _import.Pressed += openImport;
-            _export = new ActionField(_theme, ExportLabel) { X = ExportLeft, Y = ToolItemsRow };
+            _export = new ActionField(_theme, ExportLabel);
             _export.Pressed += openExport;
 
             if (shell.Services.Setup is not null)
             {
-                _register = new ActionField(_theme, RegisterLabel) { X = RegisterLeft, Y = ToolItemsRow };
+                _register = new ActionField(_theme, RegisterLabel);
                 _register.Pressed += () => AskRunSetup(remove: false);
-                _remove = new ActionField(_theme, RemoveLabel) { X = LabelLeft, Y = SetupRow };
+                _remove = new ActionField(_theme, RemoveLabel);
                 _remove.Pressed += () => AskRunSetup(remove: true);
             }
 
-            var removeWidth = ActionField.WidthFor(RemoveLabel);
-            if (_remove is null)
-            {
-                removeWidth += DisplayWidth.Of(CheckGap + WindowsOnly);
-            }
-
-            _updateLeft = LabelLeft + removeWidth + CheckGap.Length;
+            _update = new ActionField(_theme, UpdateLabel) { Visible = false };
+            _update.Pressed += AskSelfUpdate;
 
             var canRestart = shell.CanRestartAsAdministrator && !shell.ProcessIsElevated;
             if (canRestart)
             {
-                _restart = new ActionField(_theme, RestartLabel) { X = LabelLeft, Y = RestartRow };
+                _restart = new ActionField(_theme, RestartLabel);
                 _restart.Pressed += shell.AskRestartAsAdministrator;
             }
 
-            _fields =
-            [
-                _scope, _acceptAgreements, _includeUnknown,
-                _elevation, _continueOnFailure, _launcher,
-                _interval, _checkAtLogin, _autoInstall, _autoInstallTime, _toastOnUpdates, _toastOnBatch, _autoUpdateWingman,
-                _themeOption,
-                _showTrayIcon, _startTrayAtLogin,
-                _import, _export,
-            ];
-            if (_register is not null && _remove is not null)
+            var defaults = new SettingsSection(_theme, "Defaults", "How winget installs packages");
+            defaults.AddSetting("Install scope", [new(_scope)], "Where packages install when a package has no scope of its own.");
+            defaults.AddSetting("", [new(_acceptAgreements)], "Pass --accept-package-agreements so installs do not stop at a license prompt.");
+            defaults.AddSetting("", [new(_includeUnknown)], "List packages whose installed version winget cannot read.");
+
+            var batches = new SettingsSection(_theme, "Batches", "How batches run and elevate");
+            batches.AddSetting("Elevation", [new(_elevation)],
+                "Auto elevates only what needs it; Always runs every batch elevated; Never lets winget prompt per installer.");
+            batches.AddSetting("Elevate via", [new(_launcher)],
+                "PowerShell helps when an admin-approval tool, such as Admin By Request, only allows PowerShell.");
+            batches.AddSetting("", [new(_continueOnFailure)], "Keep running the rest of a batch after one operation fails.");
+
+            var updates = new SettingsSection(_theme, "Updates", "Checking for updates, auto-install, and notifications");
+            updates.AddSetting("Check for updates", [new(_interval, IntervalPrefix, IntervalSuffix), new(_checkAtLogin)],
+                "How often the scheduled task checks winget and GitHub Releases.");
+            updates.AddSetting("Auto-install", [new(_autoInstall), new(_autoInstallTime, AutoInstallTimePrefix)],
+                "Upgrade packages marked auto-update at this time each day.");
+            updates.AddSetting("Notifications", [new(_toastOnUpdates), new(_toastOnBatch)],
+                "Windows notifications from the scheduled check and from batches.");
+            updates.AddSetting("", [new(_autoUpdateWingman)],
+                "Download, verify, and install new Wingman releases from GitHub on their own.");
+
+            var appearance = new SettingsSection(_theme, "Appearance", "Colors");
+            appearance.AddSetting("Theme", [new(_themeOption)], "Auto follows the Windows light or dark mode.");
+
+            var tray = new SettingsSection(_theme, "Tray", "The tray icon");
+            tray.AddSetting("", [new(_showTrayIcon), new(_startTrayAtLogin)],
+                "The tray shows update badges and a menu; setup registers it to start at login.");
+
+            _tools = new SettingsSection(_theme, "Tools", "Bundles, scheduled tasks, and Wingman itself");
+            _tools.AddSetting("Bundles", [new(_import)], "Install packages from a UniGetUI .ubundle.");
+            _tools.AddSetting("", [new(_export)], "Save installed packages and their options to a .ubundle file.");
+            _tools.AddSetting("Scheduled tasks", [new(_register) { Unavailable = $"⏎ {RegisterUnavailableLabel}{ReasonGap}{WindowsOnly}" }],
+                "Create the scheduled checks, the tray at login, the Start Menu shortcut, and wingman: links.");
+            _tools.AddSetting("", [new(_remove) { Unavailable = $"⏎ {RemoveLabel}{ReasonGap}{WindowsOnly}" }], "Undo Register.");
+            _tools.AddSetting("Wingman", [new(_update) { Unavailable = $"⏎ {UpdateLabel}" }], UpdateNote);
+            _tools.AddSetting("", [new(_restart) { Unavailable = $"⏎ {RestartLabel}" }], RestartNote);
+
+            _sections = [defaults, batches, updates, appearance, tray, _tools];
+            var titles = new List<string>();
+            foreach (var section in _sections)
             {
-                _fields.Add(_register);
-                _fields.Add(_remove);
+                titles.Add(section.Title);
+                section.X = PaneLeft;
+                section.Y = 0;
+                section.Width = Dim.Fill();
+                section.Height = Dim.Fill(FooterRows);
             }
 
-            if (_restart is not null)
+            _sectionList = new SettingsSectionList(_theme, titles)
             {
-                _fields.Add(_restart);
-            }
+                X = 0,
+                Y = 0,
+                Width = SectionListWidth,
+                Height = Dim.Fill(),
+            };
+            _sectionList.SelectionChanged += ShowSelectedSection;
+
+            // Starts one row above and ends one row below the form so it meets the shell's separators.
+            _divider = new Line
+            {
+                Orientation = Orientation.Vertical,
+                X = SectionListWidth,
+                Y = -1,
+                Height = Dim.Fill(-1),
+                SuperViewRendersLineCanvas = true,
+                LineAttribute = _theme.On(_theme.Border),
+            };
 
             _hints =
             [
-                new(Key.Tab, "Next field", () => FocusField(1)),
+                new(Key.CursorUp, "Section", FocusSections, "↑↓"),
+                new(Key.Tab, "Next field", FocusNext),
                 new(Key.Space, "Toggle", ToggleFocused, "␣"),
                 new(Key.Enter, "Activate", ActivateFocused, "⏎"),
             ];
 
-            Add([.. _fields]);
+            Add(_sectionList, _divider);
+            Add([.. _sections]);
+            ShowSelectedSection();
 
             shell.SelfUpdateChecked += ShowSelfUpdateCheck;
             ShowSelfUpdateCheck();
@@ -284,52 +309,93 @@ internal sealed class SettingsTab : ScreenHostTab
 
         public override IReadOnlyList<KeyHint> Hints => _hints;
 
-        /// <summary>Presses the live <c>Update Wingman</c> action; nothing to press before the startup check has found a newer release.</summary>
-        public void RunUpdateWingman() => _update?.Press();
-
         public override HelpGroup Help { get; } = new("Settings",
         [
-            new("Tab", "next field"),
+            new("↑↓", "choose a section, or the field above or below"),
+            new("→ ⏎", "into the section"),
+            new("Tab", "next field; after the last, back to the sections"),
             new("⇧Tab", "previous field"),
-            new("↑↓", "previous or next field"),
+            new("Esc ←", "back to the sections (← outside radio options)"),
             new("←→", "move between options"),
             new("␣", "toggle or pick"),
             new("⏎", "activate, or save what was typed"),
         ]);
 
-        protected override IReadOnlyList<View> Fields => _fields;
+        protected override IReadOnlyList<View> Fields => CurrentSection.Fields;
 
-        private static int IntervalLeft => FieldLeft + DisplayWidth.Of(IntervalPrefix + OpenBracket);
+        private SettingsSection CurrentSection => _sections[_sectionList.SelectedIndex];
 
-        private static int AutoInstallTimeLeft => FieldLeft + CheckField.WidthFor(AutoInstallLabel) + DisplayWidth.Of(AutoInstallTimePrefix + OpenBracket);
+        public void ApplyTheme(Theme theme)
+        {
+            _theme = theme;
+            _divider.LineAttribute = theme.On(theme.Border);
+        }
 
-        private static int ExportLeft => LabelLeft + ActionField.WidthFor(ImportLabel) + CheckGap.Length;
+        public void FocusSections() => _sectionList.SetFocus();
 
-        private static int RegisterLeft => ExportLeft + ActionField.WidthFor(ExportLabel) + CheckGap.Length;
+        /// <summary>Shows Tools and presses the live <c>Update Wingman</c> action; nothing to press before the startup check has found a newer release.</summary>
+        public void RunUpdateWingman()
+        {
+            SelectSection(Array.IndexOf(_sections, _tools));
+            if (!_update.Visible)
+            {
+                FocusSections();
+                return;
+            }
 
-        public void ApplyTheme(Theme theme) => _theme = theme;
+            _update.SetFocus();
+            _update.Press();
+        }
 
         /// <summary>
-        /// The arrows move between fields, except left and right in an option row or a text box,
-        /// which have already used them; Enter activates the focused field whatever it is.
+        /// Tab and Shift+Tab walk the section's fields and go back to the section list past either
+        /// end, as Esc does, and left outside a radio list or text box. From the list, right, Enter,
+        /// and Tab go into the section. In the section, up and down move between fields, except in a
+        /// stacked radio list until its first or last option, and Enter activates the focused field.
         /// </summary>
         protected override bool HandleFormKey(Key key)
         {
+            if (key == Key.Tab)
+            {
+                FocusNext();
+                return true;
+            }
+
+            if (key == Key.Tab.WithShift)
+            {
+                FocusPrevious();
+                return true;
+            }
+
+            if (_sectionList.HasFocus)
+            {
+                var entersSection = key == Key.CursorRight || key == Key.Enter;
+                if (entersSection)
+                {
+                    FocusFieldAt(0);
+                }
+
+                return entersSection;
+            }
+
             var isHorizontalArrow = key == Key.CursorLeft || key == Key.CursorRight;
-            if (isHorizontalArrow && Focused is FormTextField)
+            if (isHorizontalArrow && MostFocused is FormTextField)
             {
                 return false;
             }
 
-            if (key == Key.CursorUp || key == Key.CursorLeft)
+            if (key == Key.Esc || key == Key.CursorLeft)
             {
-                FocusField(-1);
+                FocusSections();
                 return true;
             }
 
-            if (key == Key.CursorDown || key == Key.CursorRight)
+            if (key == Key.CursorUp || key == Key.CursorDown)
             {
-                FocusField(1);
+                var step = key == Key.CursorUp ? -1 : 1;
+                var fields = Fields;
+                var current = FocusedFieldIndex();
+                FocusFieldAt(Math.Clamp(current + step, 0, fields.Count - 1));
                 return true;
             }
 
@@ -339,44 +405,98 @@ internal sealed class SettingsTab : ScreenHostTab
                 return true;
             }
 
-            return base.HandleFormKey(key);
+            return false;
         }
 
         protected override bool OnDrawingContent(DrawContext? context)
         {
-            var width = Viewport.Width;
-            var normal = _theme.On(_theme.Foreground);
-            var dim = _theme.On(_theme.Dim);
-            var header = _theme.On(_theme.Header);
-
-            DrawText(1, DefaultsRow, "Defaults", header, width);
-            DrawText(LabelLeft, ScopeRow, "Install scope", normal, width);
-            DrawText(1, BatchesRow, "Batches", header, width);
-            DrawText(LabelLeft, BatchFlagsRow, "Elevation", normal, width);
-            DrawText(LabelLeft, LauncherRow, "Elevate via", normal, width);
-
-            DrawText(1, UpdatesRow, "Updates", header, width);
-            DrawText(LabelLeft, CheckRow, "Check for updates", normal, width);
-            DrawText(FieldLeft, CheckRow, IntervalPrefix, normal, width);
-            DrawBrackets(_interval);
-            DrawText(IntervalLeft + IntervalWidth + 2, CheckRow, IntervalSuffix, normal, width);
-            DrawText(LabelLeft, AutoInstallRow, "Auto-install", normal, width);
-            DrawText(FieldLeft + CheckField.WidthFor(AutoInstallLabel), AutoInstallRow, AutoInstallTimePrefix, normal, width);
-            DrawBrackets(_autoInstallTime);
-            DrawText(LabelLeft, SelfUpdateRow, "Wingman", normal, width);
-
-            DrawText(1, AppearanceRow, "Appearance", header, width);
-            DrawText(LabelLeft, ThemeRow, "Theme", normal, width);
-            DrawText(1, TrayRow, "Tray", header, width);
-            DrawText(1, ToolsRow, "Tools", header, width);
-
-            DrawUnavailableSetup(width);
-            DrawUpdateState(width);
-            DrawUnavailableRestart(width);
-
-            var footer = $"Saved to {_shell.SettingsStore.FilePath} as you change them";
-            DrawText(1, FooterRow, footer, dim, width);
+            var left = PaneLeft + 1;
+            var width = Math.Max(0, Viewport.Width - left - 1);
+            var pathWidth = width - DisplayWidth.Of(SavedPrefix + SavedSuffix);
+            var path = CellText.FitKeepingEnd(_shell.SettingsStore.FilePath, pathWidth);
+            Move(left, Viewport.Height - 1);
+            SetAttribute(_theme.On(_theme.Dim));
+            AddStr(CellText.Fit(SavedPrefix + path + SavedSuffix, width));
             return true;
+        }
+
+        /// <summary>The next field in the section, the first one from the section list, and the section list after the last one.</summary>
+        private void FocusNext()
+        {
+            if (_sectionList.HasFocus)
+            {
+                FocusFieldAt(0);
+                return;
+            }
+
+            var next = FocusedFieldIndex() + 1;
+            if (next >= Fields.Count)
+            {
+                FocusSections();
+                return;
+            }
+
+            FocusFieldAt(next);
+        }
+
+        /// <summary>The previous field in the section, the last one from the section list, and the section list before the first one.</summary>
+        private void FocusPrevious()
+        {
+            if (_sectionList.HasFocus)
+            {
+                FocusFieldAt(Fields.Count - 1);
+                return;
+            }
+
+            var previous = FocusedFieldIndex() - 1;
+            if (previous < 0)
+            {
+                FocusSections();
+                return;
+            }
+
+            FocusFieldAt(previous);
+        }
+
+        private void FocusFieldAt(int index)
+        {
+            var fields = Fields;
+            if (index >= 0 && index < fields.Count)
+            {
+                fields[index].SetFocus();
+            }
+        }
+
+        /// <summary>The focused field's place in the section's Tab order, or -1 when focus is elsewhere.</summary>
+        private int FocusedFieldIndex()
+        {
+            var fields = Fields;
+            for (var i = 0; i < fields.Count; i++)
+            {
+                if (fields[i].HasFocus)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private void SelectSection(int index)
+        {
+            _sectionList.SelectedIndex = index;
+            ShowSelectedSection();
+        }
+
+        private void ShowSelectedSection()
+        {
+            var current = CurrentSection;
+            foreach (var section in _sections)
+            {
+                section.Visible = section == current;
+            }
+
+            SetNeedsDraw();
         }
 
         private static string FormatHours(int hours) => hours.ToString(CultureInfo.InvariantCulture);
@@ -394,36 +514,7 @@ internal sealed class SettingsTab : ScreenHostTab
             }
         }
 
-        /// <summary>Draws the setup actions dim, saying why, where their fields would be when there is no setup executor.</summary>
-        private void DrawUnavailableSetup(int width)
-        {
-            if (_register is not null)
-            {
-                return;
-            }
-
-            var dim = _theme.On(_theme.Dim);
-            DrawText(RegisterLeft, ToolItemsRow, $"⏎ {RegisterUnavailableLabel}{CheckGap}{WindowsOnly}", dim, width);
-            DrawText(LabelLeft, SetupRow, $"⏎ {RemoveLabel}{CheckGap}{WindowsOnly}", dim, width);
-        }
-
-        /// <summary>
-        /// Draws <c>Update Wingman</c> dim with why it is unavailable, or the newer version after the
-        /// live action once the startup check found one.
-        /// </summary>
-        private void DrawUpdateState(int width)
-        {
-            var dim = _theme.On(_theme.Dim);
-            if (_update is not null)
-            {
-                var noteLeft = _updateLeft + ActionField.WidthFor(UpdateLabel);
-                DrawText(noteLeft, SetupRow, CheckGap + UpdateNote(), dim, width);
-                return;
-            }
-
-            DrawText(_updateLeft, SetupRow, $"⏎ {UpdateLabel}{CheckGap}{UpdateNote()}", dim, width);
-        }
-
+        /// <summary><c>Update Wingman</c>'s status: the newer version, or why the action is unavailable.</summary>
         private string UpdateNote()
         {
             if (_shell.Services.SelfUpdate is null || _shell.Services.Releases is null)
@@ -444,32 +535,27 @@ internal sealed class SettingsTab : ScreenHostTab
             return check.IsNewerAvailable ? $"{latest.Version} available" : "up to date";
         }
 
-        /// <summary>
-        /// Draws the restart action dim, with why it is unavailable, where the field would be when
-        /// Wingman cannot restart itself elevated.
-        /// </summary>
-        private void DrawUnavailableRestart(int width)
+        /// <summary>What <c>Restart as administrator</c> does, or why it is unavailable.</summary>
+        private string RestartNote()
         {
             if (_restart is not null)
             {
-                return;
+                return "Run elevated, so batches need no UAC prompt.";
             }
 
-            var reason = _shell.ProcessIsElevated ? "already administrator" : WindowsOnly;
-            DrawText(LabelLeft, RestartRow, $"⏎ {RestartLabel}   {reason}", _theme.On(_theme.Dim), width);
+            return _shell.ProcessIsElevated ? "already administrator" : WindowsOnly;
         }
 
-        /// <summary>Draws <c>[ </c> and <c> ]</c> around <paramref name="field"/>, in accent while it has focus.</summary>
-        private void DrawBrackets(FormTextField field)
+        private CheckField Check(string label, bool isChecked) => new(_theme, label) { IsChecked = isChecked };
+
+        private FormTextField TextBox(int width, string text)
         {
-            var left = field.Frame.X;
-            var right = left + field.Frame.Width;
-            SetAttribute(field.HasFocus ? _theme.On(_theme.Accent, TextStyle.Bold) : _theme.On(_theme.Foreground));
-            Move(left - 2, field.Frame.Y);
-            AddStr(OpenBracket);
-            Move(right, field.Frame.Y);
-            AddStr(" ]");
+            var field = CreateTextField(_theme);
+            field.Width = width;
+            field.Text = text;
+            return field;
         }
+
 
         private static int IndexOfIgnoringCase(IReadOnlyList<string> values, string value)
         {
@@ -484,25 +570,7 @@ internal sealed class SettingsTab : ScreenHostTab
             return -1;
         }
 
-        private CheckField Check(string label, int x, int row, bool isChecked) =>
-            new(_theme, label) { X = x, Y = row, IsChecked = isChecked };
 
-        private FormTextField TextBox(int x, int row, int width, string text)
-        {
-            var field = CreateTextField(_theme);
-            field.X = x;
-            field.Y = row;
-            field.Width = width;
-            field.Text = text;
-            return field;
-        }
-
-        private void DrawText(int x, int y, string text, Attribute color, int width)
-        {
-            Move(x, y);
-            SetAttribute(color);
-            AddStr(CellText.Fit(text, Math.Max(0, width - x - 1)));
-        }
 
         private void Save(Action change)
         {
@@ -561,28 +629,36 @@ internal sealed class SettingsTab : ScreenHostTab
         /// <summary>What Space does in the focused field, for a click on <c>␣ Toggle</c>.</summary>
         private void ToggleFocused()
         {
-            if (Focused is CheckField check)
+            var focused = MostFocused;
+            if (focused is CheckField check)
             {
                 check.Toggle();
             }
-            else if (Focused is OptionRow options)
+            else if (focused is OptionRow options)
             {
                 options.PickHighlighted();
             }
         }
 
-        /// <summary>What Enter does in the focused field: an action runs, a text box commits, and anything else toggles or picks as Space does.</summary>
+        /// <summary>What Enter does: the section list goes into its section, an action runs, a text box commits, and anything else toggles or picks as Space does.</summary>
         private void ActivateFocused()
         {
-            if (Focused is ActionField action)
+            if (_sectionList.HasFocus)
+            {
+                FocusFieldAt(0);
+                return;
+            }
+
+            var focused = MostFocused;
+            if (focused is ActionField action)
             {
                 action.Press();
             }
-            else if (Focused == _interval)
+            else if (focused == _interval)
             {
                 CommitInterval();
             }
-            else if (Focused == _autoInstallTime)
+            else if (focused == _autoInstallTime)
             {
                 CommitAutoInstallTime();
             }
@@ -690,16 +766,12 @@ internal sealed class SettingsTab : ScreenHostTab
         private void ShowSelfUpdateCheck()
         {
             var isNewerAvailable = _shell.SelfUpdateResult is { IsNewerAvailable: true };
-            if (isNewerAvailable && _update is null)
+            if (isNewerAvailable)
             {
-                _update = new ActionField(_theme, UpdateLabel) { X = _updateLeft, Y = SetupRow };
-                _update.Pressed += AskSelfUpdate;
-                var restartIndex = _restart is null ? -1 : _fields.IndexOf(_restart);
-                _fields.Insert(restartIndex < 0 ? _fields.Count : restartIndex, _update);
-                Add(_update);
+                _update.Visible = true;
             }
 
-            SetNeedsDraw();
+            _tools.Refresh();
         }
 
         /// <summary>

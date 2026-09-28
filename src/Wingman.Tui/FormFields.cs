@@ -141,10 +141,12 @@ internal sealed class CheckField : View, IThemedView
 }
 
 /// <summary>
-/// A row of radio options, <c>( ) default  (•) machine  ( ) user</c>, with the dot in accent. With
-/// focus, left and right move a highlight drawn background-on-accent and Space picks the
-/// highlighted option; a click picks the option under it. Either raises <see cref="Picked"/>.
-/// <see cref="SelectedIndex"/> is -1 when none is picked, for a stored value that matches no option.
+/// Radio options, <c>( ) default  (•) machine  ( ) user</c> on one row or, when
+/// <see cref="IsStacked"/>, one option per row, with the dot in accent. With focus, left and right
+/// (and up and down while stacked, until the first or last option) move a highlight drawn
+/// background-on-accent and Space picks the highlighted option; a click picks the option under it.
+/// Either raises <see cref="Picked"/>. <see cref="SelectedIndex"/> is -1 when none is picked, for a
+/// stored value that matches no option.
 /// </summary>
 internal sealed class OptionRow : View, IThemedView
 {
@@ -153,8 +155,10 @@ internal sealed class OptionRow : View, IThemedView
     private Theme _theme;
     private readonly string[] _options;
     private readonly (int Start, int End)[] _spans;
+    private readonly int _stackedWidth;
     private int _selectedIndex = -1;
     private int _highlight;
+    private bool _isStacked;
 
     public OptionRow(Theme theme, IReadOnlyList<string> options)
     {
@@ -172,24 +176,33 @@ internal sealed class OptionRow : View, IThemedView
 
             var width = DisplayWidth.Of(OptionText(_options[i]));
             _spans[i] = (x, x + width);
+            _stackedWidth = Math.Max(_stackedWidth, width);
             x += width;
         }
 
+        RowWidth = x;
         Height = 1;
         Width = x;
         CanFocus = true;
     }
 
-    /// <summary>The cells a row of <paramref name="options"/> takes: each <c>( ) option</c>, two cells apart.</summary>
-    public static int WidthFor(IReadOnlyList<string> options)
-    {
-        var width = Gap.Length * Math.Max(0, options.Count - 1);
-        foreach (var option in options)
-        {
-            width += DisplayWidth.Of(OptionText(option));
-        }
+    /// <summary>The cells the options take on one row: each <c>( ) option</c>, two cells apart.</summary>
+    public int RowWidth { get; }
 
-        return width;
+    /// <summary>The rows the options take: one, or one per option while stacked.</summary>
+    public int RowCount => _isStacked ? _options.Length : 1;
+
+    /// <summary>One option per row instead of all on one, for a pane too narrow for <see cref="RowWidth"/>.</summary>
+    public bool IsStacked
+    {
+        get => _isStacked;
+        set
+        {
+            _isStacked = value;
+            Width = value ? _stackedWidth : RowWidth;
+            Height = value ? _options.Length : 1;
+            SetNeedsDraw();
+        }
     }
 
     /// <summary>Raised after Space, a click, or <see cref="PickHighlighted"/> picks an option; setting <see cref="SelectedIndex"/> does not raise it.</summary>
@@ -216,7 +229,15 @@ internal sealed class OptionRow : View, IThemedView
         var normal = _theme.On(_theme.Foreground);
         for (var i = 0; i < _options.Length; i++)
         {
-            Move(_spans[i].Start, 0);
+            if (_isStacked)
+            {
+                Move(0, i);
+            }
+            else
+            {
+                Move(_spans[i].Start, 0);
+            }
+
             var dot = i == _selectedIndex ? "•" : " ";
             if (HasFocus && i == _highlight)
             {
@@ -236,13 +257,30 @@ internal sealed class OptionRow : View, IThemedView
         return true;
     }
 
+    /// <remarks>
+    /// Up and down past the first or last stacked option are left unhandled, so the form moves to
+    /// the field above or below as it does from a one-row option list.
+    /// </remarks>
     protected override bool OnKeyDown(Key key)
     {
         if (key == Key.CursorLeft || key == Key.CursorRight)
         {
             var step = key == Key.CursorLeft ? -1 : 1;
-            _highlight = Math.Clamp(_highlight + step, 0, _options.Length - 1);
-            SetNeedsDraw();
+            MoveHighlight(step);
+            return true;
+        }
+
+        var isVerticalArrow = key == Key.CursorUp || key == Key.CursorDown;
+        if (_isStacked && isVerticalArrow)
+        {
+            var step = key == Key.CursorUp ? -1 : 1;
+            var target = _highlight + step;
+            if (target < 0 || target >= _options.Length)
+            {
+                return false;
+            }
+
+            MoveHighlight(step);
             return true;
         }
 
@@ -263,13 +301,10 @@ internal sealed class OptionRow : View, IThemedView
         }
 
         SetFocus();
-        for (var i = 0; i < _spans.Length; i++)
+        var index = IndexAt(position.X, position.Y);
+        if (index >= 0)
         {
-            if (position.X >= _spans[i].Start && position.X < _spans[i].End)
-            {
-                Pick(i);
-                break;
-            }
+            Pick(index);
         }
 
         return true;
@@ -284,6 +319,32 @@ internal sealed class OptionRow : View, IThemedView
         }
 
         SetNeedsDraw();
+    }
+
+    private void MoveHighlight(int step)
+    {
+        _highlight = Math.Clamp(_highlight + step, 0, _options.Length - 1);
+        SetNeedsDraw();
+    }
+
+    /// <summary>The option drawn at column <paramref name="x"/>, row <paramref name="y"/>, or -1 between options.</summary>
+    private int IndexAt(int x, int y)
+    {
+        if (_isStacked)
+        {
+            var isOnText = y >= 0 && y < _options.Length && x < DisplayWidth.Of(OptionText(_options[y]));
+            return isOnText ? y : -1;
+        }
+
+        for (var i = 0; i < _spans.Length; i++)
+        {
+            if (x >= _spans[i].Start && x < _spans[i].End)
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     private void Pick(int index)
