@@ -273,7 +273,9 @@ internal sealed class BundleImportScreen : FormView, IThemedView
 
     private static bool IsActionable(ImportPlanRow row) => row.Action is ImportAction.Install or ImportAction.Upgrade;
 
-    private static bool IsSelectable(ImportPlanRow row) => row.Action is not (ImportAction.Incompatible or ImportAction.Skip);
+    /// <summary>A row a checkbox can toggle: not incompatible or skipped, and not Wingman's own package, which only Settings → Update Wingman may touch.</summary>
+    private bool IsSelectable(ImportPlanRow row) =>
+        row.Action is not (ImportAction.Incompatible or ImportAction.Skip) && !_shell.IsWingmanItself(row.Package.Id);
 
     private void OnChanged()
     {
@@ -369,10 +371,15 @@ internal sealed class BundleImportScreen : FormView, IThemedView
         ];
     }
 
-    /// <summary><c>install</c>, <c>upgrade</c>, or <c>keep</c>, then <c>⚙ options</c> and <c>post-cmd</c> when the bundle sets them; <c>⊘ Scoop package</c> or <c>⊘ incompatible</c> for a row that cannot run.</summary>
-    private static List<CellSpan> PlanSpans(ImportPlanRow row)
+    /// <summary><c>install</c>, <c>upgrade</c>, or <c>keep</c>, then <c>⚙ options</c> and <c>post-cmd</c> when the bundle sets them; <c>⊘ Scoop package</c> or <c>⊘ incompatible</c> for a row that cannot run, and <c>⊘ updated by Wingman itself</c> for Wingman's own package however the bundle would have planned it.</summary>
+    private List<CellSpan> PlanSpans(ImportPlanRow row)
     {
         var package = row.Package;
+        if (_shell.IsWingmanItself(package.Id))
+        {
+            return [new CellSpan("⊘ updated by Wingman itself", Tone.Dim)];
+        }
+
         switch (row.Action)
         {
             case ImportAction.Incompatible:

@@ -1,4 +1,5 @@
 using Wingman.Core.Models;
+using Wingman.Core.SelfUpdate;
 using Wingman.Core.Winget;
 
 namespace TuiHarness;
@@ -6,20 +7,24 @@ namespace TuiHarness;
 /// <summary>
 /// <see cref="FakeWingetClient"/> with winget-like delays, plus rows the fixtures lack: a wide-character
 /// package at the end of the installed list whose <c>show</c> fails, one upgrade that needs
-/// explicit targeting, and a catalog package, <c>Vendor.WillFail</c>, whose install prints more lines than
-/// the log pane holds and then fails.
+/// explicit targeting, a catalog package, <c>Vendor.WillFail</c>, whose install prints more lines than
+/// the log pane holds and then fails, and Wingman's own package with an update always available, so
+/// the shell's guard against batching it has something to run against.
 /// </summary>
 internal sealed class SlowClient(IWingetClient inner) : IWingetClient
 {
     public const string WideId = "Wide.漢字漢字漢字漢字漢字";
     public const string FailingId = "Vendor.WillFail";
-    private const string ExplicitTargetingId = "Microsoft.VisualStudio.2022.Professional";
+    public const string ExplicitTargetingId = "Microsoft.VisualStudio.2022.Professional";
 
     // More than a 40-row terminal's log pane shows, so the wheel has something to scroll.
     private const int FailingInstallExtraLines = 40;
 
     // FakeWingetClient fails any operation on an Id containing "fail".
     private static readonly PackageRow FailingRow = new("Will Fail Tool", FailingId, "1.0.0", null, "winget");
+
+    // Never upgraded away, since the shell refuses to build or queue an operation for it.
+    private static readonly PackageRow WingmanRow = new("Wingman", SelfUpdateChecker.PackageId, "0.1.0", "0.1.1", "winget");
 
     public Task<string> GetVersionAsync(CancellationToken ct) => inner.GetVersionAsync(ct);
 
@@ -37,6 +42,10 @@ internal sealed class SlowClient(IWingetClient inner) : IWingetClient
     {
         await Task.Delay(800, ct);
         var rows = (await inner.ListInstalledAsync(ct)).ToList();
+
+        // Wingman itself before the wide-name row, so Ctrl+End on Installed still lands on the row
+        // whose show fails rather than on this one.
+        rows.Add(WingmanRow);
         rows.Add(new PackageRow("漢字漢字漢字漢字漢字漢字漢字 Wide Name", WideId, "10.0.1", null, "winget"));
         return rows;
     }
@@ -45,7 +54,7 @@ internal sealed class SlowClient(IWingetClient inner) : IWingetClient
     {
         await Task.Delay(500, ct);
         var rows = await inner.ListUpgradesAsync(ct);
-        return [.. rows.Select(row => row.Id == ExplicitTargetingId ? row with { RequiresExplicitTargeting = true } : row)];
+        return [.. rows.Select(row => row.Id == ExplicitTargetingId ? row with { RequiresExplicitTargeting = true } : row), WingmanRow];
     }
 
     public async Task<PackageDetails?> ShowAsync(string id, CancellationToken ct)

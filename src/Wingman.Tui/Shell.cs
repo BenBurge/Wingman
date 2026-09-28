@@ -41,6 +41,7 @@ internal sealed class Shell
     public const string RestartQuestionText = "Restart Wingman as administrator? (y/n)";
     public const string RestartDeclinedText = "Restart declined";
     public const string AlreadyElevatedText = "Already running as administrator";
+    public const string UpdateWingmanItselfText = "Use Settings → Update Wingman to update Wingman itself";
 
     private const string AppTitle = "Wingman";
     private const string UpdateAllRoute = "update-all";
@@ -394,15 +395,21 @@ internal sealed class Shell
     /// <see cref="OperationPlan.RequiresElevation"/> also covers an installer type that usually
     /// needs administrator rights, from <see cref="DetailsCache"/>; when the package's details are
     /// not there yet, they are fetched on a background task and a queue entry for it is updated
-    /// in place when they arrive.
+    /// in place when they arrive. Null, with <see cref="RefuseWingmanItself"/>'s status shown, for
+    /// Wingman's own package.
     /// </summary>
     /// <remarks>
     /// The heuristic is resolved as <see cref="ElevationMode.Auto"/> in an unelevated process, so
     /// the flag says whether the operation needs administrator rights at all; the mode and this
     /// process's elevation are applied where the flag is read, by <see cref="ElevationPolicy"/>.
     /// </remarks>
-    public QueuedOperation BuildOperation(OperationKind kind, PackageRow row)
+    public QueuedOperation? BuildOperation(OperationKind kind, PackageRow row)
     {
+        if (RefuseWingmanItself(row.Id))
+        {
+            return null;
+        }
+
         var plan = OperationRequestFactory.Create(kind, row, Settings, Options.GetInstallOptions(row.Id));
         return WithInstallerElevation(row, plan);
     }
@@ -411,11 +418,17 @@ internal sealed class Shell
     /// A queue entry that takes <paramref name="row"/>'s package to <paramref name="version"/>, from
     /// <see cref="OperationRequestFactory.CreateForVersion"/>: an upgrade, an install, or a
     /// downgrade, which is an install with <c>--force</c>. Null when the package is already on that
-    /// version. Elevation is worked out as for <see cref="BuildOperation(OperationKind, PackageRow)"/>.
+    /// version, or, with <see cref="RefuseWingmanItself"/>'s status shown, for Wingman's own package.
+    /// Elevation is worked out as for <see cref="BuildOperation(OperationKind, PackageRow)"/>.
     /// </summary>
     /// <param name="row">The installed row when <paramref name="isInstalled"/>.</param>
     public QueuedOperation? BuildOperationForVersion(PackageRow row, string version, bool isInstalled)
     {
+        if (RefuseWingmanItself(row.Id))
+        {
+            return null;
+        }
+
         var options = Options.GetInstallOptions(row.Id);
         var plan = OperationRequestFactory.CreateForVersion(row, version, Settings, options, isInstalled);
         return plan is null ? null : WithInstallerElevation(row, plan);
@@ -445,8 +458,22 @@ internal sealed class Shell
         StartBatch([.. Queue.Items], origin, isFromQueue: true);
     }
 
-    /// <summary>Runs <paramref name="operation"/> as a batch of one, with its screen in place of <paramref name="origin"/>'s content, leaving the queue alone.</summary>
-    public void RunOperation(QueuedOperation operation, ScreenHostTab origin) => RunOperations([operation], origin);
+    /// <summary>
+    /// Runs <paramref name="operation"/> as a batch of one, with its screen in place of
+    /// <paramref name="origin"/>'s content, leaving the queue alone; null, from a refused
+    /// <see cref="BuildOperation(OperationKind, PackageRow)"/> or
+    /// <see cref="BuildOperationForVersion"/>, does nothing further, since the refusal already
+    /// showed its status.
+    /// </summary>
+    public void RunOperation(QueuedOperation? operation, ScreenHostTab origin)
+    {
+        if (operation is null)
+        {
+            return;
+        }
+
+        RunOperations([operation], origin);
+    }
 
     /// <summary>Runs <paramref name="operations"/> in order as one batch, with its screen in place of <paramref name="origin"/>'s content, leaving the queue alone.</summary>
     public void RunOperations(IReadOnlyList<QueuedOperation> operations, ScreenHostTab origin)
@@ -488,6 +515,27 @@ internal sealed class Shell
                 listTab.RefreshAfterOperation(isOrigin: tab == origin);
             }
         }
+    }
+
+    /// <summary>Whether <paramref name="id"/> is the package Wingman ships itself under, ignoring case.</summary>
+    public bool IsWingmanItself(string id) =>
+        string.Equals(id, SelfUpdateChecker.PackageId, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Shows <see cref="UpdateWingmanItselfText"/> and returns true for Wingman's own package: the
+    /// installer stops every running <c>wingman.exe</c> in the install folder to replace it, this
+    /// process included, so no batch may upgrade, install, or uninstall it. Every entry point that
+    /// would enqueue or run an operation checks this first, rather than each key handler its own way.
+    /// </summary>
+    public bool RefuseWingmanItself(string id)
+    {
+        if (!IsWingmanItself(id))
+        {
+            return false;
+        }
+
+        SetInfo(UpdateWingmanItselfText);
+        return true;
     }
 
     /// <summary>The pin on the package with <paramref name="id"/>, ignoring case, or null when it has none.</summary>
@@ -829,6 +877,9 @@ internal sealed class Shell
     /// <summary>Shows <paramref name="text"/> on the message line in the error color until the next message.</summary>
     public void SetError(string text) => PostMessage(text, MessageTone.Error, isTransient: false);
 
+    /// <summary>Shows <paramref name="text"/> on the message line in the info color for a few seconds.</summary>
+    public void SetInfo(string text) => PostMessage(text, MessageTone.Info, isTransient: true);
+
     /// <summary>
     /// Opens the context menu titled <paramref name="title"/> with its corner at <paramref name="screenPosition"/>,
     /// kept inside the content area. Ignored while the y/n prompt is up, since the menu's entries ask questions of their own.
@@ -856,6 +907,24 @@ internal sealed class Shell
         IReadOnlyList<HelpGroup> tabGroups = _activeTab?.HelpGroups ?? [];
         Window.MoveSubViewToEnd(_help);
         _help.Open([GlobalHelp, .. tabGroups], _content.Frame);
+    }
+
+    /// <summary>
+    /// Switches to the Settings tab and runs its <c>Update Wingman</c> action, the one Settings →
+    /// Tools runs, for the Updates tab's context menu on Wingman's own row. Does nothing further
+    /// when the startup check has not found a newer release: the tab itself already draws why,
+    /// the same way Settings → Tools does.
+    /// </summary>
+    public void OpenUpdateWingman()
+    {
+        var index = _tabs.FindIndex(tab => tab is SettingsTab);
+        if (index < 0)
+        {
+            return;
+        }
+
+        SelectTab(index);
+        (_tabs[index] as SettingsTab)?.RunUpdateWingman();
     }
 
     /// <summary>Puts <paramref name="id"/> on the system clipboard and says whether that worked.</summary>

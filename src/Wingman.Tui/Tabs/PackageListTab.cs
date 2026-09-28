@@ -228,12 +228,21 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
         }
     }
 
-    /// <summary>Asks to confirm <paramref name="kind"/> on <paramref name="row"/>, then runs it as a batch of one.</summary>
+    /// <summary>
+    /// Asks to confirm <paramref name="kind"/> on <paramref name="row"/>, then runs it as a batch of
+    /// one; refused before the question for Wingman's own package, since every other route to an
+    /// operation on it goes through this or <see cref="ToggleQueued"/>.
+    /// </summary>
     protected void RunOperation(OperationKind kind, PackageRow row)
     {
         if (Shell.IsBatchRunning)
         {
             Shell.SetStatus(Shell.BatchRunningText);
+            return;
+        }
+
+        if (Shell.RefuseWingmanItself(row.Id))
+        {
             return;
         }
 
@@ -296,7 +305,17 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
         var installed = kind == OperationKind.Upgrade ? row : Shell.FindInstalled(row.Id);
         var target = installed ?? row;
         var isInstalled = installed is not null;
-        return new(label, () => Shell.ShowVersionPicker(row, _menuPosition, version => RunVersionOperation(target, version, isInstalled)));
+        return new(label, () =>
+        {
+            // Refused before the picker opens, rather than after a version is chosen, since Wingman
+            // itself never has a version worth picking one for.
+            if (Shell.RefuseWingmanItself(row.Id))
+            {
+                return;
+            }
+
+            Shell.ShowVersionPicker(row, _menuPosition, version => RunVersionOperation(target, version, isInstalled));
+        });
     }
 
     /// <summary>Opens the update policy dialog for <paramref name="row"/> in place of the table and the right pane.</summary>
@@ -322,12 +341,20 @@ internal abstract class PackageListTab : ScreenHostTab, IThemedView
     /// </summary>
     protected abstract void ToggleMark(PackageRow row);
 
-    /// <summary>Takes <paramref name="row"/> out of the queue when it is there, or queues <paramref name="kind"/> on it.</summary>
+    /// <summary>
+    /// Takes <paramref name="row"/> out of the queue when it is there, or queues <paramref name="kind"/>
+    /// on it; a refused build, for Wingman's own package, leaves the queue as it was.
+    /// </summary>
     protected void ToggleQueued(OperationKind kind, PackageRow row)
     {
-        if (!Shell.Queue.Remove(row.Id))
+        if (Shell.Queue.Remove(row.Id))
         {
-            Shell.Queue.Add(Shell.BuildOperation(kind, row));
+            return;
+        }
+
+        if (Shell.BuildOperation(kind, row) is { } operation)
+        {
+            Shell.Queue.Add(operation);
         }
     }
 
