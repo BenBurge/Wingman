@@ -28,8 +28,8 @@ public sealed class WingmanState
     public DateTimeOffset? LastBatch { get; set; }
 
     /// <summary>
-    /// When the latest GitHub release was last read, so the TUI and the scheduled check share one
-    /// request every few hours; <c>null</c> if it never has been.
+    /// When the latest GitHub release was last read, so a TUI start soon after a scheduled check
+    /// makes no request of its own; <c>null</c> if it never has been.
     /// </summary>
     public DateTimeOffset? LastUpdateCheck { get; set; }
 
@@ -43,8 +43,15 @@ public sealed class WingmanState
     public string LatestSha256Url { get; set; } = "";
 
     /// <summary>
-    /// The version <c>check --notify</c> started the installer for; the first check that runs as
-    /// that version announces the update with a toast and clears it.
+    /// The version <c>check --notify</c> started the installer for; the installer's
+    /// <c>self-update --announce</c>, or failing that the first check that runs as that version,
+    /// announces the update with a toast and clears it.
     /// </summary>
     public string PendingUpdateVersion { get; set; } = "";
+
+    /// <summary>
+    /// The release <c>check --notify</c> last offered with the "is available" toast, so each
+    /// release is offered once rather than on every scheduled check.
+    /// </summary>
+    public string NotifiedUpdateVersion { get; set; } = "";
 }

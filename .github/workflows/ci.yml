@@ -90,7 +90,13 @@ jobs:
           Check (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Wingman.lnk") "Start Menu shortcut exists"
           Check (Test-Path 'HKCU:\Software\Classes\wingman') "wingman: protocol key exists"
           Check (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{FC7D592F-76BD-4409-9F32-1C9EAF29A091}_is1') "uninstall entry exists"
-          Check ($null -eq (Get-Process wingman -ErrorAction SilentlyContinue)) "no tray started with /notray=1"
+          # Only the tray counts: setup's own `self-update --announce` may still be exiting.
+          $trays = @(Get-CimInstance Win32_Process -Filter "Name = 'wingman.exe'" | Where-Object { $_.CommandLine -match '\stray(\s|$)' })
+          Check ($trays.Count -eq 0) "no tray started with /notray=1"
+          # Setup runs this after every install; with no update pending it must print nothing and succeed.
+          $announce = (& "$installDir\wingman.exe" self-update --announce 2>&1 | Out-String).Trim()
+          Check ($LASTEXITCODE -eq 0) "self-update --announce exits 0 (got $LASTEXITCODE)"
+          Check ($announce -eq '') "self-update --announce prints nothing (got '$announce')"
 
           Write-Host "--- Wingman\Check task definition"
           schtasks /Query /TN "Wingman\Check" /XML

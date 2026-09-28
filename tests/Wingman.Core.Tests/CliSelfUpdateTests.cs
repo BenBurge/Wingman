@@ -8,6 +8,8 @@ public class CliSelfUpdateTests : IDisposable
 {
     private const string InstallFolder = @"C:\Users\ben\AppData\Local\Programs\Wingman";
 
+    private const string SelfUpdateTag = "wingman-self-update";
+
     private readonly CliHarness _cli = new();
     private readonly FakeGitHub _gitHub = new();
     private readonly HttpClient _http;
@@ -104,6 +106,16 @@ public class CliSelfUpdateTests : IDisposable
         Assert.Equal(Path.Combine(_cli.UpdateDirectory, "wingman-v9.9.9-win-x64-setup.exe"), setupPath);
         Assert.Equal(FakeGitHub.SetupBytes("9.9.9"), File.ReadAllBytes(setupPath));
         Assert.Equal($"Installing Wingman 9.9.9; it restarts itself when done.{Environment.NewLine}", _cli.Output);
+    }
+
+    [Fact]
+    public async Task SelfUpdate_WhenNewer_MarksTheVersionPendingSoTheInstallIsAnnounced()
+    {
+        _gitHub.Publish("9.9.9");
+
+        await _cli.RunAsync("self-update");
+
+        Assert.Equal("9.9.9", _cli.State.Load().PendingUpdateVersion);
     }
 
     [Fact]
@@ -211,19 +223,23 @@ public class CliSelfUpdateTests : IDisposable
     }
 
     [Fact]
-    public async Task CheckNotify_WithAutoUpdateOff_AsksNothingAndStartsNothing()
+    public async Task CheckNotify_WithAutoUpdateOff_OffersTheReleaseAndStartsNothing()
     {
         _gitHub.Publish("9.9.9");
         _cli.Settings.AutoUpdateWingman = false;
 
         await _cli.RunAsync("check", "--notify");
 
-        Assert.Empty(_gitHub.Requests);
+        Assert.Equal(1, _gitHub.LatestRequests);
         Assert.Empty(_starter.SetupPaths);
+        var offer = Assert.Single(_cli.Toasts, toast => toast.Tag == SelfUpdateTag);
+        Assert.Equal("Wingman 9.9.9 is available", offer.Title);
+        Assert.Equal("Wingman 1.0.0 is installed.", offer.Body);
+        Assert.Equal("9.9.9", _cli.State.Load().NotifiedUpdateVersion);
     }
 
     [Fact]
-    public async Task CheckNotify_FromAPortableCopy_StartsNothing()
+    public async Task CheckNotify_FromAPortableCopy_OffersTheReleaseAndStartsNothing()
     {
         _gitHub.Publish("9.9.9");
         _cli.ExePath = @"C:\Tools\wingman.exe";
@@ -232,6 +248,74 @@ public class CliSelfUpdateTests : IDisposable
 
         Assert.Empty(_starter.SetupPaths);
         Assert.Equal("", _cli.State.Load().PendingUpdateVersion);
+        Assert.Single(_cli.Toasts, toast => toast.Title == "Wingman 9.9.9 is available");
+    }
+
+    [Fact]
+    public async Task CheckNotify_WithoutAStarter_OffersTheRelease()
+    {
+        _gitHub.Publish("9.9.9");
+        _cli.SelfUpdateStarter = null;
+
+        await _cli.RunAsync("check", "--notify");
+
+        Assert.Single(_cli.Toasts, toast => toast.Title == "Wingman 9.9.9 is available");
+    }
+
+    [Fact]
+    public async Task CheckNotify_WhenAutoUpdateApplies_DoesNotOfferTheRelease()
+    {
+        _gitHub.Publish("9.9.9");
+
+        await _cli.RunAsync("check", "--notify");
+
+        Assert.Single(_starter.SetupPaths);
+        Assert.DoesNotContain(_cli.Toasts, toast => toast.Tag == SelfUpdateTag);
+        Assert.Equal("", _cli.State.Load().NotifiedUpdateVersion);
+    }
+
+    [Fact]
+    public async Task CheckNotify_OffersEachReleaseOnce()
+    {
+        _gitHub.Publish("9.9.9");
+        _cli.Settings.AutoUpdateWingman = false;
+        await _cli.RunAsync("check", "--notify");
+
+        await _cli.RunAsync("check", "--notify");
+        Assert.Single(_cli.Toasts, toast => toast.Tag == SelfUpdateTag);
+
+        _gitHub.Publish("9.9.10");
+        await _cli.RunAsync("check", "--notify");
+
+        Assert.Equal(
+            ["Wingman 9.9.9 is available", "Wingman 9.9.10 is available"],
+            _cli.Toasts.Where(toast => toast.Tag == SelfUpdateTag).Select(toast => toast.Title));
+    }
+
+    [Fact]
+    public async Task CheckNotify_WhilePaused_DoesNotOfferTheRelease()
+    {
+        _gitHub.Publish("9.9.9");
+        _cli.Settings.AutoUpdateWingman = false;
+        _cli.Settings.NotificationsPaused = true;
+
+        await _cli.RunAsync("check", "--notify");
+
+        Assert.Empty(_cli.Toasts);
+        Assert.Equal("", _cli.State.Load().NotifiedUpdateVersion);
+    }
+
+    [Fact]
+    public async Task CheckNotify_WhenGitHubFails_OffersTheCachedRelease()
+    {
+        _gitHub.Publish("9.9.9");
+        await _cli.RunAsync("self-update", "--check");
+        _gitHub.Failure = new HttpRequestException("offline");
+        _cli.Settings.AutoUpdateWingman = false;
+
+        await _cli.RunAsync("check", "--notify");
+
+        Assert.Single(_cli.Toasts, toast => toast.Title == "Wingman 9.9.9 is available");
     }
 
     [Fact]
@@ -282,15 +366,16 @@ public class CliSelfUpdateTests : IDisposable
     }
 
     [Fact]
-    public async Task CheckNotify_UsesTheCachedReleaseWithinSixHours()
+    public async Task CheckNotify_AsksGitHubOnEveryRun_EvenWithAFreshCache()
     {
         _gitHub.Publish("1.0.0");
         await _cli.RunAsync("check", "--notify");
-        _cli.Now += TimeSpan.FromHours(1);
+        _cli.Now += TimeSpan.FromMinutes(1);
 
         await _cli.RunAsync("check", "--notify");
 
-        Assert.Equal(1, _gitHub.LatestRequests);
+        Assert.Equal(2, _gitHub.LatestRequests);
+        Assert.Equal(_cli.Now, _cli.State.Load().LastUpdateCheck);
     }
 
     // --- the toast after an update ---
@@ -333,6 +418,76 @@ public class CliSelfUpdateTests : IDisposable
 
         Assert.Empty(_cli.Toasts);
         Assert.Equal("", _cli.State.Load().PendingUpdateVersion);
+    }
+
+    // --- self-update --announce, which the installer runs ---
+
+    [Fact]
+    public async Task Announce_AsThePendingVersion_SendsTheUpdatedToastOnceAndClearsTheMarker()
+    {
+        _cli.State.Update(state => state.PendingUpdateVersion = "9.9.9");
+        _cli.Version = "9.9.9";
+
+        var first = await _cli.RunAsync("self-update", "--announce");
+        var second = await _cli.RunAsync("self-update", "--announce");
+
+        Assert.Equal(ExitCodes.Success, first);
+        Assert.Equal(ExitCodes.Success, second);
+        var announced = Assert.Single(_cli.Toasts);
+        Assert.Equal("Wingman updated to v9.9.9", announced.Title);
+        Assert.Equal("", _cli.State.Load().PendingUpdateVersion);
+        Assert.Empty(_gitHub.Requests);
+    }
+
+    [Fact]
+    public async Task Announce_WithNothingPending_IsSilentAndExits0()
+    {
+        var exitCode = await _cli.RunAsync("self-update", "--announce");
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Empty(_cli.Toasts);
+        Assert.Empty(_cli.Output);
+        Assert.Empty(_cli.Error.ToString());
+        Assert.Empty(_gitHub.Requests);
+    }
+
+    [Fact]
+    public async Task Announce_BeforeTheNewVersionRuns_IsSilentAndKeepsTheMarker()
+    {
+        _cli.State.Update(state => state.PendingUpdateVersion = "9.9.9");
+
+        var exitCode = await _cli.RunAsync("self-update", "--announce");
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Empty(_cli.Toasts);
+        Assert.Empty(_cli.Output);
+        Assert.Equal("9.9.9", _cli.State.Load().PendingUpdateVersion);
+    }
+
+    [Fact]
+    public async Task Announce_WhilePaused_ClearsTheMarkerWithoutAToast()
+    {
+        _cli.State.Update(state => state.PendingUpdateVersion = "1.0.0");
+        _cli.Settings.NotificationsPaused = true;
+
+        var exitCode = await _cli.RunAsync("self-update", "--announce");
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Empty(_cli.Toasts);
+        Assert.Equal("", _cli.State.Load().PendingUpdateVersion);
+    }
+
+    [Fact]
+    public async Task Announce_ThenCheckNotify_DoesNotAnnounceTwice()
+    {
+        _cli.State.Update(state => state.PendingUpdateVersion = "9.9.9");
+        _cli.Version = "9.9.9";
+        _gitHub.Publish("9.9.9");
+
+        await _cli.RunAsync("self-update", "--announce");
+        await _cli.RunAsync("check", "--notify");
+
+        Assert.Single(_cli.Toasts, toast => toast.Tag == SelfUpdateTag);
     }
 
     private sealed class RecordingStarter : ISelfUpdateStarter

@@ -8,9 +8,10 @@ namespace Wingman.Cli.Commands;
 /// <summary>
 /// <c>wingman check</c>: lists available upgrades the way the Updates tab does, records the result
 /// in <c>state.json</c> for the tray, and exits 10 when any update is waiting. With <c>--notify</c>,
-/// as the scheduled task runs it, it also updates an installed Wingman from GitHub Releases when
-/// <c>AutoUpdateWingman</c> is on, and announces the update
-/// once the new version runs.
+/// as the scheduled task runs it, it also asks GitHub Releases for a newer Wingman: an installed
+/// copy with <c>AutoUpdateWingman</c> on updates itself, and any other copy is offered the release
+/// with a toast once. It also announces a finished update when the installer's own announcement
+/// was missed.
 /// </summary>
 internal sealed class CheckCommand : ICliCommand
 {
@@ -28,7 +29,8 @@ internal sealed class CheckCommand : ICliCommand
 
           --json    Print the updates and counts as one JSON document
           --notify  Show a toast when updates are available, and update Wingman itself when
-                    it was installed by the installer and auto-update is on
+                    it was installed by the installer and auto-update is on, or else show a
+                    toast offering a newer Wingman
         """;
 
     public IReadOnlyCollection<string> Flags => ["notify"];
@@ -41,7 +43,7 @@ internal sealed class CheckCommand : ICliCommand
 
         if (context.Notify)
         {
-            await AnnounceFinishedSelfUpdateAsync(context);
+            await SelfUpdateCommand.AnnounceFinishedUpdateAsync(context);
         }
 
         // The tray shows a working badge while this is set; the finally clears it even when the
@@ -90,59 +92,70 @@ internal sealed class CheckCommand : ICliCommand
 
         if (context.Notify)
         {
-            await AutoUpdateWingmanAsync(context);
+            await CheckForNewerWingmanAsync(context);
         }
 
         return available.Count > 0 ? ExitCodes.UpdatesAvailable : ExitCodes.Success;
     }
 
     /// <summary>
-    /// Sends the <c>Wingman updated</c> toast when this is the version an earlier check started the
-    /// installer for, and clears the marker so the toast is shown once.
+    /// Asks GitHub for the latest release on every run, so a release is noticed within one check
+    /// interval; when GitHub cannot answer, the cached release still counts. A newer release is
+    /// installed when auto-update can apply it and offered with a toast otherwise.
     /// </summary>
-    private static async Task AnnounceFinishedSelfUpdateAsync(CliContext context)
+    private static async Task CheckForNewerWingmanAsync(CliContext context)
     {
-        var pending = context.State.Load().PendingUpdateVersion;
-        if (pending.Length == 0 || !SelfUpdateChecker.IsSameVersion(pending, context.Version))
-        {
-            return;
-        }
-
-        context.State.Update(state => state.PendingUpdateVersion = "");
-        if (!context.Settings.NotificationsPaused && context.ToastSender is { } toasts)
-        {
-            await toasts.SendAsync(ToastBuilder.WingmanUpdated(context.Version), context.Cancel);
-        }
-    }
-
-    /// <summary>
-    /// Downloads, verifies, and starts the installer for a newer release when auto-update is on and
-    /// this copy was installed by the installer. A failure is recorded in <c>state.json</c> for the
-    /// tray and never fails the check.
-    /// </summary>
-    private static async Task AutoUpdateWingmanAsync(CliContext context)
-    {
-        if (!context.Settings.AutoUpdateWingman
-            || context.ReleaseSource is not { } source
-            || context.UpdateDownloader is not { } downloader
-            || context.SelfUpdateStarter is not { } starter)
-        {
-            return;
-        }
-
-        // A portable copy is never replaced behind the user's back; self-update --yes does that.
-        if (InstallDetector.Detect(context.ExePath, context.InstallerRegisteredFolder) != InstallKind.Installer)
+        if (context.ReleaseSource is not { } source)
         {
             return;
         }
 
         var check = await SelfUpdateChecker.CheckAsync(
-            source, context.Version, context.Rid, context.State, SelfUpdateChecker.MaxAge, context.Now(), context.Cancel);
+            source, context.Version, context.Rid, context.State, TimeSpan.Zero, context.Now(), context.Cancel);
         if (!check.IsNewerAvailable || check.Latest is not { } latest)
         {
             return;
         }
 
+        // A portable copy is never replaced behind the user's back; self-update --yes does that.
+        var isInstalled = InstallDetector.Detect(context.ExePath, context.InstallerRegisteredFolder) == InstallKind.Installer;
+        var autoUpdates = context.Settings.AutoUpdateWingman && isInstalled;
+        if (autoUpdates && context.UpdateDownloader is { } downloader && context.SelfUpdateStarter is { } starter)
+        {
+            await InstallAsync(context, latest, downloader, starter);
+            return;
+        }
+
+        await OfferUpdateAsync(context, check.InstalledVersion, latest);
+    }
+
+    /// <summary>
+    /// Sends the "is available" toast unless this release was already offered or notifications are
+    /// paused. The release is marked offered only once a toast was actually sent, so a release
+    /// that arrives while paused is still offered after resuming.
+    /// </summary>
+    private static async Task OfferUpdateAsync(CliContext context, string installedVersion, ReleaseInfo latest)
+    {
+        var offered = context.State.Load().NotifiedUpdateVersion;
+        var wasOffered = offered.Length > 0 && SelfUpdateChecker.IsSameVersion(offered, latest.Version);
+        if (wasOffered || context.Settings.NotificationsPaused || context.ToastSender is not { } toasts)
+        {
+            return;
+        }
+
+        var toast = ToastBuilder.WingmanUpdateAvailable(latest.Version, installedVersion, latest.ReleaseNotesUrl);
+        await toasts.SendAsync(toast, context.Cancel);
+        context.State.Update(state => state.NotifiedUpdateVersion = latest.Version);
+    }
+
+    /// <summary>
+    /// Downloads, verifies, and starts the installer for <paramref name="latest"/>. The installer
+    /// announces the update itself once the new version is in place. A failure is recorded in
+    /// <c>state.json</c> for the tray and never fails the check.
+    /// </summary>
+    private static async Task InstallAsync(
+        CliContext context, ReleaseInfo latest, UpdateDownloader downloader, ISelfUpdateStarter starter)
+    {
         try
         {
             var setupPath = await downloader.DownloadVerifiedAsync(latest, context.UpdateDirectory, context.Cancel);

@@ -209,12 +209,24 @@ public class SelfUpdateTests : IDisposable
         _gitHub.Requests.Clear();
 
         var check = await SelfUpdateChecker.CheckAsync(
-            _source, "1.0.0", "win-x64", _state, SelfUpdateChecker.MaxAge, Now + TimeSpan.FromHours(5), CancellationToken.None);
+            _source, "1.0.0", "win-x64", _state, SelfUpdateChecker.StartupMaxAge, Now + TimeSpan.FromMinutes(50), CancellationToken.None);
 
         Assert.Empty(_gitHub.Requests);
         Assert.True(check.IsNewerAvailable);
         Assert.Equal("1.2.0", check.Latest?.Version);
         Assert.Equal("https://github.com/BenBurge/Wingman/releases/tag/v1.2.0", check.Latest?.ReleaseNotesUrl);
+    }
+
+    [Fact]
+    public async Task Check_OlderThanTheStartupMaxAge_AsksAgain()
+    {
+        _gitHub.Publish("1.2.0");
+        await CheckAsync("1.0.0");
+
+        await SelfUpdateChecker.CheckAsync(
+            _source, "1.0.0", "win-x64", _state, SelfUpdateChecker.StartupMaxAge, Now + TimeSpan.FromMinutes(61), CancellationToken.None);
+
+        Assert.Equal(2, _gitHub.LatestRequests);
     }
 
     [Fact]
@@ -225,7 +237,7 @@ public class SelfUpdateTests : IDisposable
         _gitHub.Failure = new HttpRequestException("offline");
 
         var check = await SelfUpdateChecker.CheckAsync(
-            _source, "1.0.0", "win-x64", _state, SelfUpdateChecker.MaxAge, Now + TimeSpan.FromDays(2), CancellationToken.None);
+            _source, "1.0.0", "win-x64", _state, SelfUpdateChecker.StartupMaxAge, Now + TimeSpan.FromDays(2), CancellationToken.None);
 
         Assert.Equal("1.2.0", check.Latest?.Version);
         Assert.True(check.IsNewerAvailable);
@@ -353,5 +365,5 @@ public class SelfUpdateTests : IDisposable
     }
 
     private Task<UpdateCheck> CheckAsync(string installed) =>
-        SelfUpdateChecker.CheckAsync(_source, installed, "win-x64", _state, SelfUpdateChecker.MaxAge, Now, CancellationToken.None);
+        SelfUpdateChecker.CheckAsync(_source, installed, "win-x64", _state, SelfUpdateChecker.StartupMaxAge, Now, CancellationToken.None);
 }

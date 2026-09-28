@@ -13,10 +13,11 @@ public static class SelfUpdateChecker
     public const string PackageId = "BenBurge.Wingman";
 
     /// <summary>
-    /// How long a cached answer is used before GitHub is asked again. GitHub allows 60 unauthenticated
-    /// requests an hour per address, and every TUI start and scheduled check shares the cache.
+    /// How long the TUI's startup check uses a cached answer before asking GitHub again, so opening
+    /// Wingman repeatedly stays well inside GitHub's 60 unauthenticated requests an hour per address.
+    /// The scheduled check always asks.
     /// </summary>
-    public static readonly TimeSpan MaxAge = TimeSpan.FromHours(6);
+    public static readonly TimeSpan StartupMaxAge = TimeSpan.FromHours(1);
 
     private const string UnknownVersion = "0.0.0";
 

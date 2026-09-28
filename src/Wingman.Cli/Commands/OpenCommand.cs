@@ -1,13 +1,16 @@
 namespace Wingman.Cli.Commands;
 
 /// <summary>
-/// <c>wingman open &lt;route&gt;</c>: opens the TUI on a tab. It runs in this console when there is
-/// one; started by a toast button or the tray without a console, it opens a new terminal window
-/// running <c>open &lt;route&gt; --attached</c> and exits.
+/// <c>wingman open &lt;route&gt;</c>: opens the TUI on a tab, or for <c>self-update</c> runs that
+/// command instead. It runs in this console when there is one; started by a toast button or the
+/// tray without a console, it opens a new terminal window running <c>open &lt;route&gt; --attached</c>
+/// (or <c>self-update</c>) and exits.
 /// </summary>
 internal sealed class OpenCommand : ICliCommand
 {
     private const string ProtocolPrefix = "wingman:";
+
+    private const string SelfUpdateRoute = "self-update";
 
     /// <summary>
     /// Every route <c>wingman open</c> accepts. <c>wt.exe</c> splits its command line on
@@ -16,7 +19,7 @@ internal sealed class OpenCommand : ICliCommand
     /// </summary>
     internal static readonly IReadOnlySet<string> Routes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "updates", "update-all", "history", "settings", "installed", "discover",
+        "updates", "update-all", "history", "settings", "installed", "discover", SelfUpdateRoute,
     };
 
     public string Name => "open";
@@ -27,8 +30,9 @@ internal sealed class OpenCommand : ICliCommand
         Usage: wingman open [<route>] [--attached]
 
         Opens the terminal UI on a route: updates, update-all, installed, discover, history, or
-        settings. A wingman: link such as wingman:updates works too. Without a console to draw in,
-        it opens a new terminal window.
+        settings. The self-update route runs wingman self-update instead of the terminal UI. A
+        wingman: link such as wingman:updates works too. Without a console to draw in, it opens a
+        new terminal window.
 
           --attached  Run in this console even when output looks redirected
         """;
@@ -37,12 +41,6 @@ internal sealed class OpenCommand : ICliCommand
 
     public async Task<int> RunAsync(CliArgs args, CliContext context)
     {
-        if (context.TuiLauncher is not { } launch)
-        {
-            context.Error.WriteLine("wingman open: the terminal UI is not available in this build");
-            return ExitCodes.Usage;
-        }
-
         var route = args.Positionals.Count > 0 ? NormalizeRoute(args.Positionals[0]) : null;
         if (route is not null && !Routes.Contains(route))
         {
@@ -51,18 +49,50 @@ internal sealed class OpenCommand : ICliCommand
         }
 
         var runsHere = args.HasFlag("attached") || (!context.IsOutputRedirected && context.HasConsole);
+        if (string.Equals(route, SelfUpdateRoute, StringComparison.OrdinalIgnoreCase))
+        {
+            return await OpenSelfUpdateAsync(context, runsHere);
+        }
+
+        if (context.TuiLauncher is not { } launch)
+        {
+            context.Error.WriteLine("wingman open: the terminal UI is not available in this build");
+            return ExitCodes.Usage;
+        }
+
         if (runsHere)
         {
             return await launch(route, context.Cancel);
         }
 
+        return SpawnWindow(context, TerminalArgv(context.ExePath, route, context.IsFake, ResolveWindowsTerminal()));
+    }
+
+    /// <summary>
+    /// Runs <c>wingman self-update</c>, which a toast's "Update now" button reaches through the
+    /// <c>wingman:self-update</c> link, so the download and install happen where the user sees them.
+    /// </summary>
+    private static async Task<int> OpenSelfUpdateAsync(CliContext context, bool runsHere)
+    {
+        // Under --fake there is no release source, so the command refuses here rather than opening
+        // a window only to refuse there.
+        if (runsHere || context.ReleaseSource is null)
+        {
+            var command = new SelfUpdateCommand();
+            return await command.RunAsync(CliArgs.Parse([SelfUpdateRoute], command.Flags), context);
+        }
+
+        return SpawnWindow(context, TerminalArgv(context.ExePath, [SelfUpdateRoute], ResolveWindowsTerminal()));
+    }
+
+    private static int SpawnWindow(CliContext context, string[] argv)
+    {
         if (context.WindowSpawner is not { } spawn)
         {
             context.Error.WriteLine("wingman open: no terminal to draw in; pass --attached to run here anyway");
             return ExitCodes.Usage;
         }
 
-        var argv = TerminalArgv(context.ExePath, route, context.IsFake, ResolveWindowsTerminal());
         if (!spawn(argv))
         {
             context.Error.WriteLine($"wingman open: could not start {argv[0]}");
@@ -94,6 +124,24 @@ internal sealed class OpenCommand : ICliCommand
     /// </summary>
     internal static string[] TerminalArgv(string exePath, string? route, bool isFake, string? windowsTerminalPath)
     {
+        var arguments = new List<string> { "open" };
+        if (route is not null)
+        {
+            arguments.Add(route);
+        }
+
+        arguments.Add("--attached");
+        if (isFake)
+        {
+            arguments.Add("--fake");
+        }
+
+        return TerminalArgv(exePath, arguments, windowsTerminalPath);
+    }
+
+    /// <summary>The same window as the route overload, running <paramref name="exePath"/> with <paramref name="arguments"/>.</summary>
+    internal static string[] TerminalArgv(string exePath, IReadOnlyList<string> arguments, string? windowsTerminalPath)
+    {
         var argv = new List<string>();
         if (windowsTerminalPath is not null)
         {
@@ -105,18 +153,7 @@ internal sealed class OpenCommand : ICliCommand
         }
 
         argv.Add(exePath);
-        argv.Add("open");
-        if (route is not null)
-        {
-            argv.Add(route);
-        }
-
-        argv.Add("--attached");
-        if (isFake)
-        {
-            argv.Add("--fake");
-        }
-
+        argv.AddRange(arguments);
         return [.. argv];
     }
 
