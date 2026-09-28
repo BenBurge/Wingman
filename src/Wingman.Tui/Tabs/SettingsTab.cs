@@ -33,6 +33,9 @@ internal sealed class SettingsTab : ScreenHostTab
 
     protected override HelpGroup TabHelp => _form.Help;
 
+    /// <summary>Runs the live <c>Update Wingman</c> action if the startup check found a newer release; a no-op otherwise, since the form already draws why it is unavailable.</summary>
+    public void RunUpdateWingman() => _form.RunUpdateWingman();
+
     /// <summary>Focuses the first field the first time, and after that the one that had focus when the tab was left, which Terminal.Gui restores.</summary>
     public override void OnShown()
     {
@@ -280,6 +283,9 @@ internal sealed class SettingsTab : ScreenHostTab
         }
 
         public override IReadOnlyList<KeyHint> Hints => _hints;
+
+        /// <summary>Presses the live <c>Update Wingman</c> action; nothing to press before the startup check has found a newer release.</summary>
+        public void RunUpdateWingman() => _update?.Press();
 
         public override HelpGroup Help { get; } = new("Settings",
         [

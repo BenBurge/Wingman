@@ -22,6 +22,8 @@ internal sealed class UpdatesTab : PackageListTab
     private const string HeldFooter = "⊘ held (winget pin --blocking)";
     private const string ExplicitMarker = "!";
     private const string ExplicitFooter = "! needs explicit targeting (winget upgrade --id)";
+    private const string WingmanMarker = "↻";
+    private const string WingmanFooter = "↻ updated through Settings";
     private const string FooterSeparator = "  ";
 
     private static readonly PackageColumn[] Columns =
@@ -62,7 +64,7 @@ internal sealed class UpdatesTab : PackageListTab
     {
         Table.Marker = Marker;
         Table.MarkerColor = theme => theme.Accent;
-        Table.RowColor = (row, theme) => shell.IsPinned(row.Id) ? theme.Dim : null;
+        Table.RowColor = (row, theme) => shell.IsPinned(row.Id) || shell.IsWingmanItself(row.Id) ? theme.Dim : null;
         Table.Footer = "";
         Table.CountFormat = CountText;
 
@@ -158,16 +160,29 @@ internal sealed class UpdatesTab : PackageListTab
 
     protected override void ToggleMark(PackageRow row) => ToggleQueued(OperationKind.Upgrade, row);
 
-    protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row) =>
-    [
-        new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)),
-        VersionMenuEntry(OperationKind.Upgrade, row),
-        MarkMenuEntry(row),
-        PolicyMenuEntry(row),
-        OptionsMenuEntry(row),
-        MenuEntry.Rule,
-        .. PackageMenuEntries(row),
-    ];
+    /// <summary>Wingman's own row offers only the Settings flow, since winget cannot upgrade it out from under this process.</summary>
+    protected override IReadOnlyList<MenuEntry> MenuEntries(PackageRow row)
+    {
+        if (Shell.IsWingmanItself(row.Id))
+        {
+            return
+            [
+                new("Update Wingman…", Shell.OpenUpdateWingman),
+                .. PackageMenuEntries(row),
+            ];
+        }
+
+        return
+        [
+            new(UpgradeLabel(row), () => RunOperation(OperationKind.Upgrade, row)),
+            VersionMenuEntry(OperationKind.Upgrade, row),
+            MarkMenuEntry(row),
+            PolicyMenuEntry(row),
+            OptionsMenuEntry(row),
+            MenuEntry.Rule,
+            .. PackageMenuEntries(row),
+        ];
+    }
 
     /// <summary>The policy filter over the last load's rows; also refreshes the excluded list.</summary>
     private IReadOnlyList<PackageRow> Filter()
@@ -242,17 +257,18 @@ internal sealed class UpdatesTab : PackageListTab
     }
 
     /// <summary>
-    /// Queues an upgrade for every row the filter shows except held ones, which winget refuses, and
-    /// those needing explicit targeting, which <c>winget upgrade --all</c> skips too.
+    /// Queues an upgrade for every row the filter shows except held ones, which winget refuses,
+    /// those needing explicit targeting, which <c>winget upgrade --all</c> skips too, and Wingman's
+    /// own row, which is left out silently like the others rather than posting its status.
     /// </summary>
     private void MarkAll()
     {
         foreach (var row in Table.VisibleRows)
         {
-            var isEligible = !Shell.IsPinned(row.Id) && !row.RequiresExplicitTargeting;
-            if (isEligible && !Shell.Queue.Contains(row.Id))
+            var isEligible = !Shell.IsPinned(row.Id) && !row.RequiresExplicitTargeting && !Shell.IsWingmanItself(row.Id);
+            if (isEligible && !Shell.Queue.Contains(row.Id) && Shell.BuildOperation(OperationKind.Upgrade, row) is { } operation)
             {
-                Shell.Queue.Add(Shell.BuildOperation(OperationKind.Upgrade, row));
+                Shell.Queue.Add(operation);
             }
         }
     }
@@ -272,6 +288,11 @@ internal sealed class UpdatesTab : PackageListTab
 
     private string Marker(PackageRow row)
     {
+        if (Shell.IsWingmanItself(row.Id))
+        {
+            return WingmanMarker;
+        }
+
         if (Shell.IsPinned(row.Id))
         {
             return HeldMarker;
@@ -280,7 +301,12 @@ internal sealed class UpdatesTab : PackageListTab
         return row.RequiresExplicitTargeting ? ExplicitMarker : "";
     }
 
-    /// <summary>The legend for each marker the rows use and the excluded count, held first, since together they are wider than the pane.</summary>
+    /// <summary>
+    /// The legend for each marker the rows use and the excluded count, held first since together
+    /// they are wider than the pane; Wingman's own row goes last, since unlike the others it is
+    /// permanent, so it would otherwise always win the narrow footer's limited room over legends
+    /// that call for the user's attention.
+    /// </summary>
     private void UpdateFooter()
     {
         var shown = _view.Visible.Select(update => update.Row).ToList();
@@ -298,6 +324,11 @@ internal sealed class UpdatesTab : PackageListTab
         if (shown.Any(row => row.RequiresExplicitTargeting))
         {
             legends.Add(ExplicitFooter);
+        }
+
+        if (shown.Any(row => Shell.IsWingmanItself(row.Id)))
+        {
+            legends.Add(WingmanFooter);
         }
 
         Table.Footer = string.Join(FooterSeparator, legends);

@@ -303,8 +303,8 @@ Step[] mainSteps =
     new(100, "Installed loading", () => { }),
     new(1500, "Installed loaded, details for the first row", () => { }, WithColors: true, Screenshot: "installed", Verify: () =>
     {
-        Check("tab strip shows Installed 213 as soon as it loads", ScreenHas(" Installed 213 "));
-        Check("tab strip already shows Updates 17, loaded in the background before Updates was ever shown", ScreenHas(" Updates 17 "));
+        Check("tab strip shows Installed 214 as soon as it loads", ScreenHas(" Installed 214 "));
+        Check("tab strip already shows Updates 18, loaded in the background before Updates was ever shown, Wingman's own row included", ScreenHas(" Updates 18 "));
         Check("the startup self-update status", screen.Rows()[MessageY()].Contains(SelfUpdateStatus, StringComparison.Ordinal));
         Check("in the info color", screen.AttributeAt(2, MessageY()) == theme.On(theme.Info).ToString());
         Check("the check compared the harness version", shell.SelfUpdateResult is { InstalledVersion: "1.0.0", Latest.Version: FakeGitHubHandler.PublishedVersion, IsNewerAvailable: true });
@@ -320,7 +320,7 @@ Step[] mainSteps =
     new(600, "the reload finished with no crash and the count still showing", () => { }, Verify: () =>
     {
         Check("still running", shell.Window.IsRunning);
-        Check("tab strip still reads Updates 17", ScreenHas(" Updates 17 "));
+        Check("tab strip still reads Updates 18", ScreenHas(" Updates 18 "));
     }),
     new(50, "1: back to Installed", () => screen.Press(new Key('1'))),
     new(50, "Down x3 quickly: row fields at once, details loading", () => screen.Press(Key.CursorDown, 3)),
@@ -437,6 +437,89 @@ Step[] mainSteps =
     new(50, "3: back to Updates", () => screen.Press(new Key('3'))),
     new(200, "Updates still shows its rows", () => { }, WithColors: true),
 
+    // Wingman's own row is always in this list (SlowClient injects it, never resolved) and never
+    // actionable. It sorts last in this still-unsorted list, so its marker's own color shows here
+    // while the cursor is still on the first row from the earlier reload; Ctrl+End then puts the
+    // cursor on it for the rest of these checks, which need it to be the one Space, u, a, and m act on.
+    new(200, "Wingman's own row: marker present and dim while nothing has it as the cursor", () => { }, WithColors: true, Verify: () =>
+    {
+        var wingmanY = screen.Rows().ToList().FindIndex(row => LeftOf(row).Contains("↻ Wingman", StringComparison.Ordinal));
+        Check("row present with its marker", wingmanY >= 0);
+        Check("dim", wingmanY >= 0 && screen.AttributeAt(2, wingmanY) == theme.On(theme.Dim).ToString());
+    }),
+    new(50, "Ctrl+End: cursor on Wingman's own row", () => screen.Press(Key.End.WithCtrl), WithColors: true, Verify: () =>
+    {
+        var wingmanY = screen.Rows().ToList().FindIndex(row => LeftOf(row).Contains("BenBurge.Wing", StringComparison.Ordinal));
+        Check("its row is now the cursor row", wingmanY >= 0 && IsCursorRow(wingmanY));
+    }),
+    new(50, "a: marks every other eligible row but leaves Wingman itself out, silently", () => screen.Press(Key.A), Verify: () =>
+    {
+        Check("Wingman itself not queued", !shell.Queue.Contains(SelfUpdateChecker.PackageId));
+        Check("still not marked", !AnyMarkedRow('↻'));
+    }),
+    new(50, "c: clear what a marked, so the rest of this run starts from an empty queue", () => screen.Press(Key.C)),
+    new(50, "Space: refused with the Settings status, queue unchanged", () => screen.Press(Key.Space), Verify: () =>
+    {
+        Check("status shown", ScreenHas(Shell.UpdateWingmanItselfText));
+        Check("queue unchanged", shell.Queue.Count == 0);
+    }),
+    new(50, "u: refused the same way, no confirmation question", () => screen.Press(Key.U), Verify: () =>
+    {
+        Check("status shown again", ScreenHas(Shell.UpdateWingmanItselfText));
+        Check("no confirm question", !ScreenHas("(y/n)"));
+        Check("queue still unchanged", shell.Queue.Count == 0);
+    }),
+    new(50, "m: only Update Wingman…, Copy id, and Open homepage", () => screen.Press(Key.M), Verify: () =>
+    {
+        Check("menu open", IsMenuOpen());
+        Check("update wingman entry", ScreenHas("│ Update Wingman… "));
+        Check("no upgrade-to entry", !ScreenHas("Upgrade to"));
+    }),
+    new(50, "Esc: menu closed", () => screen.Press(Key.Esc), Verify: () =>
+        Check("menu closed", !IsMenuOpen())),
+
+    // The explicit-targeting row's own footer legend already fills the narrow left pane whenever it
+    // is visible, so Wingman's legend only has room to show in full once that row is out of the way;
+    // skipping it clears the competition, and the dialog puts it right back afterward so the later
+    // ! marker checks in this run still see it.
+    new(50, "filter the explicit-targeting row, Ctrl+Home, p: its policy dialog", () =>
+    {
+        screen.Press(new Key('/'));
+        screen.Type(SlowClient.ExplicitTargetingId);
+        screen.Press(Key.Enter);
+        screen.Press(Key.Home.WithCtrl);
+        screen.Press(Key.P);
+    }, Verify: () =>
+        Check("dialog open", ScreenHas(" Update policy  " + SlowClient.ExplicitTargetingId))),
+    new(50, "Down x2, Enter: skipped, freeing the footer", () => { screen.Press(Key.CursorDown, 2); screen.Press(Key.Enter); }),
+    new(150, "the row left Updates and Wingman's own footer legend now has the pane to itself", () => { }, Verify: () =>
+    {
+        Check("skipped, not held or excluded", shell.Options.GetUpdatesOptions(SlowClient.ExplicitTargetingId).IgnoredVersion.Length > 0);
+        Check("row gone from Updates", !LeftPaneHas(SlowClient.ExplicitTargetingId));
+        Check("footer legend", ScreenHas("↻ updated through Settings"));
+    }),
+    new(50, "1: Installed, where the row is still listed", () => screen.Press(new Key('1'))),
+    new(50, "filter the explicit-targeting row, Ctrl+Home, p: its policy dialog again", () =>
+    {
+        screen.Press(new Key('/'));
+        screen.Type(SlowClient.ExplicitTargetingId);
+        screen.Press(Key.Enter);
+        screen.Press(Key.Home.WithCtrl);
+        screen.Press(Key.P);
+    }, Verify: () =>
+        Check("dialog open, current choice is Skip", ScreenHas(" Update policy  " + SlowClient.ExplicitTargetingId))),
+    new(50, "Up x2, Enter: restored for the later ! marker checks", () => { screen.Press(Key.CursorUp, 2); screen.Press(Key.Enter); }, Verify: () =>
+        Check("update policy restored", shell.Options.GetUpdatesOptions(SlowClient.ExplicitTargetingId).IgnoredVersion.Length == 0)),
+    new(50, "3, clear the filter: Updates back to normal for the rest of the run", () => screen.Press(new Key('3'))),
+    new(150, "the row is back with its ! marker", () => { }, Verify: () =>
+        Check("row back in Updates", LeftPaneHas("! Visual Studio"))),
+    new(50, "clear the filter, Ctrl+Home", () =>
+    {
+        screen.Press(new Key('/'));
+        screen.Press(Key.Esc);
+        screen.Press(Key.Home.WithCtrl);
+    }),
+
     new(50, "u on AutoHotkey.AutoHotkey: confirmation prompt", () => screen.Press(Key.U), Verify: () =>
     {
         Check("upgrade question on the message line", ScreenHas("Upgrade AutoHotkey.AutoHotkey to 2.0.28? (y/n)"));
@@ -550,7 +633,7 @@ Step[] mainSteps =
     }),
     new(600, "Updates reloaded without AutoHotkey", () => { }, WithColors: true, Verify: () =>
     {
-        Check("tab strip reads Updates 16", ScreenHas(" Updates 16 "));
+        Check("tab strip reads Updates 17", ScreenHas(" Updates 17 "));
         Check("AutoHotkey.AutoHotkey gone from the table", !LeftPaneHas("AutoHotkey.AutoHotkey"));
         Check("details pane back", ScreenHas(" Policy     update"));
         Check("seeded options for Azd", ScreenHas(" Options    custom (o to edit)"));
@@ -575,7 +658,7 @@ Step[] mainSteps =
         Check("the log of Azd says so", ScreenHas(" Canceled"));
     }),
     new(50, "Esc: the list is back", () => screen.Press(Key.Esc), Verify: () =>
-        Check("Updates still 16", ScreenHas(" Updates 16 "))),
+        Check("Updates still 17", ScreenHas(" Updates 17 "))),
 
     new(50, "filter Azure, Space on Azd, g: the helper is requested while the prompt is up", () =>
     {
@@ -609,7 +692,7 @@ Step[] mainSteps =
     }),
     new(50, "Enter, clear the filter: the list is back", () => { screen.Press(Key.Enter); screen.Press(new Key('/')); screen.Press(Key.Esc); }, Verify: () =>
     {
-        Check("Updates still 16", ScreenHas(" Updates 16 "));
+        Check("Updates still 17", ScreenHas(" Updates 17 "));
         Check("queue empty", shell.Queue.Count == 0);
     }),
 
@@ -843,12 +926,12 @@ Step[] mainSteps =
     new(50, "3, clear the filter, filter Azure", () => { screen.Press(new Key('3')); screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(new Key('/')); screen.Type("Azure"); screen.Press(Key.Enter); }, Verify: () =>
     {
         Check("batch keys on the Updates bar", ScreenHas(" u Upgrade   ␣ Mark   a Mark all   c Clear   g Run   p Policy   r Refresh   ? Help   q Quit "));
-        Check("three rows, nothing marked", ScreenHas("3 of 15 available") && MarkedRowCount() == 0);
+        Check("three rows, nothing marked", ScreenHas("3 of 16 available") && MarkedRowCount() == 0);
     }),
     new(50, "Ctrl+Home, Space, Down, Space: two rows marked", () => { screen.Press(Key.Home.WithCtrl); screen.Press(Key.Space); screen.Press(Key.CursorDown); screen.Press(Key.Space); }, Verify: () =>
     {
         Check("two marked rows", MarkedRowCount() == 2);
-        Check("count shows the marks", ScreenHas("3 of 15 available · 2 marked"));
+        Check("count shows the marks", ScreenHas("3 of 16 available · 2 marked"));
         Check("queue pane title", ScreenHas(" Queue  2 operations"));
         Check("Azd first", ScreenHas(" 1  " + ElevatedId));
         Check("Azd needs admin", ScreenHas("upgrade → 1.34.200") && ScreenHas("⚡") && ScreenHas(" admin"));
@@ -860,7 +943,7 @@ Step[] mainSteps =
     new(50, "a: marks the third", () => screen.Press(Key.A), WithColors: true, Verify: () =>
     {
         Check("three marked rows", MarkedRowCount() == 3);
-        Check("count shows three marked", ScreenHas("3 of 15 available · 3 marked"));
+        Check("count shows three marked", ScreenHas("3 of 16 available · 3 marked"));
         Check("queue pane title", ScreenHas(" Queue  3 operations"));
         Check("one of three elevated", ScreenHas(" 1 of 3 need elevation."));
         Check("UAC line", ScreenHas(" One UAC prompt will be shown."));
@@ -868,15 +951,16 @@ Step[] mainSteps =
     }),
     new(50, "clear the filter: the marks stay", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); }, Verify: () =>
     {
-        Check("count for the whole list", ScreenHas("15 available · 3 marked"));
+        Check("count for the whole list", ScreenHas("16 available · 3 marked"));
         Check("three marked rows", MarkedRowCount() == 3);
     }),
     new(50, "filter Docker, p, Down, Enter: hold it", () => { screen.Press(new Key('/')); screen.Type("Docker"); screen.Press(Key.Enter); screen.Press(Key.P); screen.Press(Key.CursorDown); screen.Press(Key.Enter); }),
     new(150, "clear the filter, a: marks all but held and explicit", () => { screen.Press(new Key('/')); screen.Press(Key.Esc); screen.Press(Key.A); }, Screenshot: "updates", Verify: () =>
     {
-        Check("count with held", ScreenHas("15 available · 13 marked · 1 held"));
+        Check("count with held", ScreenHas("16 available · 13 marked · 1 held"));
         Check("held row not marked", !AnyMarkedRow('⊘'));
         Check("explicit-targeting row not marked", !AnyMarkedRow('!'));
+        Check("Wingman's own row not marked", !AnyMarkedRow('↻'));
         Check("queue pane title", ScreenHas(" Queue  13 operations"));
         Check("summary pinned at the bottom", ScreenHas(" 1 of 13 need elevation.") && ScreenHas(" g run queue   c clear"));
     }),
@@ -891,7 +975,7 @@ Step[] mainSteps =
         Check("cleared message", ScreenHas(Shell.QueueClearedText));
         Check("no marked rows", MarkedRowCount() == 0);
         Check("details pane back", ScreenHas(" Policy     "));
-        Check("count without marks", ScreenHas("15 available · 1 held"));
+        Check("count without marks", ScreenHas("16 available · 1 held"));
     }),
     new(50, "g with an empty queue", () => screen.Press(Key.G), Verify: () =>
         Check("empty-queue message", ScreenHas(Shell.QueueEmptyText))),
@@ -1037,7 +1121,7 @@ Step[] mainSteps =
         Check("row left Updates", !LeftPaneHas("Oh My Posh"));
         Check("count", ScreenHas(" · 1 excluded"));
         Check("footer", ScreenHas("⟳ 1 excluded"));
-        Check("tab strip reads Updates 14", ScreenHas(" Updates 14 "));
+        Check("tab strip reads Updates 15", ScreenHas(" Updates 15 "));
         Check("note kept for the session", shell.PolicyNotes[PolicyId] == "updates itself");
     }),
     new(50, "e: the excluded list", () => screen.Press(Key.E), Verify: () =>
@@ -1477,10 +1561,11 @@ Step[] updateAllSteps =
     new(1500, "update-all: Updates loaded and marked", () => { }, WithColors: true, Verify: () =>
     {
         var queued = shell.Queue.Count;
-        Check("all 17 but the explicit-targeting one queued", queued == 16);
+        Check("all 18 but the explicit-targeting one and Wingman itself queued", queued == 16);
         Check("the question", ScreenHas($"Run {queued} updates now? (y/n)"));
-        Check("the rows marked", ScreenHas($"17 available · {queued} marked"));
+        Check("the rows marked", ScreenHas($"18 available · {queued} marked"));
         Check("the explicit-targeting row not marked", !AnyMarkedRow('!'));
+        Check("Wingman's own row not marked", !AnyMarkedRow('↻'));
         Check("prompt keys", ScreenHas(" y Yes   n No "));
     }),
     new(50, "update-all: y runs the batch", () => screen.Press(Key.Y), Verify: () =>
