@@ -8,6 +8,7 @@ using Wingman.Core.History;
 using Wingman.Core.Options;
 using Wingman.Core.SelfUpdate;
 using Wingman.Core.Settings;
+using Wingman.Core.State;
 using Wingman.Core.Winget;
 using Wingman.Tui;
 
@@ -1690,6 +1691,8 @@ if (!isChildRun)
     Check("the installer started from the downloaded path", startedSetup == expectedSetupPath);
     Check("the downloaded file is the verified installer", startedSetup is not null
         && File.Exists(startedSetup) && File.ReadAllBytes(startedSetup).SequenceEqual(FakeGitHubHandler.SetupBytes));
+    Check("the update is marked pending so the new version announces it",
+        new StateStore(dataDirectory).Load().PendingUpdateVersion == "9.9.9");
 }
 
 try
