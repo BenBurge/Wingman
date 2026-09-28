@@ -143,9 +143,9 @@ section>p{margin:0 0 16px;color:var(--muted);max-width:68ch}
 
 <section>
   <h2>7 · Settings</h2>
-  <p>Everything in <code>settings.json</code>, edited in place. The tools row at the bottom holds the scheduled-task registration, so nothing needs an installer. Bundle export and import also appear here, but their home is the <code>b</code> key on any package tab.</p>
+  <p>Everything in <code>settings.json</code>, edited in place, one section at a time: the sections on the left, and on the right the selected section's settings, each on its own line with a dim line saying what it does. The Tools section holds bundle export and import, whose home is the <code>b</code> key on any package tab, the scheduled-task registration, so nothing needs an installer, and Wingman's own update. A section taller than the pane scrolls, with <code>▲</code> or <code>▼</code> in its corner.</p>
   <pre class="term" id="s-settings"></pre>
-  <ul class="keys"><li><kbd>Tab</kbd>next field</li><li><kbd>Space</kbd>toggle / pick</li><li><kbd>Enter</kbd>activate tool</li><li>Changes save immediately</li></ul>
+  <ul class="keys"><li><kbd>↑↓</kbd>section, or field</li><li><kbd>→</kbd><kbd>Enter</kbd>into the section</li><li><kbd>Tab</kbd>next field, then back to the sections</li><li><kbd>Esc</kbd>back to the sections</li><li><kbd>Space</kbd>toggle / pick</li><li><kbd>Enter</kbd>activate tool</li><li>Changes save immediately</li></ul>
 </section>
 
 <section>
@@ -629,32 +629,45 @@ section>p{margin:0 0 16px;color:var(--muted);max-width:68ch}
 
   // 7 · Settings
   {
+    const SW = 20;          // section list width
+    const PW = W - SW - 1;  // section pane width
     const radio = (opts, on) => opts.map(o => (o === on ? '(<span class="acc">•</span>) ' : '( ) ') + o).join('  ');
     const check = (on, label) => (on ? '[<span class="acc">x</span>] ' : '[ ] ') + label;
-    const row = (label, body) => line('   ' + pad(label, 26) + body);
-    const head = t => line(' <span class="hdr">' + t + '</span>');
-    const out = [top(), tabs('Settings'), sepFull(),
-      head('Defaults'),
-      row('Install scope', radio(['user', 'machine'], 'user')),
-      row('Source', radio(['winget', 'msstore', 'all'], 'winget')),
-      row('', check(true, 'Accept package agreements') + '   ' + check(false, 'Include unknown versions')),
-      head('Batches'),
-      row('', check(true, 'Auto-elevate when needed') + '   ' + check(true, 'Continue on failure')),
-      head('Updates'),
-      row('Check for updates', 'every [ <span class="acc">6</span> ] hours   ' + check(true, 'and at login')),
-      row('Auto-install', check(true, 'packages marked auto-update') + '  at [ <span class="acc">03:00</span> ]'),
-      row('', check(true, 'Toast when updates are found') + '   ' + check(true, 'Toast when a batch finishes')),
-      head('Appearance'),
-      row('Theme', radio(['Midnight', 'Daylight', 'Nord', 'Dracula', 'Auto'], 'Midnight')),
-      head('Tray'),
-      row('', check(true, 'Show tray icon') + '   ' + check(true, 'Start at login')),
-      head('Tools'),
-      line('   <span class="key">⏎</span> Import bundle…   <span class="key">⏎</span> Export bundle…   <span class="key">⏎</span> Register scheduled tasks   <span class="dim">(wingman setup)</span>'),
-      blank(),
-      line(' <span class="dim">Saved to %APPDATA%\\Wingman\\settings.json as you change them</span>'),
-      sepFull(),
-      status([['Tab', 'Next field'], ['␣', 'Toggle'], ['⏎', 'Activate'], ['?', 'Help'], ['q', 'Quit']]),
-      bottom()];
+    const pane = (l, r) => bd('│') + pad(l, SW) + bd('│') + pad(r, PW) + bd('│');
+    const setting = (label, body) => ' ' + pad(label, 26) + body;
+    const explain = text => setting('', '<span class="dim">' + text + '</span>');
+    const sections = ['Defaults', 'Batches', 'Updates', 'Appearance', 'Tray', 'Tools'];
+    const left = [' <span class="hdr">Sections</span>', ''];
+    sections.forEach(s => left.push(s === 'Updates' ? '<span class="sel">' + pad(' ' + s, SW) + '</span>' : ' ' + s));
+    const right = [
+      ' <span class="b">Updates</span>  <span class="dim">Checking for updates, auto-install, and notifications</span>',
+      '',
+      setting('Check for updates', 'every [ 6   ] hours'),
+      setting('', check(true, 'and at login')),
+      explain('How often the scheduled task checks winget'),
+      explain('and GitHub Releases.'),
+      '',
+      setting('Auto-install', check(false, 'packages marked auto-update')),
+      setting('', 'at [ 03:00 ]'),
+      explain('Upgrade packages marked auto-update at this'),
+      explain('time each day.'),
+      '',
+      setting('Notifications', check(true, 'Toast when updates are found')),
+      setting('', check(true, 'Toast when a batch finishes')),
+      explain('Windows notifications from the scheduled'),
+      explain('check and from batches.'),
+      '',
+      setting('', check(true, 'Keep Wingman up to date automatically')),
+      explain('Download, verify, and install new Wingman'),
+      explain('releases from GitHub on their own.'),
+    ];
+    while (right.length < 21) right.push('');
+    right.push('', ' <span class="dim">Saved to %APPDATA%\\Wingman\\settings.json as you change them</span>');
+    const out = [top(), tabs('Settings'), bd('├' + '─'.repeat(SW) + '┬' + '─'.repeat(PW) + '┤')];
+    right.forEach((r, i) => out.push(pane(left[i] || '', r)));
+    out.push(bd('├' + '─'.repeat(SW) + '┴' + '─'.repeat(PW) + '┤'));
+    out.push(status([['↑↓', 'Section'], ['Tab', 'Next field'], ['␣', 'Toggle'], ['⏎', 'Activate'], ['?', 'Help'], ['q', 'Quit']]));
+    out.push(bottom());
     document.getElementById('s-settings').innerHTML = out.join('\n');
   }
 
