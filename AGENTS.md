@@ -133,6 +133,7 @@ All planning lives in GitHub Issues on `BenBurge/Wingman`. There is no other bac
 
 - `installer/wingman.iss` is compiled by `tools/Build-Installer.ps1`, which needs Inno Setup 6.3 or later. It is not installed on the development machine, so the installer is built and tested only in CI; locally, check that the script publishes and then stops with the Inno Setup hint.
 - The CI `installer` job does a real silent install and uninstall on the runner and asserts every part `wingman setup` registers appears and then disappears. Its setup runs with `/notray=1`, a custom switch read through `{param:notray|0}`, so no tray outlives the job.
+- The installer's `[Run]` section runs `wingman self-update --announce` after every install, silent ones included, so it must stay silent and exit 0 when there is nothing to announce; the CI `installer` job asserts both.
 - The Inno uninstaller (`unins000.exe`) relaunches itself from `%TEMP%` and the first process returns at once, so tests poll for the install folder to disappear instead of waiting on the process.
 - `CloseWingman` in `[Code]` finds processes through `Win32_Process` because the setup is 32-bit and a 32-bit PowerShell cannot read a 64-bit process's path through `Get-Process`.
 - The `AppId` GUID keys the uninstall entry (`{GUID}_is1`, also the manifest's `ProductCode`); never change it.

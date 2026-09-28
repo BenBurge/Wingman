@@ -1586,8 +1586,8 @@ internal sealed class Shell
     /// <summary>
     /// Asks GitHub on a background task whether a newer Wingman is released, when the host can run
     /// its installer, and says so on the message line until the next message if one is. The answer
-    /// is shared with the scheduled check through <c>state.json</c>, so a start within a few hours
-    /// of the last check makes no request.
+    /// is shared with the scheduled check through <c>state.json</c>, so a start within an hour of
+    /// the last check makes no request.
     /// </summary>
     private void CheckForSelfUpdate()
     {
@@ -1602,7 +1602,7 @@ internal sealed class Shell
         _ = Task.Run(async () =>
         {
             var check = await SelfUpdateChecker.CheckAsync(
-                releases, version, rid, state, SelfUpdateChecker.MaxAge, DateTimeOffset.Now, CancellationToken.None);
+                releases, version, rid, state, SelfUpdateChecker.StartupMaxAge, DateTimeOffset.Now, CancellationToken.None);
             App.Invoke(() =>
             {
                 SelfUpdateResult = check;

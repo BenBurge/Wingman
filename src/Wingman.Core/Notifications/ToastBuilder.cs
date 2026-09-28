@@ -61,10 +61,31 @@ public static class ToastBuilder
     /// </summary>
     public static ToastContent WingmanUpdated(string version)
     {
-        var tag = "v" + SelfUpdateChecker.NormalizeVersion(version);
-        var releaseUrl = $"https://github.com/BenBurge/Wingman/releases/tag/{tag}";
-        var actions = new List<ToastAction> { new("What's new", releaseUrl) };
+        var tag = ReleaseTag(version);
+        var actions = new List<ToastAction> { new("What's new", ReleasePageUrl(tag)) };
         return new ToastContent($"Wingman updated to {tag}", "The new version is installed and running.", actions, "wingman-self-update", "wingman");
+    }
+
+    /// <summary>
+    /// Offers a newer Wingman release that is not being installed automatically. "Update now", also
+    /// where a click on the toast goes, runs <c>wingman self-update</c> in a new window; it shares
+    /// the Wingman-updated toast's tag, so the announcement after installing replaces it.
+    /// </summary>
+    public static ToastContent WingmanUpdateAvailable(string version, string installedVersion, string releasePageUrl)
+    {
+        // The page comes from GitHub's API; anything but an https link could activate another handler.
+        var isHttps = releasePageUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        var whatsNewUrl = isHttps ? releasePageUrl : ReleasePageUrl(ReleaseTag(version));
+
+        var actions = new List<ToastAction>
+        {
+            new("Update now", "wingman:self-update"),
+            new("What's new", whatsNewUrl),
+        };
+
+        var buildMetadata = installedVersion.IndexOf('+');
+        var installed = buildMetadata < 0 ? installedVersion : installedVersion[..buildMetadata];
+        return new ToastContent($"Wingman {version} is available", $"Wingman {installed} is installed.", actions, "wingman-self-update", "wingman");
     }
 
     public static string ToXml(ToastContent content)
@@ -107,6 +128,10 @@ public static class ToastBuilder
 
         return ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script];
     }
+
+    private static string ReleaseTag(string version) => "v" + SelfUpdateChecker.NormalizeVersion(version);
+
+    private static string ReleasePageUrl(string tag) => $"https://github.com/BenBurge/Wingman/releases/tag/{tag}";
 
     // PowerShell single-quoted strings treat everything literally except a doubled quote, which
     // is how a literal quote is embedded.

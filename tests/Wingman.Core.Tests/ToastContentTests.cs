@@ -205,6 +205,63 @@ public class ToastContentTests
         Assert.Equal("protocol", xml.Attribute("activationType")?.Value);
     }
 
+    // --- ToastBuilder.WingmanUpdateAvailable ---
+
+    [Fact]
+    public void WingmanUpdateAvailable_OffersUpdateNowAndTheReleasePage()
+    {
+        var content = ToastBuilder.WingmanUpdateAvailable(
+            "1.3.0", "1.2.0", "https://github.com/BenBurge/Wingman/releases/tag/v1.3.0");
+
+        Assert.Equal("Wingman 1.3.0 is available", content.Title);
+        Assert.Equal("Wingman 1.2.0 is installed.", content.Body);
+        Assert.Equal("wingman-self-update", content.Tag);
+        Assert.Equal("wingman", content.Group);
+        Assert.Collection(content.Actions,
+            action => Assert.Equal(new ToastAction("Update now", "wingman:self-update"), action),
+            action => Assert.Equal(new ToastAction("What's new", "https://github.com/BenBurge/Wingman/releases/tag/v1.3.0"), action));
+    }
+
+    [Fact]
+    public void WingmanUpdateAvailable_Xml_LaunchesSelfUpdateAndCarriesBothActions()
+    {
+        var content = ToastBuilder.WingmanUpdateAvailable(
+            "1.3.0", "1.2.0", "https://github.com/BenBurge/Wingman/releases/tag/v1.3.0");
+
+        var xml = XElement.Parse(ToastBuilder.ToXml(content));
+
+        Assert.Equal("wingman:self-update", xml.Attribute("launch")?.Value);
+        Assert.Equal("protocol", xml.Attribute("activationType")?.Value);
+        var actions = xml.Element("actions")!.Elements("action").ToList();
+        Assert.Equal(["Update now", "What's new"], actions.Select(action => action.Attribute("content")?.Value));
+        Assert.Equal(
+            ["wingman:self-update", "https://github.com/BenBurge/Wingman/releases/tag/v1.3.0"],
+            actions.Select(action => action.Attribute("arguments")?.Value));
+        Assert.All(actions, action => Assert.Equal("protocol", action.Attribute("activationType")?.Value));
+        var texts = xml.Element("visual")!.Element("binding")!.Elements("text").Select(text => text.Value);
+        Assert.Equal(["Wingman 1.3.0 is available", "Wingman 1.2.0 is installed."], texts);
+    }
+
+    [Fact]
+    public void WingmanUpdateAvailable_LeavesBuildMetadataOutOfTheInstalledVersion()
+    {
+        var content = ToastBuilder.WingmanUpdateAvailable(
+            "1.3.0", "1.2.0+4f2c9d1", "https://github.com/BenBurge/Wingman/releases/tag/v1.3.0");
+
+        Assert.Equal("Wingman 1.2.0 is installed.", content.Body);
+    }
+
+    [Theory]
+    [InlineData("http://github.com/BenBurge/Wingman/releases/tag/v1.3.0")]
+    [InlineData("file:///C:/Windows/System32/calc.exe")]
+    [InlineData("")]
+    public void WingmanUpdateAvailable_WithANonHttpsPage_LinksTheReleaseTagInstead(string releasePageUrl)
+    {
+        var content = ToastBuilder.WingmanUpdateAvailable("1.3.0", "1.2.0", releasePageUrl);
+
+        Assert.Equal("https://github.com/BenBurge/Wingman/releases/tag/v1.3.0", content.Actions[1].ProtocolUri);
+    }
+
     [Fact]
     public void BuildPowerShellCommand_PackageNameWithSingleQuote_KeepsQuotesBalanced()
     {

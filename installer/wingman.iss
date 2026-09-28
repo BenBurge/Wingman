@@ -64,6 +64,9 @@ Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; Value
 
 [Run]
 Filename: "{app}\wingman.exe"; Parameters: "setup"; Flags: runhidden waituntilterminated; StatusMsg: "Registering scheduled checks and the tray..."
+; Runs in silent mode too, which is how auto-update installs: it shows the "Wingman updated" toast
+; right away, after setup has created the shortcut toasts need, and does nothing on other installs.
+Filename: "{app}\wingman.exe"; Parameters: "self-update --announce"; Flags: runhidden nowait
 ; Not skipifsilent: a silent upgrade (winget, self-update) closed the tray and must restart it.
 Filename: "{sys}\conhost.exe"; Parameters: "--headless ""{app}\wingman.exe"" tray"; Flags: nowait runhidden; Check: ShouldStartTray
 Filename: "{app}\wingman.exe"; Description: "Open Wingman"; Flags: nowait postinstall skipifsilent shellexec; Tasks: openapp
