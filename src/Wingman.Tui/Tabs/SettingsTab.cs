@@ -776,12 +776,17 @@ internal sealed class SettingsTab : ScreenHostTab
                 return;
             }
 
+            // Marked before the installer starts, because it stops this process; the new version's
+            // self-update --announce reads the marker to show the "Wingman updated" toast.
+            var state = WingmanApp.CreateStateStore();
+            state.Update(s => s.PendingUpdateVersion = latest.Version);
             try
             {
                 starter.StartInstaller(setupPath);
             }
             catch (Exception ex)
             {
+                state.Update(s => s.PendingUpdateVersion = "");
                 _shell.SetError($"Could not start the Wingman installer: {ex.Message}");
                 return;
             }
